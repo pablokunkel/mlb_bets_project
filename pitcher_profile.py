@@ -635,16 +635,16 @@ def score_matchup_v2(
     ):
         team_total_pct = slate_ctx["team_total_pct"][batter_team]
 
-    # Signal 4 (added 2026-04-30): Batter wOBA vs. pitcher handedness
-    # The 2026-04-30 input calibration found woba_vs_hand had 4.5x HR-rate
-    # signal across quintiles (3.8% -> 17.1%) but score_matchup_v2 wasn't
-    # using it — only v1 did. Adding it here as a fourth blended signal.
-    # Anchors 0.280-0.420 match the v1 curve fix (covers the 20th-80th
-    # empirical percentile of the active data distribution).
+    # Signal 4 (added 2026-04-30, anchors retightened 2026-05-01):
+    # Batter wOBA vs. pitcher handedness. Empirical HR rate climbs 4.5x
+    # across woba quintiles but the original (0.280, 0.420) anchors only
+    # shifted matchup_score by ~2 points across the same range. Pulled in
+    # to (0.290, 0.395) so the score curve actually slopes through the
+    # signal-rich part of the distribution. Same anchors as v1.
     woba_raw = batter.get("woba_vs_hand", batter.get("woba"))
     woba_score = None
     if woba_raw is not None and woba_raw > 0:
-        woba_score = max(0.0, min(100.0, (woba_raw - 0.280) / (0.420 - 0.280) * 100.0))
+        woba_score = max(0.0, min(100.0, (woba_raw - 0.290) / (0.395 - 0.290) * 100.0))
 
     # Blend — variable arity based on which optional signals are available.
     # vulnerability + similarity always present (fall back to neutral 50 if

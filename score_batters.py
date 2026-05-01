@@ -336,13 +336,13 @@ def score_matchup(
 
     woba = batter.get("woba_vs_hand", batter.get("woba", 0.320))
     if woba:
-        # Tightened anchors 2026-04-30: input calibration showed woba had
-        # 4.5x HR-rate signal across quintiles (3.8% -> 17.1%) but the
-        # 0.250-0.450 range mapped most batters to a narrow 30-60 band.
-        # Empirical 20th/80th percentiles are ~0.283 / ~0.394, so anchoring
-        # 0.280-0.420 spreads the score function across the active data
-        # distribution and steepens at the top end.
-        scores.append(min_max_scale(woba, 0.280, 0.420))
+        # Tightened anchors twice. Iteration 2 (2026-05-01): woba was still
+        # SIGNAL_NOT_CAPTURED — empirical HR rate climbs 4.5x across quintiles
+        # but the (0.280, 0.420) range only shifted matchup score 2 points.
+        # Pulled to (0.290, 0.395) — a 105pt woba range maps to 100 score,
+        # steepening the gradient where the actual HR signal lives. Top
+        # batters (0.395+) cap at 100; bottom batters (<0.290) cap at 0.
+        scores.append(min_max_scale(woba, 0.290, 0.395))
 
     # Vegas implied team total — game environment signal. Bundles park,
     # weather, lineup quality, and opposing pitcher into a market-blessed

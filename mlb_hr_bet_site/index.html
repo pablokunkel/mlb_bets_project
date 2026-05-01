@@ -1191,6 +1191,29 @@
       display: none;   /* hidden in the rail; tooltip explains the number */
     }
 
+    /* Game modal head — simpler than the player modal head (no headshot).
+       The matchup reads as a single headline with the "at" softened to the
+       muted ink color so the team names pop. */
+    .modal-head.game-modal-head {
+      display: block;
+      gap: 0;
+      padding: 26px 24px 16px;
+    }
+    .modal-head.game-modal-head .game-modal-headline {
+      display: block;
+    }
+    .modal-head.game-modal-head .modal-name {
+      font-size: 20px;
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+    }
+    .modal-head.game-modal-head .modal-name .at {
+      font-weight: 400;
+      color: var(--ink-muted);
+      font-style: italic;
+      margin: 0 6px;
+    }
+
     /* Game-card modal — the "click on a slate row" detail popup.
        Reuses the modal-backdrop infrastructure but with its own card
        so player and game modals don't fight for the same element. */
@@ -1793,6 +1816,31 @@
       } catch { return ''; }
     }
 
+    // ── Expected HR helper ──
+    // Sums per-batter HR probabilities across a set of batters.
+    // For each batter: composite score → look up the historical HR rate at
+    // that 5pt composite bin (from performance.json's score_distribution)
+    // → that rate is the batter's HR probability today → sum gives the
+    // expected number of HRs (linearity of expectation).
+    let _scoreDistCache = null;
+    async function getScoreDistribution() {
+      if (_scoreDistCache !== null) return _scoreDistCache;
+      const perf = await fetchJSON('performance');
+      _scoreDistCache = (perf && perf.score_distribution) || [];
+      return _scoreDistCache;
+    }
+    function expectedHRs(batters, distribution) {
+      if (!distribution || distribution.length === 0) return null;
+      let total = 0;
+      for (const b of batters) {
+        const c = b.composite || 0;
+        // bin: bin_low <= c < bin_high. Find the matching bin.
+        const bin = distribution.find(d => c >= d.bin_low && c < d.bin_high);
+        if (bin && bin.hr_rate != null) total += (bin.hr_rate / 100);
+      }
+      return total;
+    }
+
     // ── Data fetching ──
     const DATA_BASE = './data/';
 
@@ -1878,11 +1926,27 @@
         : '0';
       // Tier Mix card removed 2026-05-01 — tiers are display labels only,
       // not selection gates, so the mix isn't actionable info.
+      // Expected HRs (slate) — computed async after the row first paints,
+      // then patched into place. Avoids blocking the picks render on the
+      // performance.json fetch.
       document.getElementById('todayStats').innerHTML = `
         <div class="stat-card"><div class="label">Picks</div><div class="value accent">${picks.length}</div></div>
         <div class="stat-card"><div class="label">Avg Composite</div><div class="value">${avgComp}</div></div>
         <div class="stat-card"><div class="label">Board Size</div><div class="value">${board.length}</div></div>
+        <div class="stat-card"><div class="label">Expected HRs · card</div>
+          <div class="value accent" id="todayExpectedHRs">…</div>
+          <div style="font-size:10px;color:var(--ink-muted);margin-top:2px" id="todayExpectedHRsSub">computing…</div>
+        </div>
       `;
+      // Today's Picks card: expected HRs from JUST the 8 selected picks.
+      // Big Board uses full slate (board-wide expectation).
+      getScoreDistribution().then(dist => {
+        const exp = expectedHRs(picks, dist);
+        const el = document.getElementById('todayExpectedHRs');
+        const sub = document.getElementById('todayExpectedHRsSub');
+        if (el) el.textContent = exp != null ? exp.toFixed(1) : '—';
+        if (sub) sub.textContent = exp != null ? `Σ probability across ${picks.length} picks` : 'no historical baseline yet';
+      });
 
       // Today's Picks rendered as a SCOREBOARD (Phase 1 redesign).
       // Each pick is a "scoreboard slot" — dark navy panel with chalk-white
@@ -3089,7 +3153,18 @@
         <div class="stat-card"><div class="label">Showing</div><div class="value accent">${rows.length}</div></div>
         <div class="stat-card"><div class="label">Board Total</div><div class="value">${board.length}</div></div>
         <div class="stat-card"><div class="label">Selected</div><div class="value orange">${totalSelected}</div></div>
+        <div class="stat-card"><div class="label">Expected HRs · slate</div>
+          <div class="value accent" id="boardExpectedHRs">…</div>
+          <div style="font-size:10px;color:var(--ink-muted);margin-top:2px" id="boardExpectedHRsSub">computing…</div>
+        </div>
       `;
+      getScoreDistribution().then(dist => {
+        const exp = expectedHRs(board, dist);
+        const el = document.getElementById('boardExpectedHRs');
+        const sub = document.getElementById('boardExpectedHRsSub');
+        if (el) el.textContent = exp != null ? exp.toFixed(1) : '—';
+        if (sub) sub.textContent = exp != null ? `Σ across ${board.length} batters` : 'no historical baseline';
+      });
 
       // Statbook ledger table — cream paper styling inherits from .picks-table
       let html = `<table class="picks-table mobile-expandable">
@@ -3532,7 +3607,7 @@
             ${lineRow('Form',      fmtN(today.form_score,    1),  fmtRank(today.rank_form))}
             ${lineRow('Park',      fmtN(today.park_score,    1),  fmtRank(today.rank_park))}
             ${lineRow('Weather',   fmtN(today.weather_score, 1),  fmtRank(today.rank_weather))}
-            ${lineRow('Lineup',    orderLabel(today.batting_order), fmtRank(today.rank_lineup))}
+            ${lineRow('Lineup',    orderLabel(today.batting_order))}
           </div>
         `;
       }
@@ -3643,16 +3718,14 @@
         </div>
       `;
 
+      // Clean modal header — single horizontal row with the matchup as
+       // the headline (no awkward left-side team-stack block). Time +
+       // venue subtitle below. Stacks naturally on mobile.
       let html = `
-        <div class="modal-head">
-          <div style="font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:700;letter-spacing:0.04em;color:var(--ink);text-align:center;width:88px;line-height:1.1">
-            ${game.away_team || '?'}<br/>
-            <span style="font-size:13px;color:var(--ink-muted);font-weight:500">@</span><br/>
-            ${game.home_team || '?'}
-          </div>
-          <div>
-            <div class="modal-name">${game.away_team || '?'} at ${game.home_team || '?'}</div>
-            <div class="modal-sub">${time} · ${game.venue || '—'}</div>
+        <div class="modal-head game-modal-head">
+          <div class="game-modal-headline">
+            <div class="modal-name">${game.away_team || '?'} <span class="at">at</span> ${game.home_team || '?'}</div>
+            <div class="modal-sub">${time}${game.venue ? ' · ' + game.venue : ''}</div>
           </div>
         </div>
         <div class="modal-section">
