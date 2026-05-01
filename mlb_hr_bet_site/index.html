@@ -1864,24 +1864,30 @@
       // picks by composite descending and taking position N-1.
       const heatDays = history.slice().reverse().slice(-30);   // chronological order, last 30
       const ranks = [1, 2, 3, 4, 5, 6, 7, 8];
-      // For each day, sort picks by composite desc, DEDUPE by batter_id (a
-      // duplicate-insert in daily_picks for the same date can cause one
-      // player to appear in two ranks — defensive de-dup here keeps the
-      // heatmap readable until the upstream dedupe is applied), then take
-      // top 8.
+      // Per-day dedupe: when the same player appears twice (doubleheader
+       // outcomes joining to two rows), keep the row with the BETTER hr_count
+       // so a HR isn't masked by a paired miss row. Then sort by composite
+       // and take top 8.
       const dayPicks = heatDays.map(d => {
-        const sorted = (d.picks || []).slice().sort((a, b) => (b.composite || 0) - (a.composite || 0));
-        const seen = new Set();
-        const deduped = [];
-        for (const p of sorted) {
+        // First pass: collapse duplicates per batter_id, taking the better outcome
+        const byId = new Map();
+        for (const p of (d.picks || [])) {
           const id = p.batter_id || p.player_id || p.name;
-          if (id != null && seen.has(id)) continue;
-          seen.add(id);
-          deduped.push(p);
+          if (id == null) continue;
+          const existing = byId.get(id);
+          if (!existing) {
+            byId.set(id, p);
+          } else {
+            // Keep the one with the higher hr_count (HR beats miss)
+            const a = (existing.hr_count == null || existing.hr_count < 0) ? -1 : existing.hr_count;
+            const b = (p.hr_count        == null || p.hr_count        < 0) ? -1 : p.hr_count;
+            if (b > a) byId.set(id, p);
+          }
         }
+        const sorted = Array.from(byId.values()).sort((a, b) => (b.composite || 0) - (a.composite || 0));
         return {
           date: d.date,
-          ranks: deduped.slice(0, 8),
+          ranks: sorted.slice(0, 8),
           outcomes_available: d.outcomes_available,
         };
       });
@@ -1949,8 +1955,29 @@
 
       // Day cards — collapsible. Default: collapsed (just date + result).
       // Click the header to toggle the picks table visibility.
+      // Dedupe day.picks the same way the heatmap does so doubleheaders
+      // don't show one player twice (e.g. the 4/30 Yordan duplicate).
+      const dedupePicks = (picks) => {
+        const byId = new Map();
+        for (const p of (picks || [])) {
+          const id = p.batter_id || p.player_id || p.name;
+          if (id == null) continue;
+          const existing = byId.get(id);
+          if (!existing) { byId.set(id, p); continue; }
+          const a = (existing.hr_count == null || existing.hr_count < 0) ? -1 : existing.hr_count;
+          const b = (p.hr_count        == null || p.hr_count        < 0) ? -1 : p.hr_count;
+          if (b > a) byId.set(id, p);
+        }
+        return Array.from(byId.values()).sort((x, y) => (y.composite || 0) - (x.composite || 0));
+      };
       let html = '';
       history.forEach((day, i) => {
+        // Dedupe in place so the day-card hits/total + the rendered table both reflect uniques
+        day.picks = dedupePicks(day.picks);
+        // Recompute hits + total to match the deduped pick set
+        day.total = day.picks.length;
+        day.hits = day.picks.filter(p => (p.hr_count || 0) > 0).length;
+        day.hit_rate = day.total > 0 ? Math.round(day.hits / day.total * 1000) / 10 : 0;
         const resultColor = day.hits > 0 ? 'var(--grass-deep)' : 'var(--signal)';
         const resultText = day.outcomes_available
           ? `${day.hits}/${day.total} hit · ${day.hit_rate}%`
