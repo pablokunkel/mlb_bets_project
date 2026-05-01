@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HR Parlay Tracker</title>
+  <title>DingersOnly.cc · MLB HR Picks</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="apple-touch-icon" href="favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&family=VT323&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&display=swap" rel="stylesheet" />
@@ -110,11 +112,19 @@
       box-shadow: 0 1px 0 rgba(80, 55, 25, 0.06);
     }
     header h1 {
-      font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
+      font-size: 22px; font-weight: 700; letter-spacing: -0.02em;
       color: var(--ink);
     }
     header h1 span {
-      color: var(--signal);   /* the "HR" sits in vintage signal red */
+      color: var(--signal);   /* the "Dingers" sits in vintage signal red */
+    }
+    header h1 small {
+      font-size: 12px; font-weight: 500;
+      color: var(--ink-muted);
+      letter-spacing: 0.04em;
+      margin-left: 1px;
+      vertical-align: 4px;
+      font-family: 'JetBrains Mono', monospace;
     }
     .date-badge {
       background: var(--paper);
@@ -1329,10 +1339,81 @@
 
     /* Responsive */
     @media (max-width: 768px) {
-      .stat-row { grid-template-columns: repeat(2, 1fr); }
+      /* Container — tighter padding so we use every pixel of the viewport */
+      .container { padding: 16px 14px 60px; max-width: 100%; }
+
+      /* Header — keep on one line, smaller text */
+      header { padding-bottom: 12px; margin-bottom: 16px; }
+      header h1 { font-size: 19px; }
+      header h1 small { font-size: 10px; vertical-align: 3px; }
+      .date-badge { font-size: 11px; padding: 4px 10px; }
+
+      /* Tabs — horizontal scroll instead of wrapping. Snap each tab into
+         view so they feel intentional, not jumbled. */
+      .tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0;
+        margin-left: -14px; margin-right: -14px;
+        padding-left: 14px; padding-right: 14px;
+      }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab {
+        scroll-snap-align: start;
+        flex-shrink: 0;
+        padding: 10px 12px;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      /* Stat row — 2 cols on phones (auto-fit kept the grid loose) */
+      .stat-row { grid-template-columns: repeat(2, 1fr); gap: 0; }
+      .stat-card { padding: 12px 14px; }
+      .stat-card .value { font-size: 22px; }
+
       .picks-table { font-size: 12px; }
       .picks-table th, .picks-table td { padding: 8px 6px; }
       .hide-mobile { display: none; }
+
+      /* Big Board controls — let inputs stretch to full width */
+      .board-controls { gap: 6px; }
+      .board-search { min-width: 0; max-width: none; flex: 1 1 100%; }
+      .board-team-filter { flex: 1 1 60%; min-width: 130px; }
+      .board-controls > span { flex: 1 1 100%; text-align: right; }
+
+      /* HR Recap controls — same treatment */
+      .recap-controls { gap: 6px; }
+      .recap-date-select { flex: 1; min-width: 0; }
+      .recap-day-summary {
+        flex: 1 1 100%; margin-left: 0;
+        text-align: center; font-size: 11px;
+      }
+
+      /* Modal — leaves more room on small screens */
+      .modal-backdrop { padding: 30px 12px; }
+      .modal-card { border-radius: 10px; }
+      .modal-head { padding: 22px 16px 14px; gap: 12px; }
+      .modal-headshot { width: 64px; height: 64px; border-width: 2px; }
+      .modal-name { font-size: 18px; }
+      .modal-section { padding: 12px 16px; }
+
+      /* Newspaper headlines — dial down on phones */
+      .newspaper .chart-container h3 { font-size: 19px; }
+
+      /* Hitters scoreboard — tighten cell width on phones */
+      .hitters-innings-table .col-day { min-width: 32px; }
+      .hitters-innings-table th, .hitters-innings-table td { padding: 5px 3px; }
+      .hitters-scoreboard { padding: 12px 10px; }
+
+      /* Heatmap — slightly smaller cells so 30 fit */
+      .history-heatmap tbody td { width: 18px; height: 18px; font-size: 11px; }
+      .history-heatmap thead th { padding: 2px 0; }
+      .history-heatmap thead th.day-col span { font-size: 9px; }
+
+      /* Day cards / chart containers — tighter padding */
+      .day-card, .chart-container { padding: 14px 14px 12px; }
 
       /* ── Mobile card layout (Today's Picks, HR Recap per-day) ──
          Short tables become a stack of cards. Every column visible,
@@ -1422,7 +1503,7 @@
 <body>
   <div class="container">
     <header>
-      <h1><span>HR</span> Parlay Tracker</h1>
+      <h1><span>Dingers</span>Only<small>.cc</small></h1>
       <div class="date-badge" id="dateBadge">Loading...</div>
     </header>
 
