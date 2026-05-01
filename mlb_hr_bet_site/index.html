@@ -1864,21 +1864,40 @@
       // picks by composite descending and taking position N-1.
       const heatDays = history.slice().reverse().slice(-30);   // chronological order, last 30
       const ranks = [1, 2, 3, 4, 5, 6, 7, 8];
-      // For each day, sort picks by composite desc and grab top 8
+      // For each day, sort picks by composite desc, DEDUPE by batter_id (a
+      // duplicate-insert in daily_picks for the same date can cause one
+      // player to appear in two ranks — defensive de-dup here keeps the
+      // heatmap readable until the upstream dedupe is applied), then take
+      // top 8.
       const dayPicks = heatDays.map(d => {
         const sorted = (d.picks || []).slice().sort((a, b) => (b.composite || 0) - (a.composite || 0));
+        const seen = new Set();
+        const deduped = [];
+        for (const p of sorted) {
+          const id = p.batter_id || p.player_id || p.name;
+          if (id != null && seen.has(id)) continue;
+          seen.add(id);
+          deduped.push(p);
+        }
         return {
           date: d.date,
-          ranks: sorted.slice(0, 8),
+          ranks: deduped.slice(0, 8),
           outcomes_available: d.outcomes_available,
         };
       });
 
+      // Date label helper — parse YYYY-MM-DD components explicitly so the
+      // string isn't interpreted as UTC midnight (which then displays as
+      // the previous calendar day in any timezone west of UTC).
+      const shortDateLabel = (dateStr) => {
+        const m = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (!m) return dateStr;
+        return parseInt(m[2], 10) + '/' + parseInt(m[3], 10);
+      };
+
       let heatHtml = '<table class="history-heatmap"><thead><tr><th class="rank-col"></th>';
       dayPicks.forEach(d => {
-        const dateObj = new Date(d.date);
-        const lbl = (dateObj.getMonth() + 1) + '/' + dateObj.getDate();
-        heatHtml += `<th class="day-col"><span>${lbl}</span></th>`;
+        heatHtml += `<th class="day-col"><span>${shortDateLabel(d.date)}</span></th>`;
       });
       heatHtml += '</tr></thead><tbody>';
 
@@ -3283,10 +3302,13 @@
           <table class="hitters-innings-table"><thead><tr>
             <th class="col-batter">Batter</th>
             <th class="col-total">HR</th>`;
+      // UTC-safe date label (parse Y/M/D explicitly, no timezone shift)
+      const _dayLbl = (s) => {
+        const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+        return m ? (parseInt(m[2], 10) + '/' + parseInt(m[3], 10)) : s;
+      };
       days.forEach(d => {
-        const dayObj = new Date(d);
-        const dayLabel = (dayObj.getMonth() + 1) + '/' + dayObj.getDate();
-        html += `<th class="col-day">${dayLabel}</th>`;
+        html += `<th class="col-day">${_dayLbl(d)}</th>`;
       });
       html += '</tr></thead><tbody>';
 
