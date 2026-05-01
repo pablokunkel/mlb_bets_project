@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-refit_weights.py — Re-fit logistic regression weights on (optionally) enriched CSV.
+refit_weights.py — Re-fit logistic regression weights from the live DB.
+
+Default behavior (2026-05-01 update): reads training data directly from
+the SQLite DB (daily_picks ⨝ pick_inputs ⨝ outcomes). Always current —
+each completed day's picks + outcomes feed the next refit automatically.
 
 Computes:
   1. Per-feature univariate diagnostics: Pearson r, top-quintile lift, AUC.
   2. Logistic regression with hit_hr ~ standardized features.
   3. Backtest top-8 hit rate of new weights vs current default + legacy.
 
-If raw_data_v2.csv exists (output of backfill_features_v2.py), uses the
-enriched feature set: composite, power, matchup, park, form, weather +
-xwoba_contact, pull_fb_pct, fb_pct_allowed.
-
-Otherwise falls back to the original 5 sub-scores.
+Falls back to CSV if --csv is passed (backwards compat with the old flow).
 
 Usage:
-    python refit_weights.py                     # uses raw_data_v2.csv if present
-    python refit_weights.py --csv raw_data.csv  # force original
-    python refit_weights.py --update            # write learned weights into score_batters.py
+    python refit_weights.py                       # DB default
+    python refit_weights.py --csv raw_data_v2.csv # force CSV
+    python refit_weights.py --update              # print weights to paste into score_batters.py
+    python refit_weights.py --since 2026-04-15    # train only on rows from this date forward
 """
 
 import argparse
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -28,9 +30,74 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import pointbiserialr
 
+# Import the live weight config so the backtest's comp_default actually
+# reflects what's shipped, not a stale hardcoded snapshot. Avoids the
+# "+1.25 pp lift_vs_current" misleading number that the 2026-05-01 monthly
+# refit flagged.
+try:
+    from score_batters import WEIGHT_CONFIGS
+    SHIPPED_DEFAULT_W = WEIGHT_CONFIGS["default"]
+except Exception:
+    # Defensive fallback if score_batters can't import (e.g., missing dep)
+    SHIPPED_DEFAULT_W = {
+        "power": 0.250, "matchup": 0.264, "park": 0.000,
+        "form": 0.279, "weather": 0.057, "lineup": 0.150,
+    }
+
+# DB path — same convention as etl/db.py
+DB_PATH = Path(__file__).parent.parent / "data" / "hr_bets.db"
+
 
 def load_csv(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
+    return df
+
+
+def load_from_db(db_path: Path = DB_PATH, since: str | None = None) -> pd.DataFrame:
+    """
+    Pull training rows from the live DB. One row per (date, batter_id)
+    where the outcome is known. Includes all the sub-scores from
+    daily_picks plus the enriched signals (xwoba_contact, pull_fb_pct,
+    pitcher_fb_pct_allowed) from pick_inputs.
+
+    `since`: optional ISO date (YYYY-MM-DD) to filter from. Useful for
+    holdout testing or re-fitting on a recent window.
+    """
+    if not db_path.exists():
+        raise FileNotFoundError(f"DB not found at {db_path}")
+    conn = sqlite3.connect(str(db_path))
+    where_clause = ""
+    params: tuple = ()
+    if since:
+        where_clause = "AND dp.date >= ?"
+        params = (since,)
+    sql = f"""
+        SELECT
+            dp.date,
+            dp.batter_id              AS player_id,
+            dp.game_pk,
+            dp.composite,
+            dp.power_score,
+            dp.matchup_score,
+            dp.park_score,
+            dp.form_score,
+            dp.weather_score,
+            dp.lineup_score,
+            pi.xwoba_contact,
+            pi.pull_fb_pct,
+            pi.pitcher_fb_pct_allowed AS fb_pct_allowed,
+            CASE WHEN o.hr_count > 0 THEN 1 ELSE 0 END AS hit_hr
+        FROM daily_picks dp
+        LEFT JOIN pick_inputs pi
+            ON pi.date = dp.date AND pi.batter_id = dp.batter_id
+        INNER JOIN outcomes o
+            ON o.date = dp.date AND o.batter_id = dp.batter_id
+        WHERE dp.composite IS NOT NULL
+          {where_clause}
+        ORDER BY dp.date, dp.batter_id
+    """
+    df = pd.read_sql_query(sql, conn, params=params)
+    conn.close()
     return df
 
 
@@ -154,17 +221,26 @@ def backtest(df: pd.DataFrame, factor_weights: dict, features: list[str]) -> dic
     df["park_pct_rr"] = percentile_rerank(df, "park_score")
     df["weather_pct_rr"] = percentile_rerank(df, "weather_score")
 
-    # Variant A: existing CSV composite (legacy baseline)
+    # Variant A: stored composite from when the pick was scored (legacy baseline)
     a = hit_rate(df, "composite")
 
-    # Variant B: current shipped default (learned w/ percentile)
+    # Variant B: CURRENT shipped default — pulled live from
+    # WEIGHT_CONFIGS["default"] in score_batters so the lift number is
+    # an honest apples-to-apples comparison. (Was hardcoded to v1_learned
+    # weights, which is what made every past refit print a misleading
+    # "+1.25 pp lift_vs_current" no matter what.)
+    w = SHIPPED_DEFAULT_W
     df["comp_default"] = (
-        0.217 * df["power_score"]
-        + 0.270 * df["matchup_pct"]
-        + 0.000 * df["park_pct_rr"]
-        + 0.304 * df["form_score"]
-        + 0.060 * df["weather_pct_rr"]
+        w["power"]   * df["power_score"]
+        + w["matchup"] * df["matchup_pct"]
+        + w["park"]    * df["park_pct_rr"]
+        + w["form"]    * df["form_score"]
+        + w["weather"] * df["weather_pct_rr"]
     )
+    # Include lineup_score if present in the data (DB always has it; some
+    # legacy CSVs don't).
+    if "lineup_score" in df.columns:
+        df["comp_default"] = df["comp_default"] + w.get("lineup", 0) * df["lineup_score"]
     b = hit_rate(df, "comp_default")
 
     # Variant C: NEW learned weights from this fit
@@ -198,9 +274,11 @@ def backtest(df: pd.DataFrame, factor_weights: dict, features: list[str]) -> dic
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Refit weights on (optionally enriched) CSV")
+    ap = argparse.ArgumentParser(description="Refit weights from the live DB (or CSV via --csv)")
     ap.add_argument("--csv", default=None,
-                    help="Path to CSV (default: raw_data_v2.csv if present, else raw_data.csv)")
+                    help="Path to a CSV. Skips DB loading if set.")
+    ap.add_argument("--since", default=None,
+                    help="Only train on rows with date >= this (YYYY-MM-DD). DB mode only.")
     ap.add_argument("--update", action="store_true",
                     help="If set, prints WEIGHT_CONFIGS line ready to paste into score_batters.py")
     args = ap.parse_args()
@@ -208,13 +286,17 @@ def main():
     here = Path(__file__).parent
     if args.csv:
         csv_path = Path(args.csv)
+        print(f"Using CSV: {csv_path}")
+        df = load_csv(csv_path)
     else:
-        v2 = here / "raw_data_v2.csv"
-        v1 = here / "raw_data.csv"
-        csv_path = v2 if v2.exists() else v1
+        print(f"Using DB: {DB_PATH}")
+        if args.since:
+            print(f"  Filtering to rows with date >= {args.since}")
+        df = load_from_db(DB_PATH, since=args.since)
 
-    print(f"Using CSV: {csv_path}")
-    df = load_csv(csv_path)
+    if df is None or len(df) == 0:
+        print("ERROR: No training rows. If using DB, ensure outcomes table is populated.")
+        return 1
     print(f"  Loaded {len(df)} rows; date range: {df['date'].min()} -> {df['date'].max()}")
     print(f"  Hit rate: {df['hit_hr'].mean():.3%}")
 
