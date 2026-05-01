@@ -633,6 +633,94 @@
     }
 
     /* ────────────────────────────────────────────────────────────
+       HISTORY — pick-rank heat map (replaces bar chart)
+       Rows = pick rank #1..#8. Columns = days. Green=HR, red=miss.
+       ──────────────────────────────────────────────────────────── */
+    .history-heatmap {
+      width: 100%; border-collapse: separate; border-spacing: 2px;
+      table-layout: fixed;
+      font-family: 'Inter', sans-serif;
+    }
+    .history-heatmap thead th {
+      font-size: 9px; font-weight: 600;
+      color: var(--ink-muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 4px 0;
+      vertical-align: bottom;
+      text-align: center;
+      background: transparent;
+      border: none;
+      font-feature-settings: 'tnum';
+    }
+    .history-heatmap thead th.day-col span {
+      display: inline-block;
+      transform: rotate(-60deg);
+      transform-origin: 50% 100%;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+    .history-heatmap thead th.rank-col {
+      width: 36px;
+    }
+    .history-heatmap tbody td.rank-col {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; font-weight: 700;
+      color: var(--ink);
+      text-align: right;
+      padding: 0 8px 0 0;
+      background: transparent;
+      border: none;
+      width: 36px;
+    }
+    .history-heatmap tbody td {
+      width: 22px; height: 22px;
+      text-align: center;
+      border-radius: 3px;
+      font-size: 12px; line-height: 1;
+      cursor: default;
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .history-heatmap tbody td.cell-hit {
+      background: var(--grass-deep);
+      color: #f4ecd8;
+      cursor: pointer;
+      box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.15);
+    }
+    .history-heatmap tbody td.cell-miss {
+      background: rgba(185, 71, 45, 0.85);
+      cursor: pointer;
+      box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.10);
+    }
+    .history-heatmap tbody td.cell-pending {
+      background: rgba(184, 167, 132, 0.30);
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+    .history-heatmap tbody td.cell-empty {
+      background: transparent;
+    }
+    .history-heatmap tbody td.cell-hit:hover,
+    .history-heatmap tbody td.cell-miss:hover {
+      transform: scale(1.15);
+      box-shadow: 0 4px 10px -3px rgba(80, 55, 25, 0.4);
+      z-index: 2; position: relative;
+    }
+    .heatmap-summary {
+      margin-top: 14px; padding-top: 12px;
+      border-top: 1px dashed var(--rule);
+      font-size: 11px;
+      color: var(--ink-soft);
+      display: flex; flex-wrap: wrap; gap: 14px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .heatmap-summary .rank-rate {
+      display: inline-flex; gap: 4px; align-items: baseline;
+    }
+    .heatmap-summary .muted {
+      color: var(--ink-muted); font-size: 10px;
+    }
+
+    /* ────────────────────────────────────────────────────────────
        PERFORMANCE — newspaper layout (Phase 6)
        Whole tab reads as a daily newspaper. Masthead at the top,
        serif headlines, ledger-style prose. Charts inline as figures.
@@ -1421,22 +1509,22 @@
     <!-- HISTORY -->
     <div class="panel" id="panel-history">
       <div class="chart-container">
-        <h3>Hit Rate Over Time</h3>
-        <canvas id="hitRateChart" height="200"></canvas>
+        <h3>Pick-Rank Heat Map · Hit (green) vs Miss (red)</h3>
+        <div style="font-size:11px;color:var(--ink-muted);margin-bottom:10px">
+          Rows = pick rank (#1 at top). Columns = days (most recent on the right).
+          Reveals whether the top picks (#1-3) are converting more reliably than the
+          bottom picks (#6-8), or if HRs scatter randomly across rank.
+          Click any cell to open the batter's card.
+        </div>
+        <div id="historyHeatmap"><div class="loading">Loading heat map...</div></div>
       </div>
       <div id="historyList"><div class="loading">Loading history...</div></div>
     </div>
 
     <!-- PERFORMANCE -->
     <div class="panel newspaper" id="panel-stats">
-      <!-- Newspaper masthead — sets the editorial tone for the Performance tab.
-           Mimics the front page of a daily newspaper: gothic-serif title,
-           edition line under it. Date is filled in by JS at render time. -->
-      <div class="masthead">
-        <div class="masthead-edition" id="perfEdition">VOL. I · NO. 1 · LATE EDITION</div>
-        <div class="masthead-title">The Daily Diamond</div>
-        <div class="masthead-tagline">All the picks fit to print · Modeled in Inter, scored in clay</div>
-      </div>
+      <!-- Masthead removed 2026-05-01 per Pablo's call — kept the rest of the
+           newspaper styling (serif headlines, italic deks, ledger stat strip). -->
       <div class="stat-row" id="perfStats"></div>
       <div class="chart-container">
         <h3>Factor Score Trends (Selected Picks)</h3>
@@ -1785,36 +1873,75 @@
 
       const history = data.history;
 
-      // Chart palette refreshed to match the cream/clay theme.
-      const chartDays = history.slice().reverse().slice(-30);
-      const ctx = document.getElementById('hitRateChart').getContext('2d');
-      new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: chartDays.map(d => formatMediumDate(d.date)),
-          datasets: [
-            {
-              label: 'Hits',
-              data: chartDays.map(d => d.hits),
-              backgroundColor: 'rgba(63, 106, 58, 0.85)',   // outfield green
-              borderRadius: 2,
-            },
-            {
-              label: 'Misses',
-              data: chartDays.map(d => d.total - d.hits),
-              backgroundColor: 'rgba(196, 106, 58, 0.30)',  // muted clay
-              borderRadius: 2,
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            x: { stacked: true, ticks: { color: '#4a5258', font: { size: 10, family: 'Inter' } }, grid: { color: 'rgba(184, 167, 132, 0.25)' } },
-            y: { stacked: true, beginAtZero: true, ticks: { color: '#4a5258', stepSize: 1, font: { family: 'Inter' } }, grid: { color: 'rgba(184, 167, 132, 0.25)' } }
-          },
-          plugins: { legend: { labels: { color: '#1a1f24', font: { size: 11, family: 'Inter' } } } }
-        }
+      // ── Pick-rank heat map ──
+      // Rows = pick rank #1..#8. Columns = days (oldest left → newest right).
+      // Each cell colored green if that rank's pick HR'd, red if not, gray if pending.
+      // The pick at rank #N for a given day is determined by sorting that day's
+      // picks by composite descending and taking position N-1.
+      const heatDays = history.slice().reverse().slice(-30);   // chronological order, last 30
+      const ranks = [1, 2, 3, 4, 5, 6, 7, 8];
+      // For each day, sort picks by composite desc and grab top 8
+      const dayPicks = heatDays.map(d => {
+        const sorted = (d.picks || []).slice().sort((a, b) => (b.composite || 0) - (a.composite || 0));
+        return {
+          date: d.date,
+          ranks: sorted.slice(0, 8),
+          outcomes_available: d.outcomes_available,
+        };
+      });
+
+      let heatHtml = '<table class="history-heatmap"><thead><tr><th class="rank-col"></th>';
+      dayPicks.forEach(d => {
+        const dateObj = new Date(d.date);
+        const lbl = (dateObj.getMonth() + 1) + '/' + dateObj.getDate();
+        heatHtml += `<th class="day-col"><span>${lbl}</span></th>`;
+      });
+      heatHtml += '</tr></thead><tbody>';
+
+      ranks.forEach(r => {
+        heatHtml += `<tr><td class="rank-col">#${r}</td>`;
+        dayPicks.forEach(d => {
+          const p = d.ranks[r - 1];
+          if (!p) {
+            heatHtml += '<td class="cell-empty"></td>';
+          } else if (!d.outcomes_available || p.hr_count == null || p.hr_count < 0) {
+            heatHtml += `<td class="cell-pending" title="${p.name || ''} — pending"></td>`;
+          } else if (p.hr_count > 0) {
+            const pid = p.batter_id || p.player_id || '';
+            heatHtml += `<td class="cell-hit clickable-row" data-pid="${pid}" title="${p.name || ''} — HR (${formatLongDate(d.date)})">⚾</td>`;
+          } else {
+            const pid = p.batter_id || p.player_id || '';
+            heatHtml += `<td class="cell-miss clickable-row" data-pid="${pid}" title="${p.name || ''} — miss (${formatLongDate(d.date)})"></td>`;
+          }
+        });
+        heatHtml += '</tr>';
+      });
+      heatHtml += '</tbody></table>';
+
+      // Summary line under the heatmap — hit rate per rank
+      heatHtml += '<div class="heatmap-summary">Hit rate by rank: ';
+      ranks.forEach(r => {
+        let hits = 0, total = 0;
+        dayPicks.forEach(d => {
+          if (!d.outcomes_available) return;
+          const p = d.ranks[r - 1];
+          if (!p || p.hr_count == null || p.hr_count < 0) return;
+          total += 1;
+          if (p.hr_count > 0) hits += 1;
+        });
+        const rate = total > 0 ? Math.round(hits / total * 100) : 0;
+        const color = rate >= 30 ? 'var(--grass-deep)' : rate >= 15 ? 'var(--ink)' : 'var(--ink-muted)';
+        heatHtml += `<span class="rank-rate"><strong>#${r}</strong> <span style="color:${color};font-weight:600">${rate}%</span><span class="muted"> (${hits}/${total})</span></span>`;
+      });
+      heatHtml += '</div>';
+
+      document.getElementById('historyHeatmap').innerHTML = heatHtml;
+      // Bind cell clicks to open player modal
+      document.querySelectorAll('#historyHeatmap [data-pid]').forEach(c => {
+        c.addEventListener('click', (e) => {
+          const pid = c.dataset.pid;
+          if (pid) openPlayerModal(pid);
+        });
       });
 
       // Day cards — collapsible. Default: collapsed (just date + result).
@@ -1858,8 +1985,9 @@
             const closeNote = closeMiss ? ' <span style="font-size:10px;font-style:italic">close</span>' : '';
             lineCell = `<span style="color:${lineColor};font-size:12px;font-family:'JetBrains Mono',monospace">${h}/${ab}, ${tb} TB, ${rbi} RBI${closeNote}</span>`;
           }
-          html += `<tr>
-            <td style="font-weight:500">${p.name}</td>
+          const pid = p.batter_id || p.player_id || '';
+          html += `<tr data-pid="${pid}" class="clickable-row">
+            <td style="font-weight:500" class="player-link">${p.name}</td>
             <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${p.team}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${(p.composite || 0).toFixed(1)}</td>
             <td>${outcomeBadge(p.hr_count)}</td>
@@ -1875,6 +2003,7 @@
       document.querySelectorAll('.history-day-header').forEach(h => {
         h.addEventListener('click', () => h.parentElement.classList.toggle('expanded'));
       });
+      bindPlayerClicks();
       bindMobileTables();
     }
 
@@ -1887,16 +2016,7 @@
         document.getElementById('perfStats').innerHTML = '<div class="empty">No performance data yet. Run outcomes ETL first.</div>';
         return;
       }
-      // Newspaper masthead — show today's date and total picks-to-date in
-      // the edition line. Adds a faux "VOL" / "NO" framing so it reads
-      // editorially.
-      const editionEl = document.getElementById('perfEdition');
-      if (editionEl) {
-        const today = new Date();
-        const issueNum = (perf.overall?.total_picks || 0);
-        editionEl.textContent =
-          `VOL. I · NO. ${issueNum} · ${today.toLocaleDateString(undefined, {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}).toUpperCase()}`;
-      }
+      // (Masthead JS removed 2026-05-01 — masthead element no longer in DOM.)
 
       const o = perf.overall;
       document.getElementById('perfStats').innerHTML = `
