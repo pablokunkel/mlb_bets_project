@@ -37,11 +37,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Step 3: Deploy refreshed JSON
-echo  [3/3] Deploying to Netlify... >> "%LOGFILE%" 2>&1
-netlify deploy --prod --dir=mlb_hr_bet_site --site=0fade6bd-ae06-43a8-aaef-22ee692ecbba >> "%LOGFILE%" 2>&1
+REM Step 3: Push refreshed JSON to GitHub (Cloudflare Pages auto-deploys)
+echo  [3/3] Pushing to GitHub... >> "%LOGFILE%" 2>&1
+git add mlb_hr_bet_site/data/*.json >> "%LOGFILE%" 2>&1
+git commit -m "Outcomes refresh" --allow-empty >> "%LOGFILE%" 2>&1
+git push origin main >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
-    echo  ERROR: Netlify deploy failed! >> "%LOGFILE%" 2>&1
+    echo  ERROR: Git push failed! >> "%LOGFILE%" 2>&1
     exit /b 1
 )
 

@@ -322,7 +322,7 @@ def main():
     else:
         print("\nNext: re-export and deploy.")
         print("  python export_site_data.py")
-        print("  netlify deploy --prod --dir=mlb_hr_bet_site --site=0fade6bd-ae06-43a8-aaef-22ee692ecbba")
+        print("  git add mlb_hr_bet_site/data/*.json && git commit -m 'Backfill update' && git push origin main")
 
 
 if __name__ == "__main__":

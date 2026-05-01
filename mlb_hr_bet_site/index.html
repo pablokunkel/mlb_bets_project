@@ -6,7 +6,7 @@
   <title>HR Parlay Tracker</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&family=VT323&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&family=VT323&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
     :root {
@@ -633,6 +633,363 @@
     }
 
     /* ────────────────────────────────────────────────────────────
+       PERFORMANCE — newspaper layout (Phase 6)
+       Whole tab reads as a daily newspaper. Masthead at the top,
+       serif headlines, ledger-style prose. Charts inline as figures.
+       ──────────────────────────────────────────────────────────── */
+    .newspaper {
+      font-family: 'Newsreader', 'Inter', Georgia, serif;
+      color: var(--ink);
+    }
+    .newspaper .masthead {
+      text-align: center;
+      padding: 18px 0 22px;
+      border-top: 3px double var(--ink);
+      border-bottom: 3px double var(--ink);
+      margin-bottom: 24px;
+      position: relative;
+      background:
+        radial-gradient(80% 60% at 50% 0%, rgba(255, 250, 235, 0.5), transparent 70%),
+        var(--paper);
+    }
+    .newspaper .masthead-edition {
+      font-family: 'Inter', sans-serif;
+      font-size: 9px; font-weight: 600;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-muted);
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--rule);
+      max-width: 380px; margin: 0 auto 10px;
+    }
+    .newspaper .masthead-title {
+      font-family: 'Newsreader', Georgia, serif;
+      font-weight: 700;
+      font-size: 52px;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      font-feature-settings: 'liga', 'dlig';
+    }
+    .newspaper .masthead-tagline {
+      font-family: 'Newsreader', Georgia, serif;
+      font-style: italic;
+      font-size: 13px;
+      color: var(--ink-muted);
+      margin-top: 8px;
+    }
+    /* Each chart-container becomes an "article" on the Performance page */
+    .newspaper .chart-container {
+      position: relative;
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 18px 0 22px;
+      border-bottom: 1px solid var(--rule);
+      border-radius: 0;
+      backdrop-filter: none;
+    }
+    .newspaper .chart-container::before { display: none; }
+    .newspaper .chart-container:last-child { border-bottom: none; }
+    .newspaper .chart-container h3 {
+      font-family: 'Newsreader', Georgia, serif;
+      font-weight: 700;
+      font-size: 24px;
+      line-height: 1.15;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      margin-bottom: 6px;
+      max-width: 720px;
+    }
+    /* Description text directly after a headline reads as a "dek" */
+    .newspaper .chart-container > div[style*="font-size:11px"],
+    .newspaper .chart-container > div[style*="font-size: 11px"] {
+      font-family: 'Newsreader', Georgia, serif !important;
+      font-style: italic;
+      font-size: 14px !important;
+      line-height: 1.5;
+      color: var(--ink-soft) !important;
+      max-width: 680px;
+      margin-bottom: 14px !important;
+    }
+    /* Stat-row inside newspaper feels like a "by the numbers" inset */
+    .newspaper .stat-row {
+      border-top: 2px solid var(--ink);
+      border-bottom: 2px solid var(--ink);
+      border-left: none; border-right: none;
+      border-radius: 0;
+      box-shadow: none;
+      background: transparent;
+    }
+    .newspaper .stat-card .label {
+      font-family: 'Inter', sans-serif;
+    }
+    .newspaper .stat-card .value {
+      font-family: 'Newsreader', Georgia, serif;
+      font-weight: 700;
+    }
+
+    /* ────────────────────────────────────────────────────────────
+       HISTORY — collapsible day cards (Phase 5 polish)
+       Default: collapsed (just the date + result line). Click to expand.
+       ──────────────────────────────────────────────────────────── */
+    .history-day-header {
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.12s ease;
+      margin: -4px -4px 8px;
+      padding: 6px 10px;
+      border-radius: 4px;
+    }
+    .history-day-header:hover {
+      background: rgba(196, 106, 58, 0.08);
+    }
+    .history-day .day-toggle {
+      display: inline-block;
+      margin-left: 8px;
+      font-size: 14px;
+      color: var(--ink-muted);
+      transition: transform 0.18s ease;
+    }
+    .history-day.expanded .day-toggle {
+      transform: rotate(180deg);
+    }
+    .history-day-body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.25s ease;
+    }
+    .history-day.expanded .history-day-body {
+      max-height: 4000px;   /* big enough for any day's picks */
+    }
+
+    /* ────────────────────────────────────────────────────────────
+       HR RECAP — statbook page (Phase 3)
+       ──────────────────────────────────────────────────────────── */
+    .recap-controls {
+      display: flex; align-items: center; gap: 10px;
+      margin: 4px 0 16px;
+      flex-wrap: wrap;
+    }
+    .recap-nav {
+      background: var(--paper); border: 1px solid var(--rule);
+      padding: 6px 12px; border-radius: 4px;
+      font-size: 14px; cursor: pointer;
+      color: var(--ink); font-weight: 600;
+      transition: all 0.12s ease;
+    }
+    .recap-nav:hover { background: var(--surface); border-color: var(--ink); }
+    .recap-date-select {
+      background: var(--paper); border: 1px solid var(--rule);
+      padding: 7px 14px; border-radius: 4px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px; font-weight: 500;
+      color: var(--ink); cursor: pointer;
+      min-width: 240px;
+    }
+    .recap-day-summary {
+      font-size: 12px; color: var(--ink-soft);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.02em;
+      margin-left: auto;
+    }
+    .recap-statbook {
+      background:
+        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.10) 27px 28px),
+        var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 22px 24px;
+      box-shadow: 0 8px 22px -10px rgba(80, 55, 25, 0.20);
+      position: relative;
+    }
+    .recap-page-header {
+      padding-bottom: 14px;
+      margin-bottom: 16px;
+      border-bottom: 2px solid var(--ink);
+    }
+    .recap-page-header .page-title {
+      font-family: 'Inter', sans-serif;
+      font-size: 18px; font-weight: 700;
+      color: var(--ink); letter-spacing: -0.01em;
+    }
+    .recap-page-header .page-subtitle {
+      font-size: 11px; color: var(--ink-muted);
+      letter-spacing: 0.04em; text-transform: uppercase;
+      margin-top: 4px;
+    }
+    .recap-offboard-section {
+      margin-top: 18px; padding-top: 14px;
+      border-top: 1px dashed var(--rule);
+    }
+    .recap-offboard-title {
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--ink-muted);
+      margin-bottom: 10px;
+    }
+    .recap-offboard-title .muted {
+      font-weight: 400; text-transform: none; letter-spacing: 0.02em;
+      color: var(--ink-muted); margin-left: 4px;
+      font-style: italic;
+    }
+    .recap-offboard-list {
+      list-style: none; padding: 0;
+      column-count: 2; column-gap: 24px;
+      font-size: 12px;
+    }
+    @media (max-width: 600px) { .recap-offboard-list { column-count: 1; } }
+    .recap-offboard-list li {
+      padding: 4px 0;
+      color: var(--ink-soft);
+      break-inside: avoid;
+    }
+    .recap-offboard-list li strong { color: var(--ink); font-weight: 600; }
+    .recap-offboard-list li .muted {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--ink-muted);
+      margin-left: 4px;
+    }
+
+    /* ────────────────────────────────────────────────────────────
+       HITTERS SCOREBOARD (Phase 4)
+       Stadium hand-operated scoreboard cross-tab. Rows = batters,
+       columns = days (innings). ⚾ glyphs mark HRs with our rank.
+       ──────────────────────────────────────────────────────────── */
+    .hitters-scoreboard {
+      background:
+        linear-gradient(180deg, #2a4a26 0%, #1d3519 100%);
+      border-radius: 6px;
+      padding: 14px;
+      box-shadow:
+        0 0 0 2px #2a4a26, 0 0 0 3px #c8a868, 0 0 0 4px #8c7637,
+        0 1px 0 rgba(255, 255, 255, 0.10) inset,
+        0 18px 40px -18px rgba(20, 35, 18, 0.6);
+      position: relative; overflow: hidden;
+      margin-bottom: 22px;
+    }
+    .hitters-scoreboard::before {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background-image:
+        radial-gradient(rgba(255,255,255,0.04) 0.5px, transparent 1px),
+        radial-gradient(rgba(0,0,0,0.06) 0.4px, transparent 0.8px);
+      background-size: 3px 3px, 5px 5px;
+      mix-blend-mode: overlay; opacity: 0.5;
+    }
+    .hitters-scoreboard-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 6px 12px;
+      border-bottom: 1px solid rgba(200, 168, 104, 0.25);
+      margin-bottom: 10px;
+      position: relative; z-index: 1;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .hitters-scoreboard-head .title {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.20em; text-transform: uppercase;
+      color: #f4ecd8;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+    }
+    .hitters-scoreboard-head .legend {
+      display: flex; gap: 14px; align-items: center;
+      font-family: 'Inter', sans-serif;
+      font-size: 10px;
+      color: rgba(244, 236, 216, 0.7);
+      flex-wrap: wrap;
+    }
+    .hitters-scoreboard-head .lg-item {
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .hitters-scoreboard-head .lg-baseball.lg-picked  { color: #c8a868; font-size: 14px; }
+    .hitters-scoreboard-head .lg-baseball.lg-onboard { color: rgba(244, 236, 216, 0.55); font-size: 14px; }
+    .hitters-scoreboard-head .lg-dot { color: rgba(244, 236, 216, 0.4); font-size: 16px; line-height: 1; }
+    .hitters-scoreboard-body {
+      position: relative; z-index: 1;
+      overflow-x: auto;
+    }
+    .hitters-innings-table {
+      width: 100%; border-collapse: collapse;
+      font-family: 'Inter', sans-serif;
+    }
+    .hitters-innings-table th {
+      padding: 6px 8px; font-size: 9px; font-weight: 700;
+      letter-spacing: 0.10em; text-transform: uppercase;
+      color: rgba(244, 236, 216, 0.65);
+      text-align: center;
+      border-bottom: 1px solid rgba(200, 168, 104, 0.25);
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+      white-space: nowrap;
+    }
+    .hitters-innings-table th.col-batter { text-align: left; padding-left: 12px; }
+    .hitters-innings-table td {
+      padding: 6px 8px; font-size: 12px;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+      color: #f4ecd8;
+      vertical-align: middle;
+    }
+    .hitters-innings-table tbody tr {
+      cursor: pointer;
+      transition: background 0.12s ease;
+    }
+    .hitters-innings-table tbody tr:hover {
+      background: rgba(244, 236, 216, 0.05);
+    }
+    .hitters-innings-table .col-batter {
+      text-align: left; padding-left: 12px;
+      font-size: 13px; color: #fff;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+      white-space: nowrap;
+    }
+    .hitters-innings-table .col-batter .batter-team {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; font-weight: 500;
+      color: rgba(244, 236, 216, 0.6);
+      margin-left: 6px; letter-spacing: 0.04em;
+    }
+    .hitters-innings-table .col-total {
+      text-align: center;
+      background: linear-gradient(180deg, #f4ecd8 0%, #e8dcbe 100%);
+      box-shadow: inset 0 2px 3px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.4);
+    }
+    .hitters-innings-table .col-total .hr-total {
+      font-family: 'Inter', sans-serif;
+      font-weight: 800; font-size: 18px;
+      color: #1a1f24; letter-spacing: -0.01em;
+    }
+    .hitters-innings-table .col-day {
+      text-align: center;
+      min-width: 42px;
+      font-feature-settings: 'tnum';
+    }
+    .hitters-innings-table .col-day.cell-picked {
+      background: rgba(200, 168, 104, 0.10);
+    }
+    .hitters-innings-table .col-day.cell-picked .baseball {
+      color: #c8a868; font-size: 16px;
+      text-shadow: 0 0 6px rgba(200, 168, 104, 0.5);
+    }
+    .hitters-innings-table .col-day.cell-picked .rank {
+      display: block; font-size: 9px;
+      color: rgba(244, 236, 216, 0.7);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.04em;
+    }
+    .hitters-innings-table .col-day.cell-onboard .baseball {
+      color: rgba(244, 236, 216, 0.55); font-size: 16px;
+    }
+    .hitters-innings-table .col-day.cell-onboard .rank {
+      display: block; font-size: 9px;
+      color: rgba(244, 236, 216, 0.4);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .hitters-innings-table .col-day.cell-offboard .baseball {
+      color: rgba(244, 236, 216, 0.30); font-size: 14px;
+    }
+    .hitters-innings-table .col-day.cell-blank {
+      color: rgba(244, 236, 216, 0.15);
+    }
+
+    /* ────────────────────────────────────────────────────────────
        BIG BOARD v1 — statbook ledger left, slate sidebar right
        ──────────────────────────────────────────────────────────── */
     .board-grid {
@@ -1041,8 +1398,13 @@
     <!-- HR RECAP -->
     <div class="panel" id="panel-hrrecap">
       <div class="stat-row" id="hrRecapStats"></div>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
-        Every batter who hit a HR (and was on our board), grouped by day. Shows our composite rank — gold ★ = we picked them, gray = on our board but not picked, dim = not on our board (no rank shown).
+      <!-- Date selector — paginate ◀ ▶ between days OR jump via date input.
+           Only one day's HRs visible at a time (statbook page metaphor). -->
+      <div class="recap-controls">
+        <button class="recap-nav" id="recapPrev" title="Previous day">◀</button>
+        <select class="recap-date-select" id="recapDateSelect"></select>
+        <button class="recap-nav" id="recapNext" title="Next day">▶</button>
+        <span class="recap-day-summary" id="recapDaySummary"></span>
       </div>
       <div id="hrRecapList"><div class="loading">Loading recap...</div></div>
     </div>
@@ -1066,7 +1428,15 @@
     </div>
 
     <!-- PERFORMANCE -->
-    <div class="panel" id="panel-stats">
+    <div class="panel newspaper" id="panel-stats">
+      <!-- Newspaper masthead — sets the editorial tone for the Performance tab.
+           Mimics the front page of a daily newspaper: gothic-serif title,
+           edition line under it. Date is filled in by JS at render time. -->
+      <div class="masthead">
+        <div class="masthead-edition" id="perfEdition">VOL. I · NO. 1 · LATE EDITION</div>
+        <div class="masthead-title">The Daily Diamond</div>
+        <div class="masthead-tagline">All the picks fit to print · Modeled in Inter, scored in clay</div>
+      </div>
       <div class="stat-row" id="perfStats"></div>
       <div class="chart-container">
         <h3>Factor Score Trends (Selected Picks)</h3>
@@ -1415,51 +1785,58 @@
 
       const history = data.history;
 
-      // Chart
+      // Chart palette refreshed to match the cream/clay theme.
       const chartDays = history.slice().reverse().slice(-30);
       const ctx = document.getElementById('hitRateChart').getContext('2d');
       new Chart(ctx, {
         type: 'bar',
         data: {
-          labels: chartDays.map(d => d.date.slice(5)),
+          labels: chartDays.map(d => formatMediumDate(d.date)),
           datasets: [
             {
               label: 'Hits',
               data: chartDays.map(d => d.hits),
-              backgroundColor: 'rgba(63,185,80,0.6)',
-              borderRadius: 3,
+              backgroundColor: 'rgba(63, 106, 58, 0.85)',   // outfield green
+              borderRadius: 2,
             },
             {
               label: 'Misses',
               data: chartDays.map(d => d.total - d.hits),
-              backgroundColor: 'rgba(248,81,73,0.25)',
-              borderRadius: 3,
+              backgroundColor: 'rgba(196, 106, 58, 0.30)',  // muted clay
+              borderRadius: 2,
             }
           ]
         },
         options: {
           responsive: true,
           scales: {
-            x: { stacked: true, ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#30363d' } },
-            y: { stacked: true, beginAtZero: true, ticks: { color: '#8b949e', stepSize: 1 }, grid: { color: '#30363d' } }
+            x: { stacked: true, ticks: { color: '#4a5258', font: { size: 10, family: 'Inter' } }, grid: { color: 'rgba(184, 167, 132, 0.25)' } },
+            y: { stacked: true, beginAtZero: true, ticks: { color: '#4a5258', stepSize: 1, font: { family: 'Inter' } }, grid: { color: 'rgba(184, 167, 132, 0.25)' } }
           },
-          plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } }
+          plugins: { legend: { labels: { color: '#1a1f24', font: { size: 11, family: 'Inter' } } } }
         }
       });
 
-      // Day cards
+      // Day cards — collapsible. Default: collapsed (just date + result).
+      // Click the header to toggle the picks table visibility.
       let html = '';
-      history.forEach(day => {
-        const resultColor = day.hits > 0 ? 'var(--green)' : 'var(--red)';
+      history.forEach((day, i) => {
+        const resultColor = day.hits > 0 ? 'var(--grass-deep)' : 'var(--signal)';
         const resultText = day.outcomes_available
-          ? `${day.hits}/${day.total} hit (${day.hit_rate}%)`
+          ? `${day.hits}/${day.total} hit · ${day.hit_rate}%`
           : 'Pending';
+        // Auto-expand the most recent day, collapse the rest
+        const expandedClass = i === 0 ? 'expanded' : '';
 
-        html += `<div class="day-card">
-          <div class="day-header">
-            <span class="day-date">${formatMediumDate(day.date)}</span>
-            <span class="day-result" style="color:${day.outcomes_available ? resultColor : 'var(--text-muted)'}">${resultText}</span>
+        html += `<div class="day-card history-day ${expandedClass}">
+          <div class="day-header history-day-header">
+            <span class="day-date">${formatLongDate(day.date)}</span>
+            <span class="day-result" style="color:${day.outcomes_available ? resultColor : 'var(--ink-muted)'}">
+              ${resultText}
+              <span class="day-toggle">▾</span>
+            </span>
           </div>
+          <div class="history-day-body">
           <table class="picks-table mobile-expandable" style="border:none">
             <thead><tr>
               <th>Player</th><th>Team</th><th>Score</th><th>Result</th>
@@ -1474,26 +1851,30 @@
           const tb = p.total_bases || 0;
           const hr = p.hr_count || 0;
           const rbi = p.rbi || 0;
-          let lineCell = '<span style="color:var(--text-muted)">—</span>';
+          let lineCell = '<span style="color:var(--ink-muted)">—</span>';
           if (ab > 0 || h > 0) {
             const closeMiss = hr === 0 && tb >= 3;
-            const lineColor = closeMiss ? 'var(--orange)' : 'var(--text-muted)';
-            const closeNote = closeMiss ? ' <span style="font-size:10px">close</span>' : '';
-            lineCell = `<span style="color:${lineColor};font-size:12px">${h}/${ab}, ${tb} TB, ${rbi} RBI${closeNote}</span>`;
+            const lineColor = closeMiss ? 'var(--clay-deep)' : 'var(--ink-muted)';
+            const closeNote = closeMiss ? ' <span style="font-size:10px;font-style:italic">close</span>' : '';
+            lineCell = `<span style="color:${lineColor};font-size:12px;font-family:'JetBrains Mono',monospace">${h}/${ab}, ${tb} TB, ${rbi} RBI${closeNote}</span>`;
           }
           html += `<tr>
             <td style="font-weight:500">${p.name}</td>
-            <td>${p.team}</td>
-            <td>${(p.composite || 0).toFixed(1)}</td>
+            <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${p.team}</td>
+            <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${(p.composite || 0).toFixed(1)}</td>
             <td>${outcomeBadge(p.hr_count)}</td>
             <td class="hide-mobile" style="text-align:right">${lineCell}</td>
           </tr>`;
         });
 
-        html += '</tbody></table></div>';
+        html += '</tbody></table></div></div>';
       });
 
       document.getElementById('historyList').innerHTML = html;
+      // Bind click on header to toggle .expanded
+      document.querySelectorAll('.history-day-header').forEach(h => {
+        h.addEventListener('click', () => h.parentElement.classList.toggle('expanded'));
+      });
       bindMobileTables();
     }
 
@@ -1505,6 +1886,16 @@
       if (!perf) {
         document.getElementById('perfStats').innerHTML = '<div class="empty">No performance data yet. Run outcomes ETL first.</div>';
         return;
+      }
+      // Newspaper masthead — show today's date and total picks-to-date in
+      // the edition line. Adds a faux "VOL" / "NO" framing so it reads
+      // editorially.
+      const editionEl = document.getElementById('perfEdition');
+      if (editionEl) {
+        const today = new Date();
+        const issueNum = (perf.overall?.total_picks || 0);
+        editionEl.textContent =
+          `VOL. I · NO. ${issueNum} · ${today.toLocaleDateString(undefined, {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}).toUpperCase()}`;
       }
 
       const o = perf.overall;
@@ -2597,74 +2988,160 @@
     });
     document.getElementById('boardLimit').addEventListener('change', renderBoard);
 
-    // Render: HR Recap
+    // ── Render: HR Recap (Phase 3 statbook) ──
+    // One day at a time, statbook ledger for that day's HR hitters.
+    // Date selector at top — dropdown of all days + ◀ ▶ pagination.
+    let _recapCache = null;
+    let _recapCurrentDate = null;
+
     async function renderHRRecap() {
-      const data = await fetchJSON('hr_recap');
+      if (!_recapCache) {
+        _recapCache = await fetchJSON('hr_recap');
+      }
+      const data = _recapCache;
       if (!data || !data.recap || data.recap.length === 0) {
         document.getElementById('hrRecapList').innerHTML = '<div class="empty">No HR recap data yet.</div>';
         return;
       }
       const recap = data.recap;
+      // Aggregate stat strip across all days (unchanged)
       const totalDays = recap.length;
       const totalHRs = recap.reduce((s, d) => s + d.hitters.length, 0);
       const totalPicked = recap.reduce((s, d) => s + d.summary.we_picked, 0);
       const captureRate = totalHRs > 0 ? (totalPicked / totalHRs * 100).toFixed(1) : '0';
       document.getElementById('hrRecapStats').innerHTML = `
-        <div class="stat-card"><div class="label">Days</div><div class="value">${totalDays}</div></div>
-        <div class="stat-card"><div class="label">HR Hitters Tracked</div><div class="value accent">${totalHRs}</div></div>
+        <div class="stat-card"><div class="label">Days Tracked</div><div class="value">${totalDays}</div></div>
+        <div class="stat-card"><div class="label">HR Hitters</div><div class="value accent">${totalHRs}</div></div>
         <div class="stat-card"><div class="label">We Picked</div><div class="value green">${totalPicked}</div></div>
         <div class="stat-card"><div class="label">Capture Rate</div><div class="value orange">${captureRate}%</div></div>
       `;
-      let html = '';
-      recap.forEach(day => {
-        const s = day.summary;
-        const dayCapture = s.total_hr_hitters > 0 ? Math.round(s.we_picked / s.total_hr_hitters * 100) : 0;
-        const bestMissed = s.best_rank_we_missed != null ? `best missed: rank #${s.best_rank_we_missed}` : 'all picked';
-        html += `<div class="day-card">
-          <div class="day-header">
-            <div class="day-date">${formatMediumDate(day.date)}</div>
-            <div class="day-result">
-              <span style="color:var(--orange)">${s.we_picked}</span>
-              <span style="color:var(--text-muted)">/</span>
-              <span>${s.total_hr_hitters}</span>
-              <span style="color:var(--text-muted);margin-left:8px;font-size:11px">${dayCapture}% — ${bestMissed}</span>
-            </div>
-          </div>
-          <table class="picks-table mobile-expandable">
-            <thead><tr>
-              <th>Player</th><th>Team</th>
-              <th class="hide-mobile">vs Pitcher</th>
-              <th>HRs</th>
-              <th class="hide-mobile">AB</th>
-              <th>Rank</th><th>Comp</th><th>Pick?</th>
-            </tr></thead><tbody>`;
-        day.hitters.forEach(h => {
-          const rank = h.rank_in_board;
-          const onBoard = rank != null;
-          const star = h.selected ? '<span style="color:var(--orange);font-weight:700">★</span>' : (onBoard ? '<span style="color:var(--text-muted)">·</span>' : '<span style="color:#444">—</span>');
-          const rowOpacity = onBoard ? '1' : '0.55';
-          const rankCell = rank != null ? `#${rank}` : '<span style="color:var(--text-muted)">off-board</span>';
-          const compCell = h.composite != null ? h.composite.toFixed(1) : '—';
-          const pid = h.batter_id;
-          html += `<tr style="opacity:${rowOpacity}" data-pid="${pid}" class="clickable-row">
-            <td style="font-weight:600">${h.batter_name || ''}</td>
-            <td>${h.team || ''}</td>
-            <td class="hide-mobile">${h.opp_pitcher || '-'}</td>
-            <td style="color:var(--green);font-weight:700">${h.hr_count}</td>
-            <td class="hide-mobile">${h.ab || 0}</td>
-            <td>${rankCell}</td>
-            <td>${compCell}</td>
-            <td>${star}</td>
-          </tr>`;
+      // Populate date selector — most recent first
+      const sel = document.getElementById('recapDateSelect');
+      if (!sel.options.length) {
+        recap.forEach(day => {
+          const opt = document.createElement('option');
+          opt.value = day.date;
+          opt.textContent = formatLongDate(day.date);
+          sel.appendChild(opt);
         });
-        html += '</tbody></table></div>';
+      }
+      // Default to most recent day if not yet set
+      if (!_recapCurrentDate) _recapCurrentDate = recap[0].date;
+      sel.value = _recapCurrentDate;
+      _renderRecapDay();
+    }
+
+    // Render a single day's statbook page
+    function _renderRecapDay() {
+      const recap = _recapCache?.recap || [];
+      const day = recap.find(d => d.date === _recapCurrentDate);
+      const list = document.getElementById('hrRecapList');
+      const summary = document.getElementById('recapDaySummary');
+      if (!day) {
+        list.innerHTML = '<div class="empty">No data for this day.</div>';
+        summary.textContent = '';
+        return;
+      }
+      const s = day.summary;
+      const dayCapture = s.total_hr_hitters > 0 ? Math.round(s.we_picked / s.total_hr_hitters * 100) : 0;
+      summary.innerHTML = `<strong style="color:var(--signal)">${s.we_picked}</strong>/<strong>${s.total_hr_hitters}</strong> HR hitters captured · <strong>${dayCapture}%</strong>` +
+        (s.best_rank_we_missed != null ? ` · best missed: <strong>#${s.best_rank_we_missed}</strong>` : '');
+
+      // Hitters split: on-board vs off-board (off-board renders separately at the bottom in muted style)
+      const onBoard = day.hitters.filter(h => h.rank_in_board != null);
+      const offBoard = day.hitters.filter(h => h.rank_in_board == null);
+
+      let html = `<div class="recap-statbook">
+        <div class="recap-page-header">
+          <div class="page-title">HR Hitters · ${formatLongDate(day.date)}</div>
+          <div class="page-subtitle">${day.hitters.length} batters went deep this day</div>
+        </div>
+        <table class="picks-table mobile-expandable" style="margin-bottom:14px">
+          <thead><tr>
+            <th>Hitter</th><th>Team</th>
+            <th class="hide-mobile">vs Pitcher</th>
+            <th>HR</th>
+            <th class="hide-mobile">Hits/AB</th>
+            <th class="hide-mobile">RBI</th>
+            <th>Our Rank</th><th>Our Comp</th><th>★</th>
+          </tr></thead><tbody>`;
+      onBoard.forEach(h => {
+        const star = h.selected
+          ? '<span style="color:var(--signal);font-weight:700;font-size:14px">★</span>'
+          : '<span style="color:var(--ink-muted)">·</span>';
+        const compCell = h.composite != null ? h.composite.toFixed(1) : '—';
+        const ab = h.ab || 0;
+        const hits = h.hits || 0;
+        const hitsAb = ab > 0 ? `${hits}/${ab}` : '—';
+        const rbi = h.rbi || 0;
+        html += `<tr data-pid="${h.batter_id}" class="clickable-row">
+          <td style="font-weight:600" class="player-link">${h.batter_name || ''}</td>
+          <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${h.team || ''}</td>
+          <td class="hide-mobile" style="font-style:italic;color:var(--ink-soft);font-size:12px">${h.opp_pitcher || '—'}</td>
+          <td style="color:var(--signal);font-weight:700">${h.hr_count}⚾</td>
+          <td class="hide-mobile" style="font-family:'JetBrains Mono',monospace">${hitsAb}</td>
+          <td class="hide-mobile" style="font-family:'JetBrains Mono',monospace">${rbi}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600">#${h.rank_in_board}</td>
+          <td style="font-family:'JetBrains Mono',monospace">${compCell}</td>
+          <td>${star}</td>
+        </tr>`;
       });
-      document.getElementById('hrRecapList').innerHTML = html;
+      html += '</tbody></table>';
+
+      if (offBoard.length > 0) {
+        html += `<div class="recap-offboard-section">
+          <div class="recap-offboard-title">Off-board HRs · ${offBoard.length}
+            <span class="muted">(model didn't see these)</span>
+          </div>
+          <ul class="recap-offboard-list">`;
+        offBoard.forEach(h => {
+          html += `<li>
+            <strong>${h.batter_name || ''}</strong>
+            <span class="muted">${h.team || ''}</span>
+            ${h.hr_count > 1 ? ` · ${h.hr_count} HR` : ''}
+            ${h.opp_pitcher ? ` · vs. ${h.opp_pitcher}` : ''}
+          </li>`;
+        });
+        html += '</ul></div>';
+      }
+      html += '</div>';
+
+      list.innerHTML = html;
       bindPlayerClicks();
       bindMobileTables();
     }
 
+    // Date selector + nav handlers
+    document.getElementById('recapDateSelect').addEventListener('change', (e) => {
+      _recapCurrentDate = e.target.value;
+      _renderRecapDay();
+    });
+    document.getElementById('recapPrev').addEventListener('click', () => {
+      const recap = _recapCache?.recap || [];
+      const idx = recap.findIndex(d => d.date === _recapCurrentDate);
+      // recap is most-recent-first, so "prev day" = idx + 1
+      if (idx >= 0 && idx < recap.length - 1) {
+        _recapCurrentDate = recap[idx + 1].date;
+        document.getElementById('recapDateSelect').value = _recapCurrentDate;
+        _renderRecapDay();
+      }
+    });
+    document.getElementById('recapNext').addEventListener('click', () => {
+      const recap = _recapCache?.recap || [];
+      const idx = recap.findIndex(d => d.date === _recapCurrentDate);
+      if (idx > 0) {
+        _recapCurrentDate = recap[idx - 1].date;
+        document.getElementById('recapDateSelect').value = _recapCurrentDate;
+        _renderRecapDay();
+      }
+    });
+
     // ── Render: Hitters Leaderboard ──
+    // ── Render: Hitters Scoreboard (Phase 4) ──
+    // Stadium-scoreboard cross-tab: rows = top HR hitters, columns = days
+    // (treated as "innings"). Cells use ⚾ glyph for HRs with our daily
+    // rank as a superscript, dot for on-board not picked, blank for
+    // off-board. Reads like the line score on a manual scoreboard.
     async function renderHitters() {
       const data = await fetchJSON('hr_leaderboard');
       if (!data || !data.rows || data.rows.length === 0) {
@@ -2684,29 +3161,60 @@
         <div class="stat-card"><div class="label">We Caught</div><div class="value green">${picked}</div></div>
       `;
 
-      let html = '<div style="overflow-x:auto"><table class="hitters-table"><thead><tr>';
-      html += '<th class="player-col">Batter</th><th>Total</th>';
-      days.forEach(d => { html += `<th>${d.slice(5)}</th>`; });
+      let html = `<div class="hitters-scoreboard">
+        <div class="hitters-scoreboard-head">
+          <div class="title">Hot Sheet · Last ${window} Days</div>
+          <div class="legend">
+            <span class="lg-item"><span class="lg-baseball lg-picked">⚾</span> picked &amp; HR'd</span>
+            <span class="lg-item"><span class="lg-baseball lg-onboard">⚾</span> on board, missed</span>
+            <span class="lg-item"><span class="lg-dot">·</span> on board, no HR</span>
+          </div>
+        </div>
+        <div class="hitters-scoreboard-body">
+          <table class="hitters-innings-table"><thead><tr>
+            <th class="col-batter">Batter</th>
+            <th class="col-total">HR</th>`;
+      days.forEach(d => {
+        const dayObj = new Date(d);
+        const dayLabel = dayObj.toLocaleDateString(undefined, { weekday: 'narrow' }) + ' ' + (dayObj.getMonth() + 1) + '/' + dayObj.getDate();
+        html += `<th class="col-day">${dayLabel}</th>`;
+      });
       html += '</tr></thead><tbody>';
 
       rows.forEach(r => {
         const pid = r.batter_id;
         html += `<tr data-pid="${pid}" class="clickable-row">`;
-        html += `<td class="player-col" style="font-weight:600">${r.batter_name} <span style="color:var(--text-muted);font-weight:400">${r.team || ''}</span></td>`;
-        html += `<td style="font-weight:700;color:var(--orange)">${r.total_hr}</td>`;
+        html += `<td class="col-batter" style="font-weight:600">
+          <span class="player-link">${r.batter_name}</span>
+          <span class="batter-team">${r.team || ''}</span>
+        </td>`;
+        html += `<td class="col-total"><span class="hr-total">${r.total_hr}</span></td>`;
         days.forEach(d => {
           const c = r.by_date[d];
           if (!c) {
-            html += '<td></td>';
+            html += '<td class="col-day cell-blank"></td>';
+          } else if (c.selected) {
+            // Picked AND HR'd — gold baseball with rank
+            html += `<td class="col-day cell-picked">
+              <span class="baseball" title="Picked at #${c.rank ?? '?'} · ${c.hr_count} HR">⚾</span>
+              <span class="rank">#${c.rank ?? '?'}</span>
+            </td>`;
+          } else if (c.rank != null) {
+            // On board but missed — muted baseball
+            html += `<td class="col-day cell-onboard">
+              <span class="baseball" title="On board at #${c.rank} · ${c.hr_count} HR · we missed">⚾</span>
+              <span class="rank">#${c.rank}</span>
+            </td>`;
           } else {
-            const cls = c.selected ? 'cell-picked' : (c.rank != null ? 'cell-onboard' : 'cell-offboard');
-            const inner = c.rank != null ? `X (#${c.rank})` : 'X';
-            html += `<td class="${cls}">${inner}</td>`;
+            // HR'd but wasn't on our board at all
+            html += `<td class="col-day cell-offboard">
+              <span class="baseball" title="${c.hr_count} HR · off our board">⚾</span>
+            </td>`;
           }
         });
         html += '</tr>';
       });
-      html += '</tbody></table></div>';
+      html += '</tbody></table></div></div>';
       document.getElementById('hittersTable').innerHTML = html;
       bindPlayerClicks();
     }
@@ -2868,10 +3376,15 @@
     // who lands in today's top-25 composites. Each batter is itself
     // clickable → opens the player modal (chained navigation).
     function openGameModal(gpk) {
-      if (!gpk || !_picksLatestCache) return;
-      const game = (_picksLatestCache.slate_games || []).find(g => g.game_pk === gpk);
+      if (!gpk) return;
+      // Use whichever cache is populated. _boardCache is set by renderBoard
+      // (the first cache to load on the Big Board tab). _picksLatestCache
+      // is set later by openPlayerModal. Either is the same JSON payload.
+      const cache = _boardCache || _picksLatestCache;
+      if (!cache) return;
+      const game = (cache.slate_games || []).find(g => g.game_pk === gpk);
       if (!game) return;
-      const board = _picksLatestCache.full_board || [];
+      const board = cache.full_board || [];
       // Top-25 batters from this game, sorted by composite
       const top25Cutoff = board.slice().sort((a, b) => (b.composite || 0) - (a.composite || 0))[24]?.composite || 0;
       const inGame = board

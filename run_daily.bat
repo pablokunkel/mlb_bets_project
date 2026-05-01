@@ -6,7 +6,10 @@ REM   1. Morning ETL    -> daily_slate, daily_lineup, weather
 REM   2. Generate picks -> results/picks_<DATE>.json
 REM   3. Load to DB     -> daily_picks rows for the date
 REM   4. Export site    -> mlb_hr_bet_site/data/*.json
-REM   5. Netlify deploy -> live site
+REM   5. Git push       -> Cloudflare Pages auto-deploys from main
+REM
+REM  Migrated from Netlify to Cloudflare Pages 2026-05-01.
+REM  Repo: https://github.com/pablokunkel/mlb_bets_project
 REM
 REM  Logs to logs/daily_YYYY-MM-DD.log. Step markers also echo to console.
 REM  Live-tail in another window:
@@ -84,12 +87,14 @@ if errorlevel 1 (
 echo       OK
 
 echo.
-echo  [5/5] Deploying to Netlify...                 ^(~30s^)
-echo  [5/5] Deploying to Netlify... >> "%LOGFILE%" 2>&1
-netlify deploy --prod --dir=mlb_hr_bet_site --site=0fade6bd-ae06-43a8-aaef-22ee692ecbba >> "%LOGFILE%" 2>&1
+echo  [5/5] Pushing to GitHub (Cloudflare auto-deploys)... ^(~10s^)
+echo  [5/5] Pushing to GitHub... >> "%LOGFILE%" 2>&1
+git add mlb_hr_bet_site/data/*.json mlb_hr_bet_site/index.html >> "%LOGFILE%" 2>&1
+git commit -m "Daily update %TODAY%" --allow-empty >> "%LOGFILE%" 2>&1
+git push origin main >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo       ERROR -- see %LOGFILE%
-    echo  ERROR: Netlify deploy failed! >> "%LOGFILE%" 2>&1
+    echo  ERROR: Git push failed! >> "%LOGFILE%" 2>&1
     exit /b 1
 )
 echo       OK
@@ -97,7 +102,7 @@ echo       OK
 echo.
 echo ========================================
 echo  DONE -- %time%
-echo  https://mlb-hr-bets.netlify.app/
+echo  Site updates auto-deploy via Cloudflare Pages
 echo ========================================
 (
     echo  DONE -- %date% %time%

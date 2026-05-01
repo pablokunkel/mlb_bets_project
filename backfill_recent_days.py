@@ -16,7 +16,7 @@ For each date in the requested range, this script:
 
 After this runs, the user still needs to run:
     python export_site_data.py
-    netlify deploy --prod --dir=mlb_hr_bet_site --site=0fade6bd-ae06-43a8-aaef-22ee692ecbba
+    git add mlb_hr_bet_site/data/*.json && git commit -m "Backfill" && git push origin main
 
 Usage:
     python backfill_recent_days.py --start 2026-04-16 --end 2026-04-28
@@ -162,11 +162,10 @@ def main():
             print("  Some dates failed — re-run individually if needed:")
             print(f"    python -m etl.etl_outcomes --date YYYY-MM-DD")
 
-    # Reminder
+    # Reminder — Cloudflare Pages auto-deploys on push to main
     print("\nNext steps (run from project dir):")
     print("  python export_site_data.py")
-    site_id = "0fade6bd-ae06-43a8-aaef-22ee692ecbba"
-    print(f"  netlify deploy --prod --dir=mlb_hr_bet_site --site={site_id}")
+    print("  git add mlb_hr_bet_site/data/*.json && git commit -m 'Backfill update' && git push origin main")
 
 
 if __name__ == "__main__":
