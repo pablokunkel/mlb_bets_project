@@ -124,15 +124,27 @@ def fetch_outcomes_for_date(conn, date_str: str) -> int:
                 hr_count = batting.get("homeRuns", 0)
                 hits = batting.get("hits", 0)
                 rbi = batting.get("rbi", 0)
+                doubles = batting.get("doubles", 0)
+                triples = batting.get("triples", 0)
+                # Total bases: derive from singles + 2*2B + 3*3B + 4*HR.
+                # MLB Stats API also returns totalBases directly; prefer it
+                # when present, otherwise derive.
+                total_bases = batting.get("totalBases")
+                if total_bases is None:
+                    singles = max(0, hits - doubles - triples - hr_count)
+                    total_bases = singles + 2 * doubles + 3 * triples + 4 * hr_count
 
                 try:
                     conn.execute("""
                         INSERT OR REPLACE INTO outcomes
-                        (date, batter_id, batter_name, game_pk, ab, hits, hr_count, rbi)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (date, batter_id, batter_name, game_pk,
+                         ab, hits, hr_count, rbi,
+                         doubles, triples, total_bases)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         date_str, pid, person.get("fullName", ""),
                         gpk, ab, hits, hr_count, rbi,
+                        doubles, triples, total_bases,
                     ))
                     inserted += 1
                 except Exception:
@@ -322,21 +334,76 @@ def run_outcomes(date_str: str, backfill: bool = False, report: bool = False):
             log_etl_fail(conn, log_id, str(e))
             print(f"  FAILED: {e}")
 
+        print(f"  FAILED: {e}")
+
     if report:
         print_performance_report(conn)
 
     conn.close()
 
 
+def run_outcomes_range(from_date, to_date, force=False):
+    """
+    Loop fetch_outcomes_for_date over an inclusive date range. Idempotent
+    via INSERT OR REPLACE. Use to backfill league-wide outcomes (the
+    historical raw_data backfill only loaded board batters, not full slate).
+    """
+    conn = get_db()
+    create_tables(conn)
+
+    s = datetime.strptime(from_date, "%Y-%m-%d")
+    e = datetime.strptime(to_date, "%Y-%m-%d")
+    if e < s:
+        print(f"  ERROR: to-date {to_date} is before from-date {from_date}")
+        conn.close()
+        return
+
+    print("=" * 60)
+    print(f"  OUTCOME RANGE ETL: {from_date} -> {to_date}")
+    print("=" * 60)
+
+    cur = s
+    grand_total = 0
+    while cur <= e:
+        d = cur.strftime("%Y-%m-%d")
+        print(f"\n  [{d}]")
+        log_id = log_etl_start(conn, "outcomes", d)
+        try:
+            n = fetch_outcomes_for_date(conn, d)
+            log_etl_complete(conn, log_id, rows=n, detail=f"{n} player outcomes")
+            grand_total += n
+            print(f"    {n} player outcomes recorded")
+        except Exception as ex:
+            log_etl_fail(conn, log_id, str(ex))
+            print(f"    FAILED: {ex}")
+        cur += timedelta(days=1)
+
+    print(f"\n  Range complete: {grand_total} total player-game outcome rows")
+    conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Outcome tracking for HR Bets")
-    parser.add_argument("--date", default=None, help="Date (YYYY-MM-DD)")
+    parser.add_argument("--date", default=None, help="Single date (YYYY-MM-DD)")
+    parser.add_argument("--from-date", dest="from_date", default=None,
+                        help="Start of date range (YYYY-MM-DD); requires --to-date")
+    parser.add_argument("--to-date", dest="to_date", default=None,
+                        help="End of date range (YYYY-MM-DD, inclusive)")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-fetch even if outcomes already exist (idempotent via INSERT OR REPLACE)")
     parser.add_argument("--backfill", action="store_true", help="Backfill all missing outcome dates")
     parser.add_argument("--report", action="store_true", help="Print performance report")
     args = parser.parse_args()
 
+    if args.from_date and args.to_date:
+        run_outcomes_range(args.from_date, args.to_date, force=args.force)
+        if args.report:
+            conn = get_db()
+            print_performance_report(conn)
+            conn.close()
+        return
+
     if not args.date and not args.backfill and not args.report:
-        # Default: yesterday
         args.date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     run_outcomes(args.date, backfill=args.backfill, report=args.report)

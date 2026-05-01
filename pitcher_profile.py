@@ -533,19 +533,36 @@ def archetype_similarity(victim_profile: dict, pitcher_profile: dict) -> float:
 # Pitcher vulnerability scoring
 # ---------------------------------------------------------------------------
 
-def score_pitcher_vulnerability(pitcher_stats: dict) -> float:
+def score_pitcher_vulnerability(
+    pitcher_stats: dict,
+    slate_ctx: dict | None = None,
+) -> float:
     """
     Score how vulnerable a pitcher is to giving up HRs (0-100).
     Higher = more vulnerable = better for batter.
 
-    Uses the same stats already available in generate_picks.py's
-    pitcher dict (hr_per_9, era, hard_hit_pct_allowed, k_per_9).
+    With slate_ctx active, returns the within-slate percentile rank for
+    this pitcher's name — which fixes the HR/9 cap problem where the 5
+    worst HR-allowing pitchers all clustered at score ≈ 70.
+
+    Without slate_ctx, falls back to fixed-anchor scaling (HR/9 cap
+    raised from 3.0 to 4.5 so 4+ HR/9 outliers can still distinguish
+    themselves).
     """
+    pname = pitcher_stats.get("name", "")
+    if (
+        slate_ctx
+        and slate_ctx.get("active")
+        and pname in slate_ctx.get("pitcher_pct", {})
+    ):
+        return slate_ctx["pitcher_pct"][pname]
+
     scores = []
 
-    # HR/9: 0-3.0 → 0-100 (higher = more vulnerable)
+    # HR/9: 0-4.5 → 0-100 (higher = more vulnerable). Raised cap from 3.0
+    # so 4+ HR/9 outliers can rank above merely-bad pitchers.
     hr9 = pitcher_stats.get("hr_per_9", 1.2)
-    scores.append(max(0, min(100, (hr9 / 3.0) * 100)))
+    scores.append(max(0, min(100, (hr9 / 4.5) * 100)))
 
     # ERA: 2.0-6.0 → 0-100
     era = pitcher_stats.get("era", 4.0)
@@ -581,18 +598,25 @@ def score_matchup_v2(
     pitcher_profile: dict | None,
     vulnerability_weight: float = 0.50,
     similarity_weight: float = 0.50,
+    slate_ctx: dict | None = None,
+    batter_team: str | None = None,
 ) -> float:
     """
-    Two-signal matchup score replacing score_matchup() in score_batters.py.
+    Three-signal matchup score (when slate_ctx + Vegas data present).
 
-    Signal 1: Pitcher vulnerability (is the pitcher generally hittable?)
-    Signal 2: Archetype similarity (does the pitcher match this batter's
-              victim profile?)
+    Signal 1: Pitcher vulnerability (slate-rank-aware HR/9 + ERA + HH% + FB% allowed)
+    Signal 2: Archetype similarity (victim profile vs today's pitcher)
+    Signal 3: Vegas implied team total percentile (game environment) —
+              only added when slate_ctx has team_total_pct AND batter_team given.
+
+    Handedness is captured inside archetype similarity (weight 0.20), so the
+    +5 platoon bonus that used to live here was a double-count and has been
+    removed. Reverse-platoon signal still flows via similarity weighting.
 
     Returns 0-100.
     """
-    # Signal 1: Pitcher vulnerability
-    vulnerability = score_pitcher_vulnerability(pitcher_stats)
+    # Signal 1: Pitcher vulnerability — slate-rank-aware (now includes FB%)
+    vulnerability = score_pitcher_vulnerability(pitcher_stats, slate_ctx=slate_ctx)
 
     # Signal 2: Archetype similarity
     if victim_profile and pitcher_profile:
@@ -601,19 +625,45 @@ def score_matchup_v2(
         # No profile data — fall back to neutral
         similarity = 50.0
 
-    # Blend
-    raw = vulnerability_weight * vulnerability + similarity_weight * similarity
+    # Signal 3 (optional): Vegas implied team total percentile
+    team_total_pct = None
+    if (
+        slate_ctx
+        and batter_team
+        and slate_ctx.get("team_total_pct")
+        and batter_team in slate_ctx["team_total_pct"]
+    ):
+        team_total_pct = slate_ctx["team_total_pct"][batter_team]
 
-    # Platoon bonus (kept from v1 — still a meaningful independent signal)
-    batter_hand = batter.get("bats", "R")
-    pitcher_hand = pitcher_stats.get("throws", pitcher_profile.get("p_throws", "R") if pitcher_profile else "R")
-    if batter_hand != pitcher_hand:
-        raw = min(100, raw + 5)  # reduced from v1's +10 since handedness is now in similarity
+    # Signal 4 (added 2026-04-30): Batter wOBA vs. pitcher handedness
+    # The 2026-04-30 input calibration found woba_vs_hand had 4.5x HR-rate
+    # signal across quintiles (3.8% -> 17.1%) but score_matchup_v2 wasn't
+    # using it — only v1 did. Adding it here as a fourth blended signal.
+    # Anchors 0.280-0.420 match the v1 curve fix (covers the 20th-80th
+    # empirical percentile of the active data distribution).
+    woba_raw = batter.get("woba_vs_hand", batter.get("woba"))
+    woba_score = None
+    if woba_raw is not None and woba_raw > 0:
+        woba_score = max(0.0, min(100.0, (woba_raw - 0.280) / (0.420 - 0.280) * 100.0))
+
+    # Blend — variable arity based on which optional signals are available.
+    # vulnerability + similarity always present (fall back to neutral 50 if
+    # data missing). team_total_pct and woba_score are added when available.
+    signals = [vulnerability, similarity]
+    if team_total_pct is not None:
+        signals.append(team_total_pct)
+    if woba_score is not None:
+        signals.append(woba_score)
+    raw = sum(signals) / len(signals)
+
 
     # Elite-pitcher dampening
-    # Even if archetype matches perfectly, we don't want to bet against aces
+    # Even if archetype matches perfectly, we don't want to bet against aces.
+    # NOTE: when slate_ctx is active, vulnerability is a percentile rank, so
+    # "elite" thresholds map to the bottom of today's slate (rank < 25 = the
+    # day's least-vulnerable starters).
     if vulnerability < 25:
-        raw = raw * 0.70   # 30% penalty for elite pitchers
+        raw = raw * 0.70   # 30% penalty for elite/least-vulnerable pitchers
     elif vulnerability < 40:
         raw = raw * 0.85   # 15% penalty for good pitchers
 
@@ -682,7 +732,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.batter_id:
-        print(f"\nBuilding victim profile for batter {args.batter_id}...")
         vp = build_victim_profile(args.batter_id, args.season)
         print(json.dumps(vp, indent=2))
 

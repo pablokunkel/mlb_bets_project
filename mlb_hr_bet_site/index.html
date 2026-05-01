@@ -4,106 +4,255 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>HR Parlay Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&family=VT323&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
     :root {
-      --bg: #0d1117;
-      --surface: #161b22;
-      --surface-2: #1c2129;
-      --border: #30363d;
-      --text: #e6edf3;
-      --text-muted: #8b949e;
-      --accent: #58a6ff;
-      --green: #3fb950;
-      --red: #f85149;
-      --orange: #d29922;
-      --purple: #bc8cff;
+      /* 2026-04-30 baseball aesthetic — cream/clay paper base with a
+         dark navy "scoreboard" panel system on top. Replaces the
+         earlier violet/glassmorphism direction. Phase 1 of multi-tab
+         redesign; later phases (statbook, scorebook, newspaper) will
+         layer in tab-specific treatments using the same palette.
+
+         Signature accent is --signal (vintage red used sparingly for
+         HRs and active states). Body type is Inter throughout. VT323
+         scoreboard font is used ONLY for big composite numbers in the
+         Today's Picks scoreboard — sparingly, as the visual punctuation. */
+      --bg:           #efe3cc;       /* baseball clay base */
+      --bg-2:         #e3d3b3;       /* gradient endpoint */
+      --bg-deep:      #d8c094;
+      --paper:        #f6efde;       /* statbook paper */
+      --paper-2:      #ede2c6;
+      --surface:      #fbf6e9;       /* card / panel surface */
+      --surface-solid:#fbf6e9;       /* legacy alias */
+      --surface-2:    #f3ead2;
+      --surface-elevated: #fdfaf0;
+      --border:       #b8a784;       /* statbook ledger ruling */
+      --border-strong:#8c7a52;
+      --rule:         #b8a784;       /* alias used by some selectors */
+      --rule-soft:    #d3c39d;
+      --text:         #1a1f24;       /* ink */
+      --ink:          #1a1f24;       /* alias */
+      --text-muted:   #8a8470;
+      --ink-soft:     #4a5258;
+      --ink-muted:    #8a8470;
+      --accent:       #b9472d;       /* vintage signal red — HR / hot */
+      --accent-glow:  rgba(185, 71, 45, 0.30);
+      --accent-soft:  #d65a3a;
+      --signal:       #b9472d;       /* accent alias */
+      --clay:         #c46a3a;       /* infield clay */
+      --clay-deep:    #8c4419;
+      --grass:        #3f6a3a;       /* outfield green */
+      --grass-deep:   #2a4a26;
+      --chalk:        #fbfbfa;
+      --navy:         #1d2d4f;       /* scoreboard panel base */
+      --navy-deep:    #0f1a30;
+      --scoreboard-bg:#152340;       /* scoreboard panel background */
+      --scoreboard-amber: #e8c66a;   /* incandescent scoreboard digit */
+      --scoreboard-line: #2a3a5e;
+      --green:        #3f6a3a;       /* hits — outfield green */
+      --red:          #b9472d;       /* misses — signal red */
+      --orange:       #c46a3a;       /* warnings — clay */
+      --purple:       #8c7a52;       /* secondary muted — desaturated */
+      --bg-card:      var(--surface);  /* legacy alias */
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { min-height: 100%; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-      background: var(--bg);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
       color: var(--text);
+      background: var(--bg);
+      font-size: 14px;
       line-height: 1.5;
+      font-feature-settings: 'tnum', 'cv11';
+      -webkit-font-smoothing: antialiased;
+      position: relative;
+      min-height: 100vh;
     }
-    .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    /* Clay + chalk page background: clay gradient, faint chalk wash near top,
+       warm clay glow at the bottom corners. Mimics looking down at a sun-lit
+       infield from the upper-deck. */
+    body::before {
+      content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background:
+        radial-gradient(80% 50% at 50% -10%, rgba(255, 253, 247, 0.55), transparent 65%),
+        radial-gradient(60% 40% at 0% 110%, rgba(140, 68, 25, 0.18), transparent 65%),
+        radial-gradient(60% 40% at 100% 110%, rgba(196, 106, 58, 0.16), transparent 65%),
+        linear-gradient(180deg, #f1e6cf 0%, #e6d4b3 60%, #d8c094 100%);
+    }
+    /* Dirt grain — subtle multiplicative texture. Pure CSS, no images. */
+    body::after {
+      content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: 0.32;
+      background-image:
+        radial-gradient(rgba(120, 85, 40, 0.22) 0.6px, transparent 1.2px),
+        radial-gradient(rgba(80,  55, 25, 0.18) 0.5px, transparent 1px);
+      background-size: 4px 4px, 7px 7px;
+      background-position: 0 0, 2px 3px;
+      mix-blend-mode: multiply;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 28px 32px 80px; position: relative; z-index: 1; }
 
-    /* Header */
+    /* Header — clean baseball nameplate with a chalk-line underline */
     header {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 20px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+      padding-bottom: 14px; margin-bottom: 22px;
+      position: relative;
     }
-    header h1 { font-size: 22px; font-weight: 700; }
-    header h1 span { color: var(--accent); }
+    header::after {
+      /* irregular chalk line underneath the header */
+      content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+      background: linear-gradient(90deg,
+        transparent 0%, rgba(255, 255, 255, 0.95) 5%,
+        rgba(255, 255, 255, 0.98) 95%, transparent 100%);
+      filter: blur(0.5px);
+      box-shadow: 0 1px 0 rgba(80, 55, 25, 0.06);
+    }
+    header h1 {
+      font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+    header h1 span {
+      color: var(--signal);   /* the "HR" sits in vintage signal red */
+    }
     .date-badge {
-      background: var(--surface); border: 1px solid var(--border);
-      padding: 6px 14px; border-radius: 20px; font-size: 13px; color: var(--text-muted);
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      padding: 6px 14px; border-radius: 999px;
+      font-size: 12px; color: var(--ink-soft);
+      font-family: 'JetBrains Mono', monospace;
+      font-feature-settings: 'tnum';
+      letter-spacing: 0.02em;
     }
 
-    /* Nav tabs */
+    /* Nav tabs — chalk-underline on active (no pill background) */
     .tabs {
-      display: flex; gap: 4px; margin-bottom: 24px;
-      border-bottom: 1px solid var(--border); padding-bottom: 0;
+      display: flex; gap: 2px; margin-bottom: 22px;
+      border-bottom: 1px solid var(--rule);
+      flex-wrap: wrap;
+      background: transparent;
+      padding: 0;
+      border-radius: 0;
     }
     .tab {
-      padding: 10px 18px; cursor: pointer; font-size: 14px; font-weight: 500;
-      color: var(--text-muted); border-bottom: 2px solid transparent;
-      transition: all 0.15s;
+      padding: 10px 14px; cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px; font-weight: 500;
+      color: var(--ink-soft);
+      border: none; background: none; border-radius: 0;
+      position: relative;
+      transition: color 0.12s ease;
     }
-    .tab:hover { color: var(--text); }
-    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab:hover { color: var(--ink); background: none; }
+    .tab.active {
+      color: var(--ink); background: none; box-shadow: none;
+    }
+    .tab.active::after {
+      content: ''; position: absolute; left: 6px; right: 6px; bottom: -2px; height: 4px;
+      background: linear-gradient(90deg,
+        transparent 0%, rgba(255, 255, 255, 0.95) 8%,
+        rgba(255, 255, 255, 0.98) 92%, transparent 100%);
+      filter: blur(0.5px);
+      border-radius: 2px;
+    }
 
     /* Panels */
     .panel { display: none; }
     .panel.active { display: block; }
 
-    /* Stat cards */
-    .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
-    .stat-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 16px;
+    /* Stat cards — joined as a "stat strip" like a statbook header band:
+       single cream bordered panel, ledger-ruled rows separated by vertical rules.
+       (Individual .stat-card still works for places that need standalone cards.) */
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0;
+      margin-bottom: 22px;
+      overflow: hidden;
+      background:
+        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.15) 27px 28px),
+        var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      box-shadow: 0 8px 22px -12px rgba(80, 55, 25, 0.18);
     }
-    .stat-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-    .stat-card .value.green { color: var(--green); }
-    .stat-card .value.accent { color: var(--accent); }
-    .stat-card .value.orange { color: var(--orange); }
+    .stat-card {
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--rule);
+      border-radius: 0;
+      padding: 14px 18px;
+      position: relative; overflow: visible;
+    }
+    .stat-card::before { display: none; }   /* drop gradient overlay from previous design */
+    .stat-card:last-child { border-right: none; }
+    .stat-card:hover { transform: none; }
+    .stat-card .label {
+      font-size: 10px; color: var(--ink-muted);
+      text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .stat-card .value {
+      font-family: 'Inter', sans-serif;
+      font-size: 26px; font-weight: 700;
+      letter-spacing: -0.02em; line-height: 1;
+      color: var(--ink);
+      margin-top: 0;
+      font-feature-settings: 'tnum';
+    }
+    .stat-card .value.green { color: var(--grass-deep); background: none; -webkit-background-clip: unset; }
+    .stat-card .value.accent { color: var(--signal); background: none; -webkit-background-clip: unset; }
+    .stat-card .value.orange { color: var(--clay-deep); background: none; -webkit-background-clip: unset; }
 
-    /* Picks table */
+    /* Picks table — cream paper ledger with ruled rows. Used by Big Board,
+       History per-day, HR Recap per-day. Today's Picks gets its own
+       scoreboard treatment instead. */
     .picks-table {
       width: 100%; border-collapse: collapse;
-      background: var(--surface); border-radius: 10px; overflow: hidden;
-      border: 1px solid var(--border);
+      background:
+        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.18) 27px 28px),
+        var(--paper);
+      border-radius: 4px; overflow: hidden;
+      border: 1px solid var(--rule);
+      box-shadow: 0 8px 22px -12px rgba(80, 55, 25, 0.18);
     }
     .picks-table th {
-      text-align: left; padding: 10px 12px; font-size: 11px;
-      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;
-      border-bottom: 1px solid var(--border); background: var(--surface-2);
+      text-align: left; padding: 12px 14px; font-size: 10px;
+      color: var(--ink); text-transform: uppercase; letter-spacing: 0.1em;
+      border-bottom: 2px solid var(--ink);
+      background: var(--paper-2);
+      font-weight: 600;
     }
     .picks-table td {
-      padding: 10px 12px; font-size: 13px;
-      border-bottom: 1px solid var(--border);
+      padding: 11px 14px; font-size: 13px;
+      border-bottom: 1px solid var(--rule);
+      color: var(--ink);
+      font-feature-settings: 'tnum';
     }
     .picks-table tr:last-child td { border-bottom: none; }
-    .picks-table tr:hover td { background: var(--surface-2); }
+    .picks-table tbody tr:nth-child(odd) td { background: rgba(255, 250, 232, 0.35); }
+    .picks-table tbody tr { transition: background 0.12s ease; }
+    .picks-table tbody tr:hover td { background: rgba(196, 106, 58, 0.08); }
 
     .badge {
-      display: inline-block; padding: 2px 8px; border-radius: 10px;
-      font-size: 11px; font-weight: 600;
+      display: inline-block; padding: 3px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
     }
-    .badge-t1 { background: rgba(59,130,246,0.15); color: #60a5fa; }
-    .badge-t2 { background: rgba(168,85,247,0.15); color: var(--purple); }
-    .badge-t3 { background: rgba(249,115,22,0.15); color: var(--orange); }
-    .badge-hit { background: rgba(63,185,80,0.15); color: var(--green); }
-    .badge-miss { background: rgba(248,81,73,0.15); color: var(--red); }
-    .badge-pending { background: rgba(139,148,158,0.15); color: var(--text-muted); }
+    .badge-t1 { background: rgba(139, 92, 246, 0.18); color: var(--accent-soft); border: 1px solid rgba(139, 92, 246, 0.3); }
+    .badge-t2 { background: rgba(196, 181, 253, 0.12); color: var(--purple); border: 1px solid rgba(196, 181, 253, 0.25); }
+    .badge-t3 { background: rgba(251, 146, 60, 0.12); color: var(--orange); border: 1px solid rgba(251, 146, 60, 0.25); }
+    .badge-hit { background: rgba(52, 211, 153, 0.15); color: var(--green); border: 1px solid rgba(52, 211, 153, 0.3); }
+    .badge-miss { background: rgba(248, 113, 113, 0.12); color: var(--red); border: 1px solid rgba(248, 113, 113, 0.25); }
+    .badge-pending { background: rgba(155, 150, 184, 0.12); color: var(--text-muted); border: 1px solid var(--border); }
 
     .bar-cell { position: relative; }
     .score-bar {
       position: absolute; left: 0; top: 0; bottom: 0;
-      background: rgba(88,166,255,0.1); border-radius: 0 4px 4px 0;
+      background: linear-gradient(90deg, rgba(139, 92, 246, 0.10), rgba(167, 139, 250, 0.18));
+      border-radius: 0 6px 6px 0;
     }
-    .score-val { position: relative; z-index: 1; font-weight: 600; }
+    .score-val { position: relative; z-index: 1; font-weight: 600; font-feature-settings: 'tnum'; }
 
     /* Factor breakdown bars */
     .factor-bars { display: flex; gap: 3px; align-items: center; }
@@ -139,24 +288,600 @@
     .factor-legend .l-weather::before { background: #eab308; }
     .factor-legend .l-lineup::before { background: #ec4899; }
 
-    /* History section */
-    .day-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 16px; margin-bottom: 12px;
+
+    /* Headshots on Today's Picks */
+    .headshot {
+      width: 40px; height: 40px; border-radius: 50%;
+      object-fit: cover; background: var(--surface-2);
+      border: 1px solid var(--border);
+      display: block;
     }
-    .day-header {
-      display: flex; justify-content: space-between; align-items: center;
+
+    /* Clickable player rows */
+    .clickable-row { cursor: pointer; }
+    .clickable-row:hover td { background: var(--surface-2); }
+    .player-link { color: var(--accent); text-decoration: underline dotted; }
+
+    /* ──────────────────────────────────────────────────────────
+       SCOREBOARD — Today's Picks treatment (Phase 1, v2 outfield green)
+       Vintage hand-operated outfield scoreboard aesthetic. Hunter green
+       panel with recessed cream cells holding dark ink digits — the
+       Wrigley/Fenway manual scoreboard look. Rank + composite score get
+       the inset-cell treatment; everything else sits on the green panel.
+       Click a row → opens the Topps-style baseball-card modal.
+       Palette used inline (hex literals): #2a4a26 panel, #1d3519 shadow,
+       #f4ecd8 cream cells, #1a1f24 ink digits, #c8a868 brass trim.
+       ────────────────────────────────────────────────────────── */
+    .scoreboard {
+      background:
+        radial-gradient(120% 60% at 50% 0%, rgba(63, 106, 58, 0.25), transparent 70%),
+        linear-gradient(180deg, #2a4a26 0%, #1d3519 100%);
+      border: 1px solid #1a2f17;
+      border-radius: 6px;
+      padding: 14px;
+      overflow: hidden;
+      position: relative;
+      /* Brass trim around the panel + soft outer shadow */
+      box-shadow:
+        0 0 0 2px #2a4a26,
+        0 0 0 3px #c8a868,
+        0 0 0 4px #8c7637,
+        0 1px 0 rgba(255, 255, 255, 0.10) inset,
+        0 18px 40px -18px rgba(20, 35, 18, 0.6),
+        0 4px 10px -4px rgba(0, 0, 0, 0.3);
+      margin-bottom: 22px;
+    }
+    /* Subtle painted-metal texture */
+    .scoreboard::before {
+      content: ''; position: absolute; inset: 0; pointer-events: none;
+      background-image:
+        radial-gradient(rgba(255, 255, 255, 0.04) 0.5px, transparent 1px),
+        radial-gradient(rgba(0, 0, 0, 0.06) 0.4px, transparent 0.8px);
+      background-size: 3px 3px, 5px 5px;
+      mix-blend-mode: overlay;
+      opacity: 0.5;
+    }
+    /* Scoreboard header — title left, date right, on the green panel */
+    .scoreboard-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 6px 12px;
+      position: relative; z-index: 1;
+      border-bottom: 1px solid rgba(200, 168, 104, 0.25);
       margin-bottom: 10px;
     }
-    .day-date { font-weight: 600; font-size: 14px; }
-    .day-result { font-size: 13px; font-weight: 600; }
-
-    /* Chart */
-    .chart-container {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 20px; margin-bottom: 24px;
+    .scoreboard-head .title {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.20em; text-transform: uppercase;
+      color: #f4ecd8;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
     }
-    .chart-container h3 { font-size: 14px; margin-bottom: 12px; color: var(--text-muted); }
+    .scoreboard-head .meta {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: rgba(244, 236, 216, 0.7);
+      letter-spacing: 0.06em;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+    }
+    /* Column headers — chalk-white labels above each column */
+    .scoreboard-cols {
+      display: grid;
+      grid-template-columns: 52px 36px 1fr 60px 1fr 100px;
+      gap: 10px; align-items: center;
+      padding: 6px 8px 10px;
+      font-family: 'Inter', sans-serif;
+      font-size: 9px; font-weight: 700;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: rgba(244, 236, 216, 0.65);
+      position: relative; z-index: 1;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+    }
+    .scoreboard-cols .col-score { text-align: right; padding-right: 8px; }
+    /* Pick row — the slot. Click opens player modal. */
+    .scoreboard-row {
+      display: grid;
+      grid-template-columns: 52px 36px 1fr 60px 1fr 100px;
+      gap: 10px; align-items: center;
+      padding: 8px 8px;
+      cursor: pointer;
+      position: relative; z-index: 1;
+      color: #f4ecd8;
+      transition: background 0.15s ease;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+    }
+    .scoreboard-row:last-child { border-bottom: none; }
+    .scoreboard-row:hover {
+      background: rgba(244, 236, 216, 0.05);
+    }
+    /* Recessed digit cell — cream-painted card with dark inset shadow.
+       This is the "manual scoreboard digit slot" look — like a slip of
+       cardstock pushed into a slot in the metal panel. */
+    .scoreboard-row .rank {
+      font-family: 'Inter', sans-serif;
+      font-weight: 700; font-size: 18px; line-height: 1;
+      color: #1a1f24;
+      text-align: center;
+      background: linear-gradient(180deg, #f4ecd8 0%, #e8dcbe 100%);
+      padding: 6px 0;
+      border-radius: 2px;
+      box-shadow:
+        inset 0 2px 3px rgba(0, 0, 0, 0.35),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.4),
+        0 1px 0 rgba(0, 0, 0, 0.2);
+    }
+    .scoreboard-row .headshot {
+      width: 32px; height: 32px; border-radius: 50%;
+      object-fit: cover;
+      border: 2px solid rgba(200, 168, 104, 0.5);
+      background: #2a4a26;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+    }
+    .scoreboard-row .name-block {
+      display: flex; flex-direction: column; gap: 1px; min-width: 0;
+    }
+    .scoreboard-row .name {
+      font-family: 'Inter', sans-serif;
+      font-size: 14px; font-weight: 600;
+      letter-spacing: -0.005em;
+      color: #fff;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+    }
+    .scoreboard-row .name .order-pill {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px; font-weight: 600;
+      color: #2a4a26;
+      background: #c8a868;
+      padding: 1px 5px; border-radius: 2px;
+      margin-left: 6px;
+      letter-spacing: 0.04em;
+      vertical-align: 1px;
+    }
+    .scoreboard-row .matchup {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; color: rgba(244, 236, 216, 0.55);
+      letter-spacing: 0.04em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .scoreboard-row .team {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 700;
+      color: #f4ecd8;
+      letter-spacing: 0.06em;
+      text-align: center;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+    }
+    .scoreboard-row .pitcher {
+      font-family: 'Inter', sans-serif;
+      font-size: 12px; color: rgba(244, 236, 216, 0.7);
+      font-style: italic;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* The big composite digit — recessed cream cell with dark ink number,
+       same inset treatment as rank but bigger. Reads as "the run total
+       on the line score" — the primary number on the panel. */
+    .scoreboard-num {
+      font-family: 'Inter', sans-serif;
+      font-weight: 800; font-size: 24px; line-height: 1;
+      color: #1a1f24;
+      text-align: center;
+      background: linear-gradient(180deg, #f4ecd8 0%, #e8dcbe 100%);
+      padding: 8px 0;
+      border-radius: 2px;
+      letter-spacing: -0.01em;
+      font-feature-settings: 'tnum';
+      box-shadow:
+        inset 0 2px 3px rgba(0, 0, 0, 0.35),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.4),
+        0 1px 0 rgba(0, 0, 0, 0.2);
+    }
+    /* Mobile fallback — collapse columns on narrow screens */
+    @media (max-width: 600px) {
+      .scoreboard-cols { display: none; }
+      .scoreboard-row {
+        grid-template-columns: 44px 30px 1fr 70px;
+        padding: 8px 6px;
+      }
+      .scoreboard-row .team,
+      .scoreboard-row .pitcher { display: none; }
+    }
+
+    /* Player detail modal — Topps-style baseball card popup.
+       Cream/paper card with team-color band on top, headshot
+       framed prominently, stats laid out like the back of a card.
+       Click any scoreboard row → openPlayerModal() → this card. */
+    .modal-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(15, 26, 48, 0.65);
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 60px 20px; z-index: 100; overflow-y: auto;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      max-width: 540px; width: 100%;
+      padding: 0;                  /* card chrome handled by inner sections */
+      position: relative;
+      overflow: hidden;
+      box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.7) inset,
+        0 22px 50px -16px rgba(15, 26, 48, 0.45),
+        0 6px 14px -6px rgba(80, 55, 25, 0.3);
+    }
+    /* Team color band across the top — 6px stripe.
+       The team color is set inline via --team-color when the modal opens.
+       Falls back to the signal red. */
+    .modal-card::before {
+      content: '';
+      position: absolute; left: 0; right: 0; top: 0; height: 6px;
+      background: var(--team-color, var(--signal));
+    }
+    .modal-close {
+      position: absolute; top: 12px; right: 12px;
+      background: var(--paper); border: 1px solid var(--rule);
+      width: 28px; height: 28px; border-radius: 50%;
+      color: var(--ink-soft); font-size: 16px; cursor: pointer; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s ease; z-index: 2;
+    }
+    .modal-close:hover { color: var(--ink); border-color: var(--ink); background: var(--surface); }
+    .modal-head {
+      display: flex; gap: 18px; align-items: center;
+      padding: 28px 24px 18px;
+      border-bottom: 2px solid var(--ink);
+      margin-bottom: 0;
+      background:
+        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.10) 27px 28px),
+        var(--paper);
+    }
+    .modal-headshot {
+      width: 88px; height: 88px; border-radius: 6px; object-fit: cover;
+      background: var(--surface);
+      border: 3px solid var(--team-color, var(--signal));
+      padding: 0;
+      box-shadow: 0 4px 10px -4px rgba(80, 55, 25, 0.4);
+    }
+    .modal-name { font-size: 22px; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+    .modal-sub {
+      font-size: 12px; color: var(--ink-muted); margin-top: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.04em;
+    }
+    .modal-section { margin-top: 0; padding: 16px 24px; border-bottom: 1px solid var(--rule); }
+    .modal-section:last-child { border-bottom: none; padding-bottom: 22px; }
+    /* Long-format vertical stat list — used inside modal sections.
+       Each card-line is a row: label on the left, value (+ optional rank
+       sub-text) on the right. Reads like the back of a baseball card. */
+    .card-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: baseline;
+      gap: 14px;
+      padding: 6px 0;
+      border-bottom: 1px dashed rgba(184, 167, 132, 0.35);
+      font-size: 13px;
+      color: var(--ink);
+    }
+    .card-line:last-child { border-bottom: none; }
+    .card-line-label {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px; font-weight: 500;
+      color: var(--ink-muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .card-line-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-feature-settings: 'tnum';
+      font-size: 13px; font-weight: 500;
+      text-align: right;
+      display: inline-flex; align-items: baseline; gap: 8px;
+    }
+    .card-line-sub {
+      font-family: 'Inter', sans-serif;
+      font-size: 10px; font-weight: 500;
+      color: var(--ink-muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .modal-section h4 {
+      font-size: 12px; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 8px;
+    }
+    .stat-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 10px;
+    }
+    .stat-grid .stat-card { padding: 10px; }
+    .stat-grid .stat-card .value { font-size: 20px; }
+
+    /* Hitters cross-tab */
+    .hitters-table {
+      width: 100%; border-collapse: collapse;
+      background: var(--surface); border-radius: 10px;
+      border: 1px solid var(--border); font-size: 11px;
+    }
+    .hitters-table th, .hitters-table td {
+      padding: 6px 8px; text-align: center; border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .hitters-table th {
+      background: var(--surface-2); color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .hitters-table th.player-col, .hitters-table td.player-col { text-align: left; }
+    .hitters-table .cell-picked { color: var(--green); font-weight: 600; }
+    .hitters-table .cell-onboard { color: var(--text-muted); }
+    .hitters-table .cell-offboard { color: #555; }
+    .hitters-table tr:hover td { background: var(--surface-2); }
+
+    /* Band selector chips on Factor Decomposition — pill style */
+    .band-chip {
+      background: var(--surface); color: var(--text-muted);
+      border: 1px solid var(--border); border-radius: 999px;
+      padding: 4px 10px; font-size: 11px; font-weight: 500; cursor: pointer;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      transition: all 0.15s ease;
+    }
+    .band-chip:hover { color: var(--text); border-color: var(--border-strong); }
+    .band-chip.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-soft));
+      color: #fff; border-color: var(--accent);
+      box-shadow: 0 4px 12px -3px var(--accent-glow);
+    }
+
+    /* ────────────────────────────────────────────────────────────
+       BIG BOARD v1 — statbook ledger left, slate sidebar right
+       ──────────────────────────────────────────────────────────── */
+    .board-grid {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      gap: 18px;
+      align-items: start;
+    }
+    .board-controls {
+      display: flex; gap: 8px; align-items: center;
+      margin: 4px 0 14px;
+      font-size: 12px;
+      flex-wrap: wrap;
+    }
+    .board-search {
+      flex: 1; min-width: 200px; max-width: 360px;
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 7px 12px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      color: var(--ink);
+      transition: border-color 0.15s ease;
+    }
+    .board-search:focus {
+      outline: none; border-color: var(--ink);
+    }
+    .board-search::placeholder { color: var(--ink-muted); }
+    .board-team-filter {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 7px 12px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px; font-weight: 500;
+      color: var(--ink);
+      cursor: pointer;
+      min-width: 140px;
+    }
+    .board-limit-input {
+      width: 60px; background: var(--paper); color: var(--ink);
+      border: 1px solid var(--rule); border-radius: 4px;
+      padding: 4px 8px; font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+    /* Right rail — slate cards + composite distribution histogram */
+    .board-rail {
+      display: flex; flex-direction: column; gap: 14px;
+      position: sticky; top: 20px;
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+    }
+    .rail-card {
+      background:
+        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.10) 27px 28px),
+        var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 14px 14px 12px;
+      box-shadow: 0 6px 18px -10px rgba(80, 55, 25, 0.18);
+    }
+    .rail-card h4 {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px; font-weight: 700;
+      color: var(--ink);
+      text-transform: uppercase;
+      letter-spacing: 0.10em;
+      padding-bottom: 8px; margin-bottom: 10px;
+      border-bottom: 2px solid var(--ink);
+    }
+    /* Per-game compact row inside the slate rail. Click → opens
+       the game-card modal with full details. Hover hints clickability. */
+    .slate-game.compact {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      padding: 7px 8px;
+      border-bottom: 1px dashed var(--rule-soft);
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: background 0.12s ease;
+    }
+    .slate-game.compact:hover {
+      background: rgba(196, 106, 58, 0.08);
+    }
+    .slate-game.compact:last-child { border-bottom: none; }
+    .slate-game .matchup {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600; color: var(--ink);
+      font-size: 12px; letter-spacing: 0.04em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .slate-game .time {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--ink-muted);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    .slate-game .top-badge {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px; font-weight: 700;
+      padding: 2px 7px; border-radius: 999px;
+      background: var(--signal); color: #fff;
+      letter-spacing: 0.02em;
+      min-width: 22px; text-align: center;
+      box-shadow: 0 1px 2px rgba(80, 55, 25, 0.15);
+    }
+    .slate-game .top-badge.zero {
+      background: transparent; color: var(--ink-muted);
+      border: 1px solid var(--rule);
+      box-shadow: none;
+    }
+    .slate-game .badge-suffix {
+      display: none;   /* hidden in the rail; tooltip explains the number */
+    }
+
+    /* Game-card modal — the "click on a slate row" detail popup.
+       Reuses the modal-backdrop infrastructure but with its own card
+       so player and game modals don't fight for the same element. */
+    .game-card-section {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .game-card-section:last-child { border-bottom: none; padding-bottom: 22px; }
+    .game-card-section h4 {
+      font-size: 12px; color: var(--ink-muted);
+      text-transform: uppercase; letter-spacing: 0.10em;
+      font-weight: 600; margin-bottom: 10px;
+    }
+    .game-card-batter {
+      display: grid;
+      grid-template-columns: 30px 1fr 60px;
+      gap: 10px; align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px dashed var(--rule-soft);
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .game-card-batter:last-child { border-bottom: none; }
+    .game-card-batter:hover { background: rgba(196, 106, 58, 0.08); }
+    .game-card-batter .b-rank {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--ink-muted);
+      text-align: right;
+    }
+    .game-card-batter .b-name {
+      font-weight: 600; color: var(--ink);
+    }
+    .game-card-batter .b-name .b-team {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; color: var(--ink-muted);
+      margin-left: 4px;
+      letter-spacing: 0.04em;
+    }
+    .game-card-batter .b-comp {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700; color: var(--signal);
+      text-align: right;
+      font-size: 14px;
+    }
+    /* Composite distribution histogram inside its rail card */
+    .histogram {
+      display: flex; flex-direction: column; gap: 3px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+    }
+    .histogram-row {
+      display: grid;
+      grid-template-columns: 50px 1fr 30px;
+      align-items: center;
+      gap: 6px;
+    }
+    .histogram-row .bin-label { color: var(--ink-muted); font-size: 10px; text-align: right; }
+    .histogram-row .bin-bar {
+      height: 11px; border-radius: 1px;
+      background: linear-gradient(90deg, var(--clay) 0%, var(--signal) 100%);
+      min-width: 1px;
+    }
+    .histogram-row .bin-bar.below-cutoff { background: var(--rule); }
+    .histogram-row .bin-count { color: var(--ink-muted); font-size: 10px; text-align: right; }
+    .histogram-cutoff-note {
+      font-size: 10px; color: var(--signal); font-weight: 600;
+      margin-top: 8px; padding-top: 6px;
+      border-top: 1px dashed var(--rule);
+      text-align: center;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+
+    /* Mobile: rail drops below the table, no sticky positioning */
+    @media (max-width: 900px) {
+      .board-grid { grid-template-columns: 1fr; }
+      .board-rail { position: static; max-height: none; }
+    }
+
+    /* Big Board filter buttons (& reused .band-chip) — pill style */
+    .board-filter {
+      background: var(--surface); color: var(--text-muted);
+      border: 1px solid var(--border); border-radius: 999px;
+      padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      transition: all 0.15s ease;
+    }
+    .board-filter:hover { color: var(--text); border-color: var(--border-strong); }
+    .board-filter.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-soft));
+      color: #fff; border-color: var(--accent);
+      box-shadow: 0 4px 14px -4px var(--accent-glow);
+    }
+
+    /* History section — glass cards */
+    .day-card {
+      background: var(--surface);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 14px; padding: 18px; margin-bottom: 14px;
+      transition: border-color 0.18s ease;
+    }
+    .day-card:hover { border-color: var(--border-strong); }
+    .day-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px;
+    }
+    .day-date { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+    .day-result { font-size: 13px; font-weight: 600; font-feature-settings: 'tnum'; }
+
+    /* Chart container — used heavily on Performance tab */
+    .chart-container {
+      background: var(--surface);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 16px; padding: 22px 22px 20px; margin-bottom: 20px;
+      position: relative; overflow: hidden;
+    }
+    .chart-container::before {
+      content: ''; position: absolute; inset: 0; border-radius: 16px;
+      padding: 1px; pointer-events: none;
+      background: linear-gradient(135deg, rgba(139,92,246,0.30), rgba(139,92,246,0.04) 50%, transparent);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+    }
+    .chart-container h3 {
+      font-size: 14px; margin-bottom: 12px; color: var(--text);
+      font-weight: 600; letter-spacing: -0.01em;
+    }
 
     /* Top hitters */
     .hitter-row {
@@ -179,6 +904,89 @@
       .picks-table { font-size: 12px; }
       .picks-table th, .picks-table td { padding: 8px 6px; }
       .hide-mobile { display: none; }
+
+      /* ── Mobile card layout (Today's Picks, HR Recap per-day) ──
+         Short tables become a stack of cards. Every column visible,
+         each row reads as: large player name on top, then label/value
+         pairs underneath. */
+      table.mobile-cards { display: block; border: none; box-shadow: none; }
+      table.mobile-cards thead { display: none; }
+      table.mobile-cards tbody { display: block; }
+      table.mobile-cards tbody tr {
+        display: block;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      table.mobile-cards tbody td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 4px 0;
+        border: none;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      table.mobile-cards tbody td[data-label]:before {
+        content: attr(data-label);
+        color: var(--text-muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        flex-shrink: 0;
+        min-width: 80px;
+      }
+      /* Override the global hide-mobile rule inside cards — show everything */
+      table.mobile-cards .hide-mobile { display: flex !important; }
+      /* Player name cell gets the spotlight at the top of the card */
+      table.mobile-cards td.player-link {
+        font-size: 17px;
+        font-weight: 600;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 6px;
+        justify-content: flex-start;
+      }
+      table.mobile-cards td.player-link:before { display: none; }
+      /* Compact rank/headshot cells — tuck them inline with the name */
+      table.mobile-cards tbody td:first-child:before,
+      table.mobile-cards tbody td:nth-child(2):before { display: none; }
+      table.mobile-cards tbody td:first-child,
+      table.mobile-cards tbody td:nth-child(2) {
+        display: inline-flex;
+        padding: 0 6px 0 0;
+      }
+      table.mobile-cards .headshot { width: 32px; height: 32px; }
+      /* Score bar takes full row width inside the card */
+      table.mobile-cards td.bar-cell { padding: 6px 0; }
+      table.mobile-cards td.bar-cell .score-bar { flex: 1; height: 6px; }
+
+      /* ── Mobile expandable rows (Big Board, History) ──
+         Long tables stay table-style but rows show only primary fields.
+         Tap a row to toggle ".expanded" — hidden cells slide into view. */
+      table.mobile-expandable td.hide-mobile { display: none; }
+      table.mobile-expandable tr.expanded td.hide-mobile {
+        display: table-cell;
+        padding: 6px 8px;
+        background: var(--surface-2);
+        font-size: 11px;
+      }
+      table.mobile-expandable tbody tr {
+        cursor: pointer;
+      }
+      table.mobile-expandable tbody tr:after {
+        content: '';  /* placeholder — caret added via JS to header row */
+      }
+      /* Expanded row appearance: visual cue for open state */
+      table.mobile-expandable tbody tr.expanded {
+        background: var(--surface-2);
+      }
+      table.mobile-expandable tbody tr.expanded td {
+        background: var(--surface-2);
+      }
     }
   </style>
 </head>
@@ -191,6 +999,9 @@
 
     <div class="tabs">
       <div class="tab active" data-panel="today">Today's Picks</div>
+      <div class="tab" data-panel="board">Big Board</div>
+      <div class="tab" data-panel="hrrecap">HR Recap</div>
+      <div class="tab" data-panel="hitters">Hitters</div>
       <div class="tab" data-panel="history">History</div>
       <div class="tab" data-panel="stats">Performance</div>
     </div>
@@ -198,15 +1009,51 @@
     <!-- TODAY'S PICKS -->
     <div class="panel active" id="panel-today">
       <div class="stat-row" id="todayStats"></div>
-      <div class="factor-legend">
-        <span class="l-power">Power</span>
-        <span class="l-matchup">Matchup</span>
-        <span class="l-park">Park</span>
-        <span class="l-form">Form</span>
-        <span class="l-weather">Weather</span>
-        <span class="l-lineup">Lineup</span>
-      </div>
+      <!-- Factor legend removed 2026-05-01 — color key was redundant with the
+           scoreboard rendering (no factor bars on Today's Picks anymore). -->
       <div id="todayTable"><div class="loading">Loading picks...</div></div>
+    </div>
+
+    <!-- BIG BOARD -->
+    <div class="panel" id="panel-board">
+      <div class="stat-row" id="boardStats"></div>
+      <!-- New filter row 2026-05-01: replaces T1/T2/T3/Picked with team
+           dropdown + name search. Top-N "by composite" stays since it's
+           a useful sample-size knob. -->
+      <div class="board-controls">
+        <input id="boardSearch" type="search" placeholder="Search player name…" class="board-search" />
+        <select id="boardTeamFilter" class="board-team-filter">
+          <option value="all">All teams</option>
+        </select>
+        <span style="color:var(--ink-muted);font-size:12px;margin-left:auto">
+          Top <input id="boardLimit" type="number" min="10" max="500" value="100" class="board-limit-input"/> by composite
+        </span>
+      </div>
+      <div class="board-grid">
+        <div id="boardTable"><div class="loading">Loading board...</div></div>
+        <aside class="board-rail" id="boardRail">
+          <div class="rail-card" id="railHistogram"><div class="loading">Loading distribution...</div></div>
+          <div class="rail-card" id="railSlate"><div class="loading">Loading slate...</div></div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- HR RECAP -->
+    <div class="panel" id="panel-hrrecap">
+      <div class="stat-row" id="hrRecapStats"></div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        Every batter who hit a HR (and was on our board), grouped by day. Shows our composite rank — gold ★ = we picked them, gray = on our board but not picked, dim = not on our board (no rank shown).
+      </div>
+      <div id="hrRecapList"><div class="loading">Loading recap...</div></div>
+    </div>
+
+    <!-- HITTERS LEADERBOARD -->
+    <div class="panel" id="panel-hitters">
+      <div class="stat-row" id="hittersStats"></div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        Top HR hitters in the last 14 days. Each cell shows our model's rank for that batter on that day — green = we picked them, gray = on board but not picked, dim "X" = HR but not on our board.
+      </div>
+      <div id="hittersTable"><div class="loading">Loading hitters...</div></div>
     </div>
 
     <!-- HISTORY -->
@@ -226,9 +1073,153 @@
         <canvas id="factorChart" height="220"></canvas>
       </div>
       <div class="chart-container">
+        <h3>Composite Score → HR Rate (full board, all dates)</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Bars: counts of HRs (green) and non-HRs (gray) per composite range. Orange line: HR rate % (right axis) — the model's signal climbs from low single digits at the bottom to ~40-50% at the top.
+        </div>
+        <canvas id="distChart" height="200"></canvas>
+      </div>
+      <div class="chart-container">
+        <h3>Per-Factor Mean — HR Hitters vs Misses (last 30 days)</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Mean factor score for batters who hit a HR vs those who didn't. A bigger green-vs-gray gap = the factor is surfacing HR hitters. A flat pair = the factor isn't differentiating and is a candidate to drop or rework.
+        </div>
+        <canvas id="factorDiagChart" height="200"></canvas>
+        <div id="factorDiagCaption"></div>
+      </div>
+      <div class="chart-container">
+        <h3>Factor Decomposition — What's Inside Each Score?</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          For each factor, the underlying raw inputs the model is consuming. Green = HR-hitter mean,
+          gray = miss mean. The All view shows overall signal; band views show what differs INSIDE
+          a composite range (e.g., "of guys we scored 40-60, what do the HR hitters share?").
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+          <span style="color:var(--text-muted);font-size:11px;width:110px">Composite band:</span>
+          <button class="band-chip active" data-band-type="composite" data-band="all">All</button>
+          <button class="band-chip" data-band-type="composite" data-band="0-40">0-40</button>
+          <button class="band-chip" data-band-type="composite" data-band="40-60">40-60</button>
+          <button class="band-chip" data-band-type="composite" data-band="60-80">60-80</button>
+          <button class="band-chip" data-band-type="composite" data-band="80-101">80+</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+          <span style="color:var(--text-muted);font-size:11px;width:110px">Daily rank band:</span>
+          <button class="band-chip" data-band-type="rank" data-band="1-10">#1-10</button>
+          <button class="band-chip" data-band-type="rank" data-band="11-30">#11-30</button>
+          <button class="band-chip" data-band-type="rank" data-band="31-100">#31-100</button>
+          <button class="band-chip" data-band-type="rank" data-band="101-300">#101-300</button>
+        </div>
+        <div id="factorDecomp"><div class="loading">Loading decomposition...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Why Are HR Hitters Stuck at 40-60?</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Same inputs as above, but compares <strong style="color:var(--orange)">HR hitters who scored 40-60</strong>
+          (model under-rated them) vs <strong style="color:var(--green)">HR hitters who scored 60-80</strong>
+          (model caught them). The biggest input gaps here are the signals the model fails to convert into score
+          for the under-rated group — candidates for weight increase or new feature.
+        </div>
+        <div id="hrSplitDecomp"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>HR Hitters by Daily Rank — Where's the Tunable Cohort?</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Daily rank controls for slate variance. Compares <strong style="color:var(--green)">HR hitters we picked (#1-10)</strong>
+          vs <strong style="color:var(--orange)">HR hitters we just missed (#11-30)</strong> vs
+          <strong style="color:var(--text-muted)">deep-board HR hitters (#31-100)</strong>. The largest input gaps between
+          #1-10 and #11-30 are the most actionable tuning levers — these are the closest cohort to breaking into the top-8.
+        </div>
+        <div id="hrRankSplitDecomp"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Input Calibration — Score Curve vs Empirical HR Rate</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          For each raw input, we bin into 5 quantile buckets and compare the empirical HR rate per bucket
+          to the average sub-factor score we assigned. <strong style="color:var(--orange)">Aligned</strong> = the
+          score curve climbs with HR rate (correct). <strong style="color:#ff6b6b">Backwards</strong> = the score
+          climbs while HR rate drops or vice versa. <strong style="color:var(--text-muted)">Flat</strong> = no
+          signal in either curve. The most actionable diagnostic for fixing per-input score functions.
+        </div>
+        <div id="inputCalibration"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Dome vs Outdoor — Is Our Dome Bias Justified?</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Dome games get a flat weather score (50, neutral). Outdoor games can score higher with helping
+          wind but lower with hostile wind. If domes convert at a higher HR rate than outdoor games of
+          comparable park-factor, the bias is justified. If not, we're under-rewarding outdoor wind alignment.
+        </div>
+        <div id="domeVsOutdoor"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Wind Direction Effect — Outdoor Games Only</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          HR rate by wind-helping band (cosine of wind-to-CF angle × MPH). Out-blowing wind toward CF
+          should produce higher HR rates than in-blowing wind toward home plate. The avg_weather_score
+          column shows what our model is rewarding for each band — if HR rate climbs but score is flat,
+          the wind effect isn't being weighted enough.
+        </div>
+        <div id="windDirectionDiag"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Temp × Humidity Interaction — HR Rate Heatmap</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Outdoor games only. Rows = temperature band, columns = humidity band. Cell shows the
+          empirical HR rate. <strong style="color:var(--green)">Green tint</strong> = positive
+          interaction (the combo produces MORE HRs than additive prediction);
+          <strong style="color:#ff6b6b">red tint</strong> = negative. The hot+humid cell should
+          be green if our physics intuition holds (warm humid air is less dense).
+          Cells with n &lt; 5 are suppressed.
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+          <span style="color:var(--text-muted);font-size:11px">Source:</span>
+          <button class="band-chip active" data-temp-source="live">This season (live picks)</button>
+          <button class="band-chip" data-temp-source="historical">Historical seasons</button>
+          <button class="band-chip" data-temp-source="combined">Combined</button>
+        </div>
+        <div id="tempHumidityHeatmap"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Elite Pitcher × Archetype Match — Is the Dampening Over-aggressive?</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Pitcher vulnerability quintile (low HR/9 → "elite" on row 1) crossed with archetype
+          similarity quintile (high archetype match → column 5). The diagnostic cell is
+          row 1 × col 5 — elite pitcher facing his archetype victim. If empirical HR rate
+          there is high but our matchup score is low, the elite-pitcher dampening
+          (×0.70 multiplier when vulnerability &lt; 25) is firing on cases where archetype
+          is screaming "vulnerability" — and we should condition the dampening on similarity.
+        </div>
+        <div id="archetypeDampening"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
+        <h3>Pick Composition — What Does Our Top-8 Look Like in Aggregate?</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Distribution of selected picks by park factor, batting order, and dome status. Surfaces
+          systematic biases that aren't visible per-pick — e.g., 80% dome share, never picks from
+          sub-95 park-factor venues, leadoff hitters absent.
+        </div>
+        <div id="pickComposition"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="chart-container">
         <h3>Top Hitters (3+ picks)</h3>
         <div id="topHitters"><div class="loading">Loading...</div></div>
       </div>
+    </div>
+  </div>
+
+  <!-- Player detail modal -->
+  <div class="modal-backdrop" id="playerModal">
+    <div class="modal-card">
+      <button class="modal-close" onclick="closePlayerModal()">×</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <!-- Game card modal — opened by clicking a slate row in the Big Board sidebar -->
+  <div class="modal-backdrop" id="gameModal">
+    <div class="modal-card">
+      <button class="modal-close" onclick="closeGameModal()">×</button>
+      <div id="gameModalBody"></div>
     </div>
   </div>
 
@@ -243,18 +1234,63 @@
       });
     });
 
+    // ── Date formatting ──
+    // Long format used site-wide: "Friday, May 1, 2026". Wire format
+    // remains YYYY-MM-DD in JSON; this helper converts at render time.
+    // Constructed with explicit Date(year, month-1, day) to avoid the
+    // "string parsed as UTC then displayed in local TZ" off-by-one
+    // gotcha (e.g., "2026-05-01" → April 30 in PT).
+    function formatLongDate(dateStr) {
+      if (!dateStr) return '';
+      const m = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return dateStr;
+      const d = new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+      return d.toLocaleDateString(undefined, {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+      });
+    }
+    // Compact long format for tighter spaces (history rows, recap headers)
+    function formatMediumDate(dateStr) {
+      if (!dateStr) return '';
+      const m = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return dateStr;
+      const d = new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+      return d.toLocaleDateString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric'
+      });
+    }
+    // Game time formatter — daily_slate.game_time is ISO UTC ("2026-05-01T23:05:00Z").
+    // Convert to local "7:05 PM" for display.
+    function formatGameTime(isoStr) {
+      if (!isoStr) return '';
+      try {
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      } catch { return ''; }
+    }
+
     // ── Data fetching ──
     const DATA_BASE = './data/';
 
     async function fetchJSON(file) {
       try {
-        const resp = await fetch(DATA_BASE + file + '?t=' + Date.now());
+        // Always append .json — call sites pass bare names like "picks_latest".
+        // Without this, Netlify 404s and fetchJSON returns null → dashboard
+        // renders the "No data yet" empty state.
+        const url = DATA_BASE + file + '.json?t=' + Date.now();
+        const resp = await fetch(url);
         if (!resp.ok) return null;
         return await resp.json();
       } catch { return null; }
     }
 
     // ── Helpers ──
+    function headshotUrl(pid) {
+      if (!pid) return '';
+      return `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_120,q_auto:best/v1/people/${pid}/headshot/67/current`;
+    }
+
     function tierBadge(tier) {
       const t = tier || 0;
       const cls = t === 1 ? 'badge-t1' : t === 2 ? 'badge-t2' : 'badge-t3';
@@ -287,9 +1323,16 @@
     }
 
     function orderLabel(bo) {
-      if (typeof bo === 'number') return '#' + bo;
-      if (bo === 'bench') return 'BN';
-      if (bo === 'roster_only') return 'RST';
+      // load_picks_to_db.py stores batting_order as a string (so "bench" /
+      // "roster_only" tags can coexist with int orders 1-9). Coerce numeric
+      // strings back to int for display.
+      if (typeof bo === 'number' && bo >= 1 && bo <= 9) return '#' + bo;
+      if (typeof bo === 'string') {
+        if (bo === 'bench') return 'BN';
+        if (bo === 'roster_only') return 'RST';
+        const n = parseInt(bo, 10);
+        if (!isNaN(n) && n >= 1 && n <= 9) return '#' + n;
+      }
       return '-';
     }
 
@@ -301,7 +1344,7 @@
         return;
       }
 
-      document.getElementById('dateBadge').textContent = data.date;
+      document.getElementById('dateBadge').textContent = formatLongDate(data.date);
 
       const picks = data.picks || [];
       const board = data.full_board || [];
@@ -310,45 +1353,56 @@
       const avgComp = picks.length
         ? (picks.reduce((s, p) => s + (p.composite || 0), 0) / picks.length).toFixed(1)
         : '0';
-      const tiers = {};
-      picks.forEach(p => { tiers[p.tier_label || 'T?'] = (tiers[p.tier_label || 'T?'] || 0) + 1; });
-      const tierStr = Object.entries(tiers).map(([k, v]) => `${v}x ${k}`).join(', ');
-
+      // Tier Mix card removed 2026-05-01 — tiers are display labels only,
+      // not selection gates, so the mix isn't actionable info.
       document.getElementById('todayStats').innerHTML = `
         <div class="stat-card"><div class="label">Picks</div><div class="value accent">${picks.length}</div></div>
         <div class="stat-card"><div class="label">Avg Composite</div><div class="value">${avgComp}</div></div>
-        <div class="stat-card"><div class="label">Tier Mix</div><div class="value" style="font-size:16px">${tierStr}</div></div>
         <div class="stat-card"><div class="label">Board Size</div><div class="value">${board.length}</div></div>
       `;
 
-      // Table
-      let html = `<table class="picks-table">
-        <thead><tr>
-          <th>#</th><th>Player</th><th>Team</th><th>Tier</th>
-          <th class="hide-mobile">vs Pitcher</th><th>Score</th>
-          <th class="hide-mobile">Order</th>
-          <th class="hide-mobile">Factors</th>
-        </tr></thead><tbody>`;
+      // Today's Picks rendered as a SCOREBOARD (Phase 1 redesign).
+      // Each pick is a "scoreboard slot" — dark navy panel with chalk-white
+      // text and an amber VT323 composite number. Click any row → opens
+      // the Topps-style baseball-card modal (handled by bindPlayerClicks).
+      // Tier badges intentionally dropped per the brief — tiers are labels
+      // only on the dashboard, not selection gates.
+      let html = `<div class="scoreboard">
+        <div class="scoreboard-head">
+          <div class="title">Today's Card · ${picks.length} Picks</div>
+          <div class="meta">${formatLongDate(data.date)}</div>
+        </div>
+        <div class="scoreboard-cols">
+          <div>#</div><div></div><div>Player</div><div>Team</div><div>vs. Pitcher</div><div class="col-score">Score</div>
+        </div>`;
 
       picks.forEach((p, i) => {
-        const barW = Math.min(100, (p.composite || 0) / 80 * 100);
-        html += `<tr>
-          <td>${i + 1}</td>
-          <td style="font-weight:600">${p.batter_name || p.name}</td>
-          <td>${p.team}</td>
-          <td>${tierBadge(p.tier)}</td>
-          <td class="hide-mobile">${p.opp_pitcher || '-'}</td>
-          <td class="bar-cell">
-            <div class="score-bar" style="width:${barW}%"></div>
-            <span class="score-val">${(p.composite || 0).toFixed(1)}</span>
-          </td>
-          <td class="hide-mobile">${orderLabel(p.batting_order)}</td>
-          <td class="hide-mobile">${factorBars(p)}</td>
-        </tr>`;
+        const pid = p.batter_id || p.player_id;
+        const headshot = pid ? headshotUrl(pid) : '';
+        const name = p.batter_name || p.name || '';
+        const bo = p.batting_order;
+        const orderPill = (typeof bo === 'number' || (typeof bo === 'string' && /^\d+$/.test(bo)))
+          ? `<span class="order-pill">#${bo}</span>` : '';
+        const headshotImg = headshot
+          ? `<img class="headshot" src="${headshot}" alt="${name}" onerror="this.style.display='none'"/>`
+          : `<div class="headshot"></div>`;
+        html += `<div class="scoreboard-row clickable-row" data-pid="${pid}">
+          <div class="rank">${i + 1}</div>
+          ${headshotImg}
+          <div class="name-block">
+            <div class="name player-link">${name}${orderPill}</div>
+            <div class="matchup">${p.tier_label || ''}</div>
+          </div>
+          <div class="team">${p.team || '—'}</div>
+          <div class="pitcher">vs. ${p.opp_pitcher || '—'}</div>
+          <div class="scoreboard-num">${(p.composite || 0).toFixed(1)}</div>
+        </div>`;
       });
 
-      html += '</tbody></table>';
+      html += '</div>';
       document.getElementById('todayTable').innerHTML = html;
+      bindPlayerClicks();
+      bindMobileTables();
     }
 
     // ── Render: History ──
@@ -403,20 +1457,36 @@
 
         html += `<div class="day-card">
           <div class="day-header">
-            <span class="day-date">${day.date}</span>
+            <span class="day-date">${formatMediumDate(day.date)}</span>
             <span class="day-result" style="color:${day.outcomes_available ? resultColor : 'var(--text-muted)'}">${resultText}</span>
           </div>
-          <table class="picks-table" style="border:none">
+          <table class="picks-table mobile-expandable" style="border:none">
             <thead><tr>
               <th>Player</th><th>Team</th><th>Score</th><th>Result</th>
+              <th class="hide-mobile" style="text-align:right">Line</th>
             </tr></thead><tbody>`;
 
         day.picks.forEach(p => {
+          // Build a one-line slash stat: H/AB, with TB highlighted on close misses
+          // (3+ TB but 0 HR is the kind of "close" we want to flag).
+          const ab = p.ab || 0;
+          const h = p.hits || 0;
+          const tb = p.total_bases || 0;
+          const hr = p.hr_count || 0;
+          const rbi = p.rbi || 0;
+          let lineCell = '<span style="color:var(--text-muted)">—</span>';
+          if (ab > 0 || h > 0) {
+            const closeMiss = hr === 0 && tb >= 3;
+            const lineColor = closeMiss ? 'var(--orange)' : 'var(--text-muted)';
+            const closeNote = closeMiss ? ' <span style="font-size:10px">close</span>' : '';
+            lineCell = `<span style="color:${lineColor};font-size:12px">${h}/${ab}, ${tb} TB, ${rbi} RBI${closeNote}</span>`;
+          }
           html += `<tr>
             <td style="font-weight:500">${p.name}</td>
             <td>${p.team}</td>
             <td>${(p.composite || 0).toFixed(1)}</td>
             <td>${outcomeBadge(p.hr_count)}</td>
+            <td class="hide-mobile" style="text-align:right">${lineCell}</td>
           </tr>`;
         });
 
@@ -424,6 +1494,7 @@
       });
 
       document.getElementById('historyList').innerHTML = html;
+      bindMobileTables();
     }
 
     // ── Render: Performance ──
@@ -450,6 +1521,44 @@
       if (trends && trends.trends && trends.trends.length > 0) {
         const t = trends.trends;
         const ctx2 = document.getElementById('factorChart').getContext('2d');
+
+        // Find the index of the legacy -> v2 model boundary so we can
+        // draw a dashed vertical line + label there. The export tags each
+        // day with model_version; boundary_date is in the JSON too.
+        const boundaryDate = trends.model_boundary_date || '2026-04-16';
+        let boundaryIdx = -1;
+        for (let i = 0; i < t.length; i++) {
+          if (t[i].date >= boundaryDate) { boundaryIdx = i; break; }
+        }
+
+        // Custom plugin: draws a dashed vertical line at boundaryIdx with
+        // a "v2 model" label. Chart.js 4 doesn't include annotations
+        // by default and we don't want to pull in another CDN script.
+        const boundaryLinePlugin = {
+          id: 'modelBoundary',
+          afterDatasetsDraw(chart) {
+            if (boundaryIdx < 1) return;
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+            const x = xScale.getPixelForValue(boundaryIdx);
+            const ctx = chart.ctx;
+            ctx.save();
+            ctx.strokeStyle = '#a78bfa';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x, yScale.top);
+            ctx.lineTo(x, yScale.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#a78bfa';
+            ctx.font = '10px system-ui, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText('v2 model', x + 4, yScale.top + 11);
+            ctx.restore();
+          },
+        };
+
         new Chart(ctx2, {
           type: 'line',
           data: {
@@ -471,9 +1580,113 @@
               y: { min: 0, max: 100, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } }
             },
             plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } }
+          },
+          plugins: [boundaryLinePlugin],
+        });
+      }
+
+      // Composite score distribution chart with HR rate overlay
+      if (perf.score_distribution && perf.score_distribution.length > 0) {
+        const dist = perf.score_distribution;
+        const ctx3 = document.getElementById('distChart').getContext('2d');
+        new Chart(ctx3, {
+          data: {
+            labels: dist.map(b => `${b.bin_low}-${b.bin_high}`),
+            datasets: [
+              { type: 'bar', label: 'HRs', data: dist.map(b => b.hits),
+                backgroundColor: 'rgba(63,185,80,0.7)', stack: 's', yAxisID: 'y' },
+              { type: 'bar', label: 'No HR', data: dist.map(b => b.misses),
+                backgroundColor: 'rgba(139,148,158,0.25)', stack: 's', yAxisID: 'y' },
+              { type: 'line', label: 'HR rate %', data: dist.map(b => b.hr_rate),
+                borderColor: '#d29922', backgroundColor: 'rgba(210,153,34,0.15)',
+                borderWidth: 2, tension: 0.3, pointRadius: 3, pointBackgroundColor: '#d29922',
+                yAxisID: 'y2' },
+            ]
+          },
+          options: {
+            responsive: true,
+            scales: {
+              x: { stacked: true, ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#30363d' } },
+              y: { stacked: true, beginAtZero: true, position: 'left',
+                   title: { display: true, text: 'count', color: '#8b949e', font: { size: 10 } },
+                   ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
+              y2: { beginAtZero: true, position: 'right', max: 100,
+                    title: { display: true, text: 'HR rate %', color: '#d29922', font: { size: 10 } },
+                    ticks: { color: '#d29922', callback: v => v + '%' }, grid: { drawOnChartArea: false } }
+            },
+            plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } }
           }
         });
       }
+
+      // Per-factor diagnostic — what is the model rewarding for HR hitters
+      // vs everyone else, factor by factor? Reveals which sub-score is doing
+      // the lifting and which is flat (i.e., not surfacing HR hitters).
+      if (perf.factor_diagnostic && perf.factor_diagnostic.factors) {
+        const fd = perf.factor_diagnostic;
+        // Skip composite for the bar chart (it's a sum) but report it in caption
+        const factors = fd.factors.filter(f => f.factor !== 'composite');
+        const ctx4 = document.getElementById('factorDiagChart').getContext('2d');
+        new Chart(ctx4, {
+          type: 'bar',
+          data: {
+            labels: factors.map(f => f.factor),
+            datasets: [
+              { label: 'HR hitters', data: factors.map(f => f.hr_mean),
+                backgroundColor: 'rgba(63,185,80,0.7)' },
+              { label: 'Misses', data: factors.map(f => f.miss_mean),
+                backgroundColor: 'rgba(139,148,158,0.5)' },
+            ]
+          },
+          options: {
+            responsive: true,
+            scales: {
+              x: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
+              y: { beginAtZero: true, max: 100, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } }
+            },
+            plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } }
+          }
+        });
+        // Caption with raw gaps
+        const compEntry = fd.factors.find(f => f.factor === 'composite');
+        const gapsHtml = factors.map(f => {
+          const gap = f.gap || 0;
+          const color = gap >= 10 ? 'var(--green)' : (gap >= 5 ? 'var(--orange)' : 'var(--text-muted)');
+          return `<span style="margin-right:14px"><span style="color:var(--text-muted);font-size:11px;text-transform:uppercase">${f.factor}</span> <span style="color:${color};font-weight:700">+${gap}</span></span>`;
+        }).join('');
+        document.getElementById('factorDiagCaption').innerHTML =
+          `<div style="font-size:12px;margin-top:8px">${gapsHtml}</div>` +
+          `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">` +
+          `Gaps (HR mean − Miss mean) over last ${fd.days} days. ` +
+          `Composite gap: <strong>+${compEntry?.gap || 0}</strong> on ${fd.n_hr} HR-days vs ${fd.n_miss} non-HR. ` +
+          `A factor with gap < 3 is providing little signal.</div>`;
+      }
+
+      // Per-factor decomposition — supports band-filter chips
+      window._perfData = perf;  // stash for chip handler
+      if (perf.factor_decomp && perf.factor_decomp.factors) {
+        renderFactorDecomp(perf.factor_decomp);  // default = "All"
+      } else {
+        const fdEl = document.getElementById('factorDecomp');
+        if (fdEl) fdEl.innerHTML = '<div class="empty">Decomposition data starts 2026-04-30 — re-check after a few days of accumulated runs.</div>';
+      }
+      if (perf.factor_decomp_hr_split) {
+        renderHRSplit(perf.factor_decomp_hr_split);
+      }
+      if (perf.factor_decomp_hr_rank_split) {
+        renderHRRankSplit(perf.factor_decomp_hr_rank_split);
+      } else {
+        const el = document.getElementById('hrRankSplitDecomp');
+        if (el) el.innerHTML = '<div class="empty">Rank-split data starts after the next noon export.</div>';
+      }
+      if (perf.input_calibration)        renderInputCalibration(perf.input_calibration);
+      if (perf.dome_vs_outdoor)          renderDomeVsOutdoor(perf.dome_vs_outdoor);
+      if (perf.wind_direction_diagnostic) renderWindDiag(perf.wind_direction_diagnostic);
+      if (perf.temp_humidity_heatmap)    renderTempHumidityHeatmap(perf.temp_humidity_heatmap);
+      bindTempHumiditySourceChips();
+      if (perf.archetype_dampening)      renderArchetypeDampening(perf.archetype_dampening);
+      if (perf.pick_composition)         renderPickComposition(perf.pick_composition);
+      bindBandChips();
 
       // Top hitters
       if (perf.top_hitters && perf.top_hitters.length > 0) {
@@ -493,8 +1706,1313 @@
       }
     }
 
-    // ── Init ──
+    // ── Band selector for factor decomposition (composite OR rank) ──
+    function bindBandChips() {
+      document.querySelectorAll('.band-chip').forEach(btn => {
+        // Skip temp-source chips — they share the .band-chip visual class but
+        // are bound by bindTempHumiditySourceChips(). Without this skip, the
+        // generic band handler overwrites the temp-source handler and the
+        // Historical/Combined toggle stops swapping data.
+        if (btn.hasAttribute('data-temp-source')) return;
+        btn.onclick = () => {
+          // Single-select across BOTH composite/rank chip rows — only one filter active at a time
+          document.querySelectorAll('.band-chip:not([data-temp-source])').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const band = btn.dataset.band;
+          const bandType = btn.dataset.bandType || 'composite';
+          const perf = window._perfData;
+          if (!perf) return;
+          if (band === 'all') {
+            renderFactorDecomp(perf.factor_decomp);
+            return;
+          }
+          if (bandType === 'rank') {
+            const banded = (perf.factor_decomp_by_rank?.bands || []).find(b => {
+              return `${b.rank_low}-${b.rank_high}` === band;
+            });
+            if (banded) {
+              renderFactorDecomp(banded);
+            } else {
+              document.getElementById('factorDecomp').innerHTML =
+                `<div class="empty">No data for rank band ${band}.</div>`;
+            }
+            return;
+          }
+          // Composite-band chip
+          const banded = (perf.factor_decomp_by_band?.bands || []).find(b => {
+            const lo = b.band_low, hi = b.band_high;
+            return `${lo}-${hi}` === band;
+          });
+          if (banded) {
+            renderFactorDecomp(banded);
+          } else {
+            document.getElementById('factorDecomp').innerHTML =
+              `<div class="empty">No data for band ${band}.</div>`;
+          }
+        };
+      });
+    }
+
+    // ── Render: HR-hitters split by daily rank band (3-way) ──
+    function renderHRRankSplit(split) {
+      const top    = split.top    || {};
+      const fringe = split.fringe || {};
+      const deep   = split.deep   || {};
+      if ((top.n || 0) === 0 && (fringe.n || 0) === 0 && (deep.n || 0) === 0) {
+        document.getElementById('hrRankSplitDecomp').innerHTML =
+          '<div class="empty">No rank-split data yet.</div>';
+        return;
+      }
+      const factorOrder = ['power','matchup','form','park','weather','lineup'];
+      let html = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+        Sample:
+        <strong style="color:var(--green)">${top.n || 0}</strong> HR hitters at ${top.label || '#1-10'},
+        <strong style="color:var(--orange)">${fringe.n || 0}</strong> at ${fringe.label || '#11-30'},
+        <strong style="color:var(--text-muted)">${deep.n || 0}</strong> at ${deep.label || '#31-100'}.
+        Δ shows fringe minus top — a negative gap means rank-#11-30 HR hitters were systematically weaker on that input.
+      </div>`;
+      factorOrder.forEach(factor => {
+        const topRows    = top.factors?.[factor]    || [];
+        const fringeRows = fringe.factors?.[factor] || [];
+        const deepRows   = deep.factors?.[factor]   || [];
+        if (topRows.length === 0 && fringeRows.length === 0 && deepRows.length === 0) return;
+        html += `<div style="margin-bottom:18px">
+          <h4 style="font-size:13px;color:var(--text);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">${factor}</h4>
+          <table style="width:100%;font-size:12px"><thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+            <th style="text-align:left;padding:4px 8px">Input</th>
+            <th style="text-align:right;padding:4px 8px;width:90px">${top.label || '#1-10'}</th>
+            <th style="text-align:right;padding:4px 8px;width:90px">${fringe.label || '#11-30'}</th>
+            <th style="text-align:right;padding:4px 8px;width:90px">${deep.label || '#31-100'}</th>
+            <th style="text-align:right;padding:4px 8px;width:80px">Δ (fringe−top)</th>
+          </tr></thead><tbody>`;
+        // Use top's input ordering as the canonical row order, fall back to fringe
+        const inputs = (topRows.length ? topRows : fringeRows).map(r => r.input);
+        inputs.forEach(inp => {
+          const tr = topRows.find(r => r.input === inp)    || {};
+          const fr = fringeRows.find(r => r.input === inp) || {};
+          const dr = deepRows.find(r => r.input === inp)   || {};
+          const tm = tr.hr_mean, fm = fr.hr_mean, dm = dr.hr_mean;
+          const delta = (fm != null && tm != null) ? (fm - tm) : null;
+          // Bigger relative gap → highlight as a tuning lever
+          const rel = (delta != null && tm) ? Math.abs(delta / tm) : 0;
+          const color = rel > 0.15 ? 'var(--orange)' : (rel > 0.05 ? 'var(--text-muted)' : '#555');
+          const dStr = delta != null ? `${delta > 0 ? '+' : ''}${delta.toFixed(2)}` : '—';
+          html += `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:6px 8px;font-weight:500">${inp}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--green)">${tm != null ? tm.toFixed(2) : '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--orange)">${fm != null ? fm.toFixed(2) : '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--text-muted)">${dm != null ? dm.toFixed(2) : '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:${color};font-weight:600">${dStr}</td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      });
+      document.getElementById('hrRankSplitDecomp').innerHTML = html;
+    }
+
+    // ── Render: Input calibration (per-input HR rate vs avg score per quantile bin) ──
+    function renderInputCalibration(data) {
+      const el = document.getElementById('inputCalibration');
+      const inputs = data.inputs || {};
+      const keys = Object.keys(inputs);
+      if (keys.length === 0) {
+        el.innerHTML = '<div class="empty">No calibration data yet — needs accumulated pick_inputs rows joined to outcomes.</div>';
+        return;
+      }
+      // Group by parent factor, ordered intuitively
+      const factorOrder = ['power','matchup','form','park','weather'];
+      const grouped = {};
+      keys.forEach(k => {
+        const f = inputs[k].factor;
+        (grouped[f] = grouped[f] || []).push(k);
+      });
+      // Sort: actionable diagnostics first (signal-not-captured, over-weighted),
+      // then aligned, then no-signal/noisy.
+      const mismatchPriority = {
+        signal_not_captured: 0,
+        over_weighted:       1,
+        partial:             2,
+        backwards:           2,  // legacy
+        aligned:             3,
+        no_signal:           4,
+        flat:                4,  // legacy
+        noisy:               5,
+        null:                6,
+      };
+      const mismatchColor = {
+        signal_not_captured: '#ff6b6b',
+        over_weighted:       '#ff6b6b',
+        partial:             'var(--orange)',
+        backwards:           'var(--orange)',
+        aligned:             'var(--green)',
+        no_signal:           'var(--text-muted)',
+        flat:                'var(--text-muted)',
+        noisy:               'var(--text-muted)',
+      };
+      const mismatchLabel = {
+        signal_not_captured: 'SIGNAL NOT CAPTURED',
+        over_weighted:       'OVER-WEIGHTED',
+        partial:             'PARTIAL',
+        backwards:           'PARTIAL',
+        aligned:             'ALIGNED',
+        no_signal:           'NO SIGNAL',
+        flat:                'FLAT',
+        noisy:               'NOISY (low n)',
+      };
+      let html = '';
+      factorOrder.forEach(factor => {
+        const inputsInFactor = grouped[factor];
+        if (!inputsInFactor) return;
+        inputsInFactor.sort((a,b) => {
+          const ma = mismatchPriority[inputs[a].mismatch] ?? 4;
+          const mb = mismatchPriority[inputs[b].mismatch] ?? 4;
+          return ma - mb;
+        });
+        html += `<div style="margin-bottom:18px">
+          <h4 style="font-size:13px;color:var(--text);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">${factor}</h4>`;
+        inputsInFactor.forEach(k => {
+          const cal = inputs[k];
+          const mm = cal.status || cal.mismatch || 'flat';
+          const mmColor = mismatchColor[mm] || mismatchColor.flat;
+          const mmText  = mismatchLabel[mm]  || mm.toUpperCase();
+          // Trend pills (empirical vs score) for at-a-glance interpretation
+          const trendPill = (val, label) => {
+            const arrow = val > 0 ? '↑' : val < 0 ? '↓' : '→';
+            const c = val > 0 ? 'var(--green)' : val < 0 ? '#ff6b6b' : 'var(--text-muted)';
+            return `<span style="font-size:10px;color:${c};margin-left:8px">${label} ${arrow}</span>`;
+          };
+          const trendBadges = (cal.empirical_trend !== undefined)
+            ? `${trendPill(cal.empirical_trend, 'HR rate')}${trendPill(cal.score_trend, 'score')}`
+            : '';
+          html += `<div style="margin-bottom:14px;border-left:3px solid ${mmColor};padding-left:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <div>
+                <strong style="font-size:13px">${k}</strong>
+                ${trendBadges}
+              </div>
+              <span style="font-size:10px;text-transform:uppercase;color:${mmColor};letter-spacing:0.5px;font-weight:600">${mmText}</span>
+            </div>
+            <table style="width:100%;font-size:11px"><thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+              <th style="text-align:left;padding:3px 6px">Bin</th>
+              <th style="text-align:right;padding:3px 6px">Range</th>
+              <th style="text-align:right;padding:3px 6px">N</th>
+              <th style="text-align:right;padding:3px 6px">HR rate %</th>
+              <th style="text-align:right;padding:3px 6px">Avg ${factor} score</th>
+              <th style="padding:3px 6px;width:120px">Curves</th>
+            </tr></thead><tbody>`;
+          // Find max HR rate + max score for inline bar viz
+          const maxHr = Math.max(...cal.bins.map(b => b.hr_rate), 1);
+          const maxScore = 100;
+          cal.bins.forEach(b => {
+            const hrW = (b.hr_rate / maxHr) * 60;
+            const scW = ((b.avg_score || 0) / maxScore) * 60;
+            html += `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:4px 6px">${b.bin}</td>
+              <td style="text-align:right;padding:4px 6px;color:var(--text-muted)">${b.bin_low}–${b.bin_high}</td>
+              <td style="text-align:right;padding:4px 6px;color:var(--text-muted)">${b.n}</td>
+              <td style="text-align:right;padding:4px 6px;color:var(--green);font-weight:600">${b.hr_rate}%</td>
+              <td style="text-align:right;padding:4px 6px;color:var(--orange)">${b.avg_score != null ? b.avg_score : '—'}</td>
+              <td style="padding:4px 6px">
+                <div style="display:flex;gap:2px;align-items:center;font-size:9px">
+                  <div style="width:${hrW}px;height:6px;background:var(--green);border-radius:1px" title="HR rate"></div>
+                </div>
+                <div style="display:flex;gap:2px;align-items:center;font-size:9px;margin-top:2px">
+                  <div style="width:${scW}px;height:6px;background:var(--orange);border-radius:1px" title="Avg score"></div>
+                </div>
+              </td>
+            </tr>`;
+          });
+          html += '</tbody></table></div>';
+        });
+        html += '</div>';
+      });
+      el.innerHTML = html;
+    }
+
+    // ── Render: Dome vs outdoor with park-factor cross-tab ──
+    function renderDomeVsOutdoor(data) {
+      const el = document.getElementById('domeVsOutdoor');
+      const s = data.summary || {};
+      // Treat n < 20 as not-yet-significant so single-pick samples don't
+      // produce misleading 100% verdicts. The cross-tab below the cards
+      // shows the full picture using all pick_inputs rows (selected + non).
+      const N_SIG = 20;
+      const domeN = s.dome_picks || 0;
+      const outdoorN = s.outdoor_picks || 0;
+      const domeSig = domeN >= N_SIG;
+      const outdoorSig = outdoorN >= N_SIG;
+      const bothSig = domeSig && outdoorSig;
+      const muted = 'var(--text-muted)';
+      const fmtRate = (val, sig) => sig
+        ? `<div style="font-size:20px;font-weight:600;color:var(--green)">${val || 0}%</div>`
+        : `<div style="font-size:20px;font-weight:600;color:${muted}">${val || 0}%</div>
+           <div style="font-size:9px;color:${muted};font-style:italic">n too small</div>`;
+      let html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px">
+          <div style="font-size:10px;color:${muted};text-transform:uppercase">Dome share of picks</div>
+          <div style="font-size:20px;font-weight:600;color:${s.dome_share > 60 ? 'var(--orange)' : 'var(--text)'}">${s.dome_share || 0}%</div>
+          <div style="font-size:10px;color:${muted}">${domeN} / ${domeN+outdoorN}</div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px">
+          <div style="font-size:10px;color:${muted};text-transform:uppercase">Dome HR rate</div>
+          ${fmtRate(s.dome_hr_rate, domeSig)}
+          <div style="font-size:9px;color:${muted}">n=${domeN}</div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px">
+          <div style="font-size:10px;color:${muted};text-transform:uppercase">Outdoor HR rate</div>
+          ${fmtRate(s.outdoor_hr_rate, outdoorSig)}
+          <div style="font-size:9px;color:${muted}">n=${outdoorN}</div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px">
+          <div style="font-size:10px;color:${muted};text-transform:uppercase">Bias signal</div>
+          ${bothSig
+            ? `<div style="font-size:14px;font-weight:600;color:${(s.dome_hr_rate || 0) >= (s.outdoor_hr_rate || 0) ? 'var(--green)' : 'var(--orange)'}">
+                 ${(s.dome_hr_rate || 0) >= (s.outdoor_hr_rate || 0) ? 'Dome bias justified' : 'Dome under-converts'}
+               </div>
+               <div style="font-size:10px;color:${muted}">Δ ${((s.dome_hr_rate||0) - (s.outdoor_hr_rate||0)).toFixed(1)} pts</div>`
+            : `<div style="font-size:12px;font-weight:600;color:${muted}">Not enough data</div>
+               <div style="font-size:10px;color:${muted}">need n≥${N_SIG} both sides</div>`}
+        </div>
+      </div>`;
+      // Cross-tab cells
+      html += `<table style="width:100%;font-size:12px"><thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+        <th style="text-align:left;padding:4px 8px">Dome</th>
+        <th style="text-align:left;padding:4px 8px">Park factor band</th>
+        <th style="text-align:right;padding:4px 8px">N</th>
+        <th style="text-align:right;padding:4px 8px">HR rate</th>
+        <th style="text-align:right;padding:4px 8px">Avg weather score</th>
+        <th style="text-align:right;padding:4px 8px">Selected picks</th>
+      </tr></thead><tbody>`;
+      (data.cells || []).forEach(c => {
+        html += `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:6px 8px">${c.is_dome ? '🏟 Dome' : '☀ Outdoor'}</td>
+          <td style="padding:6px 8px;color:var(--text-muted)">${c.pf_band}</td>
+          <td style="text-align:right;padding:6px 8px">${c.n}</td>
+          <td style="text-align:right;padding:6px 8px;color:var(--green)">${c.hr_rate}%</td>
+          <td style="text-align:right;padding:6px 8px;color:var(--orange)">${c.avg_weather_score != null ? c.avg_weather_score : '—'}</td>
+          <td style="text-align:right;padding:6px 8px;color:var(--text-muted)">${c.selected_picks}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    }
+
+    // ── Render: Wind direction diagnostic ──
+    function renderWindDiag(data) {
+      const el = document.getElementById('windDirectionDiag');
+      const bands = data.bands || [];
+      if (bands.length === 0) {
+        el.innerHTML = `<div class="empty">No wind diagnostic data — needs outdoor games joined to daily_slate. Unknown venues: ${(data.unknown_venues||[]).join(', ') || 'none'}</div>`;
+        return;
+      }
+      let html = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+        Sample: ${data.n_outdoor} outdoor pick-rows over last ${data.days} days.
+        ${data.unknown_venues && data.unknown_venues.length ? `Venues missing CF bearing: <span style="color:var(--orange)">${data.unknown_venues.join(', ')}</span>` : ''}
+      </div>`;
+      html += `<table style="width:100%;font-size:12px"><thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+        <th style="text-align:left;padding:4px 8px">Wind band</th>
+        <th style="text-align:right;padding:4px 8px">N</th>
+        <th style="text-align:right;padding:4px 8px">HR rate %</th>
+        <th style="text-align:right;padding:4px 8px">Avg helping MPH</th>
+        <th style="text-align:right;padding:4px 8px">Avg weather score</th>
+      </tr></thead><tbody>`;
+      // Maximum HR rate for inline bar
+      const maxHr = Math.max(...bands.map(b => b.hr_rate), 1);
+      bands.forEach(b => {
+        const w = (b.hr_rate / maxHr) * 80;
+        // Color: out_strong → green, in_strong → red
+        const bandColor = b.band.startsWith('out') ? 'var(--green)' :
+                          b.band.startsWith('in')  ? '#ff6b6b' : 'var(--text-muted)';
+        html += `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:6px 8px;color:${bandColor};font-weight:600">${b.label}</td>
+          <td style="text-align:right;padding:6px 8px">${b.n}</td>
+          <td style="text-align:right;padding:6px 8px">
+            <span style="color:var(--green);font-weight:600">${b.hr_rate}%</span>
+            <span style="display:inline-block;width:${w}px;height:6px;background:var(--green);margin-left:4px;vertical-align:middle;border-radius:1px"></span>
+          </td>
+          <td style="text-align:right;padding:6px 8px;color:var(--text-muted)">${b.avg_helping_mph != null ? b.avg_helping_mph : '—'}</td>
+          <td style="text-align:right;padding:6px 8px;color:var(--orange)">${b.avg_weather_score != null ? b.avg_weather_score : '—'}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      html += `<div style="font-size:10px;color:var(--text-muted);margin-top:8px;font-style:italic">${data.note || ''}</div>`;
+      el.innerHTML = html;
+    }
+
+    // ── Source toggle for temp×humidity heatmap (live / historical / combined) ──
+    function bindTempHumiditySourceChips() {
+      document.querySelectorAll('[data-temp-source]').forEach(btn => {
+        btn.onclick = () => {
+          // Only deactivate temp-source chips, not the composite/rank ones in the
+          // factor-decomp section above — they share .band-chip styling but are
+          // an independent toggle group.
+          document.querySelectorAll('[data-temp-source]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const source = btn.dataset.tempSource;
+          const perf = window._perfData;
+          if (!perf) return;
+          let data = null;
+          if (source === 'live')        data = perf.temp_humidity_heatmap;
+          else if (source === 'historical') data = perf.temp_humidity_heatmap_historical;
+          else if (source === 'combined')   data = combineTempHumidityHeatmaps(perf.temp_humidity_heatmap, perf.temp_humidity_heatmap_historical);
+          if (!data) {
+            document.getElementById('tempHumidityHeatmap').innerHTML =
+              `<div class="empty">${source === 'historical'
+                ? 'No historical calibration data yet — run etl/historical_calibration.py to backfill.'
+                : 'No data for this source.'}</div>`;
+            return;
+          }
+          renderTempHumidityHeatmap(data);
+        };
+      });
+    }
+
+    // Combine live + historical cell counts into a single weighted heatmap.
+    // We sum N and hits per cell, recompute hr_rate, and recompute interaction
+    // against the combined overall rate. Useful when the live data alone is
+    // too sparse but you still want this season weighted.
+    function combineTempHumidityHeatmaps(live, hist) {
+      if (!live && !hist) return null;
+      if (!live || !live.cells || live.cells.length === 0) return hist;
+      if (!hist || !hist.available || !hist.cells || hist.cells.length === 0) return live;
+      const tempBands = live.temp_bands || hist.temp_bands;
+      const humidBands = live.humid_bands || hist.humid_bands;
+      // Reconstruct N + hits per cell from rates. (live has hr_rate but not raw hits;
+      // we derive hits = round(hr_rate/100 * n) for both sources to stay consistent.)
+      const cells = [];
+      const lookup = (data) => {
+        const m = {};
+        (data.cells || []).forEach(c => { m[`${c.temp_band}|${c.humid_band}`] = c; });
+        return m;
+      };
+      const liveMap = lookup(live);
+      const histMap = lookup(hist);
+      // First pass: per-cell merge
+      const merged = {};
+      const allKeys = new Set([...Object.keys(liveMap), ...Object.keys(histMap)]);
+      let total_n = 0, total_hits = 0;
+      const by_temp = {}, by_humid = {};
+      allKeys.forEach(k => {
+        const l = liveMap[k] || {n: 0, hits: 0, hr_rate: 0};
+        const h = histMap[k] || {n: 0, hits: 0, hr_rate: 0};
+        const lhits = l.hits != null ? l.hits : Math.round((l.hr_rate || 0) / 100 * (l.n || 0));
+        const hhits = h.hits != null ? h.hits : Math.round((h.hr_rate || 0) / 100 * (h.n || 0));
+        const n = (l.n || 0) + (h.n || 0);
+        const hits = lhits + hhits;
+        const [t, hb] = k.split('|');
+        merged[k] = {temp_band: t, humid_band: hb, n, hits};
+        total_n += n; total_hits += hits;
+        by_temp[t]   = (by_temp[t] || 0) + n;
+        by_humid[hb] = (by_humid[hb] || 0) + n;
+      });
+      // Second pass: rates + interaction
+      const overall = total_n ? total_hits / total_n : 0;
+      const tempHits = {}, humidHits = {};
+      allKeys.forEach(k => {
+        const c = merged[k];
+        tempHits[c.temp_band]   = (tempHits[c.temp_band]   || 0) + c.hits;
+        humidHits[c.humid_band] = (humidHits[c.humid_band] || 0) + c.hits;
+      });
+      Object.values(merged).forEach(c => {
+        if (!c.n) {
+          c.hr_rate = null; c.interaction = null; cells.push(c); return;
+        }
+        const rate = c.hits / c.n;
+        const rate_t = (tempHits[c.temp_band]   || 0) / Math.max(by_temp[c.temp_band] || 1, 1);
+        const rate_h = (humidHits[c.humid_band] || 0) / Math.max(by_humid[c.humid_band] || 1, 1);
+        const baseline = overall > 0 ? (rate_t * rate_h / overall) : 0;
+        c.hr_rate = +(rate * 100).toFixed(1);
+        c.additive_baseline = +(baseline * 100).toFixed(1);
+        c.interaction = +((rate - baseline) * 100).toFixed(1);
+        cells.push(c);
+      });
+      return {
+        n_total: total_n,
+        overall_hr_rate: +(overall * 100).toFixed(1),
+        temp_bands: tempBands,
+        humid_bands: humidBands,
+        cells,
+        note: 'Combined: live + historical seasons. Cell counts are summed.',
+      };
+    }
+
+    // ── Render: Temperature × humidity 2D heatmap ──
+    function renderTempHumidityHeatmap(data) {
+      const el = document.getElementById('tempHumidityHeatmap');
+      if (!data.cells || data.cells.length === 0 || !data.n_total) {
+        el.innerHTML = '<div class="empty">No outdoor games with both temp and humidity yet.</div>';
+        return;
+      }
+      const tempBands = data.temp_bands || [];
+      const humidBands = data.humid_bands || [];
+      // Build a quick lookup
+      const lookup = {};
+      data.cells.forEach(c => { lookup[`${c.temp_band}|${c.humid_band}`] = c; });
+      // Color intensity scales with absolute interaction value
+      const maxAbs = Math.max(...data.cells.map(c => Math.abs(c.interaction || 0)), 1);
+      const cellColor = (interaction) => {
+        if (interaction === null || interaction === undefined) return 'var(--bg-deep)';
+        const intensity = Math.min(1, Math.abs(interaction) / maxAbs);
+        if (interaction > 0) return `rgba(63,185,80,${0.15 + intensity * 0.5})`;
+        return `rgba(255,107,107,${0.15 + intensity * 0.5})`;
+      };
+      let html = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+        Sample: ${data.n_total} outdoor pick-rows over last ${data.days} days. Overall HR rate:
+        <strong>${data.overall_hr_rate}%</strong>.
+      </div>`;
+      html += `<div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+          <th style="text-align:left;padding:6px 8px">Temp ↓ / Humidity →</th>`;
+      humidBands.forEach(h => {
+        html += `<th style="text-align:center;padding:6px 8px">${h}</th>`;
+      });
+      html += '</tr></thead><tbody>';
+      const N_CELL_SIG = 5;  // suppress cells with insufficient sample
+      tempBands.forEach(t => {
+        html += `<tr><td style="padding:6px 8px;font-weight:600;color:var(--text-muted);text-transform:uppercase;font-size:10px">${t}</td>`;
+        humidBands.forEach(h => {
+          const c = lookup[`${t}|${h}`];
+          if (!c || c.n === 0) {
+            html += `<td style="padding:8px;text-align:center;background:var(--bg-deep);color:var(--text-muted);font-size:10px">—</td>`;
+          } else if (c.n < N_CELL_SIG) {
+            // Sample too small — gray out and show n only, no rate or delta
+            html += `<td style="padding:8px;text-align:center;background:var(--bg-deep);border:1px solid var(--border)">
+              <div style="font-size:11px;color:var(--text-muted);font-style:italic">n=${c.n}</div>
+              <div style="font-size:9px;color:var(--text-muted)">too small</div>
+            </td>`;
+          } else {
+            const sign = c.interaction > 0 ? '+' : '';
+            html += `<td style="padding:8px;text-align:center;background:${cellColor(c.interaction)};border:1px solid var(--border)">
+              <div style="font-size:13px;font-weight:600;color:var(--text)">${c.hr_rate}%</div>
+              <div style="font-size:9px;color:var(--text-muted)">n=${c.n}</div>
+              <div style="font-size:10px;color:${c.interaction > 0 ? 'var(--green)' : c.interaction < 0 ? '#ff6b6b' : 'var(--text-muted)'}">
+                Δ ${sign}${c.interaction}
+              </div>
+            </td>`;
+          }
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      html += `<div style="font-size:10px;color:var(--text-muted);margin-top:8px;font-style:italic">${data.note || ''}</div>`;
+      el.innerHTML = html;
+    }
+
+    // ── Render: Elite pitcher × archetype interaction (5x5 heatmap) ──
+    function renderArchetypeDampening(data) {
+      const el = document.getElementById('archetypeDampening');
+      if (!data.cells || data.cells.length === 0) {
+        el.innerHTML = '<div class="empty">' +
+          'No v2-scored picks with archetype data yet. ' +
+          'This diagnostic filters to <code>matchup_version = "v2"</code> rows only — ' +
+          'historically <code>USE_PER_PLAYER_STATCAST</code> was off, so most picks were ' +
+          'scored via v1 fallback (no archetype). Now that the flag is on, this view will ' +
+          'populate as new v2 picks accumulate.' +
+          '</div>';
+        return;
+      }
+      // Build lookup [vuln_bin][sim_bin]
+      const lookup = {};
+      data.cells.forEach(c => {
+        lookup[`${c.vuln_bin}|${c.sim_bin}`] = c;
+      });
+      const maxRate = Math.max(...data.cells.map(c => c.hr_rate || 0), 1);
+      const cellColor = (rate) => {
+        const intensity = Math.min(1, rate / maxRate);
+        return `rgba(63,185,80,${0.10 + intensity * 0.5})`;
+      };
+      // Diagnosis banner
+      const diagBanner = (() => {
+        if (!data.diagnosis) return '';
+        const banners = {
+          over_dampened:  { color: '#ff6b6b', text: 'Over-dampened: elite-pitcher × high-archetype cell over-converts but is scored low. Lever: condition dampening on similarity.' },
+          under_dampened: { color: 'var(--orange)', text: 'Under-dampened: elite-pitcher × high-archetype cell under-converts but is scored high.' },
+          calibrated:     { color: 'var(--green)', text: 'Dampening looks calibrated for this cell.' },
+        };
+        const b = banners[data.diagnosis] || {color: 'var(--text-muted)', text: data.diagnosis};
+        return `<div style="border:1px solid ${b.color};border-radius:6px;padding:10px;margin-bottom:14px;font-size:12px;color:${b.color}">${b.text}</div>`;
+      })();
+      let html = diagBanner;
+      html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+        Sample: ${data.n_total} pick-rows. Lower vuln_bin = more elite pitcher (lower HR/9). Higher sim_bin = better archetype match.
+      </div>`;
+      html += `<div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+          <th style="text-align:left;padding:6px 8px">Vuln ↓ / Sim →</th>
+          <th style="text-align:center;padding:6px 8px">Sim 1 (low)</th>
+          <th style="text-align:center;padding:6px 8px">Sim 2</th>
+          <th style="text-align:center;padding:6px 8px">Sim 3</th>
+          <th style="text-align:center;padding:6px 8px">Sim 4</th>
+          <th style="text-align:center;padding:6px 8px">Sim 5 (high)</th>
+        </tr></thead><tbody>`;
+      const vulnLabels = {1: 'Vuln 1 (elite)', 2: 'Vuln 2', 3: 'Vuln 3', 4: 'Vuln 4', 5: 'Vuln 5 (worst)'};
+      for (let v = 1; v <= 5; v++) {
+        html += `<tr><td style="padding:6px 8px;font-weight:600;color:var(--text-muted);text-transform:uppercase;font-size:10px">${vulnLabels[v]}</td>`;
+        for (let s = 1; s <= 5; s++) {
+          const c = lookup[`${v}|${s}`];
+          if (!c || c.n === 0) {
+            html += `<td style="padding:8px;text-align:center;background:var(--bg-deep);color:var(--text-muted);font-size:10px">—</td>`;
+          } else {
+            // Highlight the diagnostic cell
+            const isTarget = (v === 1 && s === 5);
+            const border = isTarget ? '2px solid var(--orange)' : '1px solid var(--border)';
+            html += `<td style="padding:8px;text-align:center;background:${cellColor(c.hr_rate)};border:${border}">
+              <div style="font-size:13px;font-weight:600;color:var(--text)">${c.hr_rate}%</div>
+              <div style="font-size:9px;color:var(--text-muted)">n=${c.n}</div>
+              <div style="font-size:10px;color:var(--orange)">score ${c.avg_matchup_score != null ? c.avg_matchup_score : '—'}</div>
+            </td>`;
+          }
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+      html += `<div style="font-size:10px;color:var(--text-muted);margin-top:8px;font-style:italic">${data.note || ''}</div>`;
+      el.innerHTML = html;
+    }
+
+    // ── Render: Pick composition ──
+    function renderPickComposition(data) {
+      const el = document.getElementById('pickComposition');
+      const total = data.total_picks || 0;
+      const renderDist = (title, items, flagFn) => {
+        let h = `<div style="margin-bottom:14px">
+          <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px">${title}</div>`;
+        (items || []).forEach(it => {
+          const flag = flagFn ? flagFn(it) : null;
+          const color = flag ? 'var(--orange)' : 'var(--text)';
+          const w = Math.max(2, it.pct);  // min 2px so 0% bins are still visible
+          h += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:3px;font-size:12px">
+            <div style="width:120px;color:${color}">${it.label}</div>
+            <div style="flex:0 0 ${w * 3}px;max-width:300px;height:8px;background:var(--green);border-radius:1px"></div>
+            <div style="color:var(--text-muted);font-size:11px">${it.pct}% (${it.n})</div>
+            ${flag ? `<div style="font-size:10px;color:var(--orange);font-style:italic">${flag}</div>` : ''}
+          </div>`;
+        });
+        h += '</div>';
+        return h;
+      };
+      let html = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+        Total selected picks in window: <strong>${total}</strong>
+      </div>`;
+      html += renderDist('Park factor', data.park_factor, it =>
+        (it.label === '<95' && it.pct < 5) ? 'under-represented?' : null);
+      html += renderDist('Batting order', data.batting_order, it =>
+        (it.label === '7-9 (bottom)' && it.pct > 25) ? 'high bottom-of-order share' :
+        (it.label === '1-3 (top)' && it.pct < 30) ? 'low leadoff/top share' : null);
+      html += renderDist('Dome vs outdoor', data.dome, it =>
+        (it.label === 'Dome' && it.pct > 60) ? 'dome-heavy' : null);
+      el.innerHTML = html;
+    }
+
+    // ── Render: HR-hitters split by composite band (Flavor B) ──
+    function renderHRSplit(split) {
+      const lo = split.low;
+      const hi = split.high;
+      if (!lo || !hi || (lo.n === 0 && hi.n === 0)) {
+        document.getElementById('hrSplitDecomp').innerHTML =
+          '<div class="empty">No HR-split data yet.</div>';
+        return;
+      }
+      const factorOrder = ['power','matchup','form','park','weather','lineup'];
+      let html = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+        Sample: <strong style="color:var(--orange)">${lo.n}</strong> HR hitters scored ${lo.low}-${lo.high}
+        vs <strong style="color:var(--green)">${hi.n}</strong> HR hitters scored ${hi.low}-${hi.high}.
+      </div>`;
+      factorOrder.forEach(factor => {
+        const loRows = lo.factors[factor] || [];
+        const hiRows = hi.factors[factor] || [];
+        if (loRows.length === 0 && hiRows.length === 0) return;
+        html += `<div style="margin-bottom:18px">
+          <h4 style="font-size:13px;color:var(--text);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">${factor}</h4>
+          <table style="width:100%;font-size:12px"><thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+            <th style="text-align:left;padding:4px 8px">Input</th>
+            <th style="text-align:right;padding:4px 8px;width:110px">${lo.label}</th>
+            <th style="text-align:right;padding:4px 8px;width:110px">${hi.label}</th>
+            <th style="text-align:right;padding:4px 8px;width:80px">Δ (low−high)</th>
+          </tr></thead><tbody>`;
+        // Pair rows by input name
+        const inputs = loRows.map(r => r.input);
+        inputs.forEach(inp => {
+          const lr = loRows.find(r => r.input === inp);
+          const hr = hiRows.find(r => r.input === inp) || {};
+          const lm = lr?.hr_mean;
+          const hm = hr?.hr_mean;
+          const delta = (lm != null && hm != null) ? (lm - hm) : null;
+          // Bigger |delta|/|hm| → flag
+          const rel = (delta != null && hm) ? Math.abs(delta / hm) : 0;
+          const color = rel > 0.15 ? 'var(--orange)' : (rel > 0.05 ? 'var(--text-muted)' : '#555');
+          const dStr = delta != null ? `${delta > 0 ? '+' : ''}${delta.toFixed(2)}` : '—';
+          html += `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:6px 8px;font-weight:500">${inp}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--orange)">${lm != null ? lm.toFixed(2) : '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--green)">${hm != null ? hm.toFixed(2) : '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:${color};font-weight:600">${dStr}</td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      });
+      document.getElementById('hrSplitDecomp').innerHTML = html;
+    }
+
+    // ── Render: Per-factor decomposition ──
+    function renderFactorDecomp(decomp) {
+      const factors = decomp.factors;
+      const n_hr = decomp.n_hr || 0;
+      const n_miss = decomp.n_miss || 0;
+      if (n_hr === 0 && n_miss === 0) {
+        document.getElementById('factorDecomp').innerHTML =
+          '<div class="empty">No pick_inputs data yet — comes online with the next noon run after 2026-04-30.</div>';
+        return;
+      }
+      const factorOrder = ['power','matchup','form','park','weather','lineup'];
+      const prov = decomp.provenance || {};
+      const liveN = prov.live || 0;
+      const backfillN = prov.backfill || 0;
+      const provNote = (liveN || backfillN)
+        ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Sources: <strong style="color:var(--green)">${liveN}</strong> live rows, <strong style="color:var(--orange)">${backfillN}</strong> backfilled (current-stats proxy for older days).</div>`
+        : '';
+      let html = `${provNote}<div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+        Sample: ${n_hr} HR-batter rows / ${n_miss} miss-batter rows over last ${decomp.days} days.
+      </div>`;
+      factorOrder.forEach(factor => {
+        const inputs = factors[factor] || [];
+        if (inputs.length === 0) return;
+        html += `<div style="margin-bottom:18px">
+          <h4 style="font-size:13px;color:var(--text);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">${factor}</h4>
+          <table style="width:100%;font-size:12px"><thead><tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase">
+            <th style="text-align:left;padding:4px 8px">Input</th>
+            <th style="text-align:right;padding:4px 8px;width:90px">HR mean</th>
+            <th style="text-align:right;padding:4px 8px;width:90px">Miss mean</th>
+            <th style="text-align:right;padding:4px 8px;width:70px">Gap</th>
+            <th style="padding:4px 8px">Visual</th>
+          </tr></thead><tbody>`;
+        inputs.forEach(i => {
+          const hr = i.hr_mean;
+          const miss = i.miss_mean;
+          const gap = i.gap;
+          if (hr === null && miss === null) {
+            html += `<tr><td style="padding:6px 8px">${i.input}</td><td colspan="4" style="text-align:center;color:var(--text-muted);font-size:11px">no data yet</td></tr>`;
+            return;
+          }
+          const lo = Math.min(hr ?? 0, miss ?? 0, 0);
+          const hi = Math.max(hr ?? 0, miss ?? 0, 0.0001);
+          const range = hi - lo;
+          const hrPct = range > 0 ? ((hr - lo) / range * 100).toFixed(1) : 50;
+          const missPct = range > 0 ? ((miss - lo) / range * 100).toFixed(1) : 50;
+          const gapColor = Math.abs(gap || 0) >= (range || 1) * 0.15 ? 'var(--green)' : 'var(--text-muted)';
+          const gapSign = gap > 0 ? '+' : '';
+          html += `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:6px 8px;font-weight:500">${i.input}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--green);font-weight:600">${hr?.toFixed?.(2) ?? '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:var(--text-muted)">${miss?.toFixed?.(2) ?? '—'}</td>
+            <td style="text-align:right;padding:6px 8px;color:${gapColor};font-weight:600">${gapSign}${gap?.toFixed?.(2) ?? '—'}</td>
+            <td style="padding:6px 8px"><div style="position:relative;height:18px;background:var(--surface-2);border-radius:3px;overflow:hidden">
+              <div style="position:absolute;left:0;top:0;height:100%;width:${missPct}%;background:rgba(139,148,158,0.4)"></div>
+              <div style="position:absolute;left:0;top:0;height:100%;width:${hrPct}%;background:rgba(63,185,80,0.6)"></div>
+            </div></td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      });
+      document.getElementById('factorDecomp').innerHTML = html;
+    }
+
+    // ── Render: Big Board v1 ──
+    // Statbook ledger (left) + slate sidebar (right). Filter pattern
+    // changed 2026-05-01: T1/T2/T3/Picked buttons replaced with team
+    // dropdown + free-text name search. Click any row → Topps modal.
+    let _boardCache = null;
+    let _boardTeam   = 'all';
+    let _boardSearch = '';
+
+    async function renderBoard() {
+      if (!_boardCache) {
+        const data = await fetchJSON('picks_latest');
+        if (!data || !data.full_board) {
+          document.getElementById('boardTable').innerHTML = '<div class="empty">No board data yet.</div>';
+          return;
+        }
+        _boardCache = data;
+        // Populate the team filter dropdown one time on first load.
+        const teams = Array.from(new Set(data.full_board.map(r => r.team).filter(Boolean))).sort();
+        const sel = document.getElementById('boardTeamFilter');
+        if (sel.options.length <= 1) {
+          teams.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t; opt.textContent = t;
+            sel.appendChild(opt);
+          });
+        }
+      }
+      const board = _boardCache.full_board;
+      const limit = parseInt(document.getElementById('boardLimit').value, 10) || 100;
+      const search = (_boardSearch || '').trim().toLowerCase();
+
+      let rows = board.slice();
+      if (_boardTeam !== 'all') {
+        rows = rows.filter(r => r.team === _boardTeam);
+      }
+      if (search) {
+        rows = rows.filter(r => {
+          const n = (r.batter_name || r.name || '').toLowerCase();
+          return n.includes(search);
+        });
+      }
+      rows.sort((a, b) => (b.composite || 0) - (a.composite || 0));
+      rows = rows.slice(0, limit);
+
+      const totalSelected = board.filter(r => r.selected).length;
+      document.getElementById('boardStats').innerHTML = `
+        <div class="stat-card"><div class="label">Date</div><div class="value" style="font-size:14px">${formatLongDate(_boardCache.date)}</div></div>
+        <div class="stat-card"><div class="label">Showing</div><div class="value accent">${rows.length}</div></div>
+        <div class="stat-card"><div class="label">Board Total</div><div class="value">${board.length}</div></div>
+        <div class="stat-card"><div class="label">Selected</div><div class="value orange">${totalSelected}</div></div>
+      `;
+
+      // Statbook ledger table — cream paper styling inherits from .picks-table
+      let html = `<table class="picks-table mobile-expandable">
+        <thead><tr>
+          <th>#</th><th>★</th><th>Player</th><th>Team</th>
+          <th class="hide-mobile">vs Pitcher</th>
+          <th>Score</th>
+          <th class="hide-mobile">Order</th>
+        </tr></thead><tbody>`;
+
+      rows.forEach((p, i) => {
+        const star = p.selected ? '★' : '';
+        const starColor = p.selected ? 'var(--signal)' : 'transparent';
+        const pid = p.batter_id || p.player_id;
+        const name = p.batter_name || p.name || '';
+        html += `<tr data-pid="${pid}" class="clickable-row">
+          <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-muted)">${i + 1}</td>
+          <td style="color:${starColor};font-size:14px">${star}</td>
+          <td style="font-weight:600" class="player-link">${name}</td>
+          <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${p.team || ''}</td>
+          <td class="hide-mobile" style="font-style:italic;color:var(--ink-soft);font-size:12px">${p.opp_pitcher || '-'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:700">${(p.composite || 0).toFixed(1)}</td>
+          <td class="hide-mobile">${orderLabel(p.batting_order)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      document.getElementById('boardTable').innerHTML = html;
+
+      renderSlateRail(_boardCache);
+      renderHistogramRail(_boardCache);
+      bindMobileTables();
+      bindPlayerClicks();
+    }
+
+    // ── Right rail: Today's Slate of games (condensed) ──
+    // Each game = single compact row (matchup · time · top-25 badge).
+    // Click → opens a game-card modal with all the details (weather,
+    // pitchers, top-25 batters from that game). Sorted by top-25 count
+    // descending so games with the most "where the HRs come from" show
+    // up first in the rail.
+    function renderSlateRail(cache) {
+      const games = (cache.slate_games || []).slice();
+      const el = document.getElementById('railSlate');
+      if (!games.length) {
+        el.innerHTML = '<h4>Today\'s Slate</h4><div class="empty">No games yet.</div>';
+        return;
+      }
+      // Sort by top-25 count desc, then by game time
+      games.sort((a, b) => {
+        const ac = a.top25_count || 0, bc = b.top25_count || 0;
+        if (bc !== ac) return bc - ac;
+        return (a.game_time || '').localeCompare(b.game_time || '');
+      });
+      let html = `<h4>Today's Slate · ${games.length} games</h4>`;
+      games.forEach(g => {
+        const time = formatGameTime(g.game_time) || 'TBD';
+        const badgeClass = g.top25_count > 0 ? '' : 'zero';
+        const badgeTxt = g.top25_count > 0 ? `${g.top25_count}` : '0';
+        html += `<div class="slate-game compact" data-gpk="${g.game_pk}">
+          <div class="matchup">${g.away_team || '?'} @ ${g.home_team || '?'}</div>
+          <div class="time">${time}</div>
+          <div class="top-badge ${badgeClass}" title="${g.top25_count || 0} batters from this game in today's top 25">
+            ${badgeTxt}<span class="badge-suffix"> in top 25</span>
+          </div>
+        </div>`;
+      });
+      el.innerHTML = html;
+      // Bind click → openGameModal
+      el.querySelectorAll('[data-gpk]').forEach(row => {
+        row.addEventListener('click', () => openGameModal(parseInt(row.dataset.gpk, 10)));
+      });
+    }
+
+    // ── Right rail: Composite distribution histogram ──
+    // 5-pt bins from 20-90. Bars below the top-25 cutoff render in the
+    // muted rule color; bars at-or-above cutoff get the clay-to-signal
+    // gradient, the same accent we use for active scores.
+    function renderHistogramRail(cache) {
+      const board = cache.full_board || [];
+      const el = document.getElementById('railHistogram');
+      if (!board.length) {
+        el.innerHTML = '<h4>Composite Distribution</h4><div class="empty">No board.</div>';
+        return;
+      }
+      // Top-25 composite cutoff
+      const sorted = board.slice().sort((a, b) => (b.composite || 0) - (a.composite || 0));
+      const cutoff = sorted.length >= 25 ? sorted[24].composite : (sorted[sorted.length - 1]?.composite || 0);
+
+      // Bin into 5pt buckets from 20-90
+      const bins = {};
+      board.forEach(r => {
+        const c = r.composite || 0;
+        const lo = Math.floor(c / 5) * 5;
+        bins[lo] = (bins[lo] || 0) + 1;
+      });
+      const binKeys = Object.keys(bins).map(Number).sort((a, b) => a - b);
+      const maxN = Math.max(...Object.values(bins), 1);
+
+      // Flipped 2026-05-01: render highest-composite bins at the top of
+      // the histogram so the "where the picks come from" range is visible
+      // first (top-25 batters live in the upper bins).
+      let html = `<h4>Composite Distribution</h4>`;
+      html += `<div class="histogram-cutoff-note" style="margin-top:0;margin-bottom:8px;border-top:none;border-bottom:1px dashed var(--rule);padding-bottom:6px">Top 25 cutoff: ${cutoff.toFixed(1)}</div>`;
+      html += `<div class="histogram">`;
+      binKeys.slice().reverse().forEach(lo => {
+        const n = bins[lo];
+        const w = (n / maxN) * 100;
+        const aboveCutoff = lo >= cutoff;
+        html += `<div class="histogram-row">
+          <div class="bin-label">${lo}–${lo + 5}</div>
+          <div class="bin-bar ${aboveCutoff ? '' : 'below-cutoff'}" style="width:${w}%"></div>
+          <div class="bin-count">${n}</div>
+        </div>`;
+      });
+      html += `</div>`;
+      el.innerHTML = html;
+    }
+
+    // ── Bind new filter controls ──
+    document.getElementById('boardTeamFilter').addEventListener('change', (e) => {
+      _boardTeam = e.target.value;
+      renderBoard();
+    });
+    document.getElementById('boardSearch').addEventListener('input', (e) => {
+      _boardSearch = e.target.value;
+      renderBoard();
+    });
+    document.getElementById('boardLimit').addEventListener('change', renderBoard);
+
+    // Render: HR Recap
+    async function renderHRRecap() {
+      const data = await fetchJSON('hr_recap');
+      if (!data || !data.recap || data.recap.length === 0) {
+        document.getElementById('hrRecapList').innerHTML = '<div class="empty">No HR recap data yet.</div>';
+        return;
+      }
+      const recap = data.recap;
+      const totalDays = recap.length;
+      const totalHRs = recap.reduce((s, d) => s + d.hitters.length, 0);
+      const totalPicked = recap.reduce((s, d) => s + d.summary.we_picked, 0);
+      const captureRate = totalHRs > 0 ? (totalPicked / totalHRs * 100).toFixed(1) : '0';
+      document.getElementById('hrRecapStats').innerHTML = `
+        <div class="stat-card"><div class="label">Days</div><div class="value">${totalDays}</div></div>
+        <div class="stat-card"><div class="label">HR Hitters Tracked</div><div class="value accent">${totalHRs}</div></div>
+        <div class="stat-card"><div class="label">We Picked</div><div class="value green">${totalPicked}</div></div>
+        <div class="stat-card"><div class="label">Capture Rate</div><div class="value orange">${captureRate}%</div></div>
+      `;
+      let html = '';
+      recap.forEach(day => {
+        const s = day.summary;
+        const dayCapture = s.total_hr_hitters > 0 ? Math.round(s.we_picked / s.total_hr_hitters * 100) : 0;
+        const bestMissed = s.best_rank_we_missed != null ? `best missed: rank #${s.best_rank_we_missed}` : 'all picked';
+        html += `<div class="day-card">
+          <div class="day-header">
+            <div class="day-date">${formatMediumDate(day.date)}</div>
+            <div class="day-result">
+              <span style="color:var(--orange)">${s.we_picked}</span>
+              <span style="color:var(--text-muted)">/</span>
+              <span>${s.total_hr_hitters}</span>
+              <span style="color:var(--text-muted);margin-left:8px;font-size:11px">${dayCapture}% — ${bestMissed}</span>
+            </div>
+          </div>
+          <table class="picks-table mobile-expandable">
+            <thead><tr>
+              <th>Player</th><th>Team</th>
+              <th class="hide-mobile">vs Pitcher</th>
+              <th>HRs</th>
+              <th class="hide-mobile">AB</th>
+              <th>Rank</th><th>Comp</th><th>Pick?</th>
+            </tr></thead><tbody>`;
+        day.hitters.forEach(h => {
+          const rank = h.rank_in_board;
+          const onBoard = rank != null;
+          const star = h.selected ? '<span style="color:var(--orange);font-weight:700">★</span>' : (onBoard ? '<span style="color:var(--text-muted)">·</span>' : '<span style="color:#444">—</span>');
+          const rowOpacity = onBoard ? '1' : '0.55';
+          const rankCell = rank != null ? `#${rank}` : '<span style="color:var(--text-muted)">off-board</span>';
+          const compCell = h.composite != null ? h.composite.toFixed(1) : '—';
+          const pid = h.batter_id;
+          html += `<tr style="opacity:${rowOpacity}" data-pid="${pid}" class="clickable-row">
+            <td style="font-weight:600">${h.batter_name || ''}</td>
+            <td>${h.team || ''}</td>
+            <td class="hide-mobile">${h.opp_pitcher || '-'}</td>
+            <td style="color:var(--green);font-weight:700">${h.hr_count}</td>
+            <td class="hide-mobile">${h.ab || 0}</td>
+            <td>${rankCell}</td>
+            <td>${compCell}</td>
+            <td>${star}</td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      });
+      document.getElementById('hrRecapList').innerHTML = html;
+      bindPlayerClicks();
+      bindMobileTables();
+    }
+
+    // ── Render: Hitters Leaderboard ──
+    async function renderHitters() {
+      const data = await fetchJSON('hr_leaderboard');
+      if (!data || !data.rows || data.rows.length === 0) {
+        document.getElementById('hittersTable').innerHTML = '<div class="empty">No HR leaderboard data yet.</div>';
+        return;
+      }
+      const days = data.days || [];
+      const rows = data.rows;
+      const window = data.window_days || 14;
+
+      const totalHRs = rows.reduce((s, r) => s + r.total_hr, 0);
+      const picked = rows.reduce((s, r) => s + Object.values(r.by_date || {}).filter(c => c.selected).length, 0);
+      document.getElementById('hittersStats').innerHTML = `
+        <div class="stat-card"><div class="label">Window</div><div class="value">${window}d</div></div>
+        <div class="stat-card"><div class="label">Top Hitters</div><div class="value accent">${rows.length}</div></div>
+        <div class="stat-card"><div class="label">Total HRs</div><div class="value orange">${totalHRs}</div></div>
+        <div class="stat-card"><div class="label">We Caught</div><div class="value green">${picked}</div></div>
+      `;
+
+      let html = '<div style="overflow-x:auto"><table class="hitters-table"><thead><tr>';
+      html += '<th class="player-col">Batter</th><th>Total</th>';
+      days.forEach(d => { html += `<th>${d.slice(5)}</th>`; });
+      html += '</tr></thead><tbody>';
+
+      rows.forEach(r => {
+        const pid = r.batter_id;
+        html += `<tr data-pid="${pid}" class="clickable-row">`;
+        html += `<td class="player-col" style="font-weight:600">${r.batter_name} <span style="color:var(--text-muted);font-weight:400">${r.team || ''}</span></td>`;
+        html += `<td style="font-weight:700;color:var(--orange)">${r.total_hr}</td>`;
+        days.forEach(d => {
+          const c = r.by_date[d];
+          if (!c) {
+            html += '<td></td>';
+          } else {
+            const cls = c.selected ? 'cell-picked' : (c.rank != null ? 'cell-onboard' : 'cell-offboard');
+            const inner = c.rank != null ? `X (#${c.rank})` : 'X';
+            html += `<td class="${cls}">${inner}</td>`;
+          }
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      document.getElementById('hittersTable').innerHTML = html;
+      bindPlayerClicks();
+    }
+
+    // ── Player detail modal ──
+    let _picksLatestCache = null;
+    let _picksHistoryCache = null;
+
+    async function openPlayerModal(pid) {
+      if (!pid) return;
+      if (!_picksLatestCache) _picksLatestCache = await fetchJSON('picks_latest');
+      if (!_picksHistoryCache) _picksHistoryCache = await fetchJSON('picks_history');
+
+      const today = (_picksLatestCache?.picks || []).find(p => (p.batter_id || p.player_id) == pid)
+                 || (_picksLatestCache?.full_board || []).find(p => (p.batter_id || p.player_id) == pid);
+
+      const history = _picksHistoryCache?.history || [];
+      const recent = [];
+      let totalPicks = 0, totalHits = 0, totalHR = 0, totalAB = 0, totalTB = 0;
+      history.forEach(day => {
+        day.picks.forEach(p => {
+          if ((p.batter_id || p.player_id) == pid) {
+            recent.push({ date: day.date, ...p });
+            totalPicks += 1;
+            if (p.hr_count > 0) totalHits += 1;
+            totalHR += p.hr_count > 0 ? p.hr_count : 0;
+            totalAB += p.ab || 0;
+            totalTB += p.total_bases || 0;
+          }
+        });
+      });
+      recent.sort((a, b) => b.date.localeCompare(a.date));
+
+      const name = today?.batter_name || today?.name || (recent[0]?.name) || 'Player';
+      const team = today?.team || recent[0]?.team || '';
+      const headshot = headshotUrl(pid);
+
+      // Long-format Topps card popup. Stacked vertical sections with
+      // label/value rows. Pulls augmented fields from picks_latest:
+      // season_stats, model_track, game_time, plus per-factor ranks.
+      const ss   = today?.season_stats || {};
+      const mt   = today?.model_track  || {};
+      const gameTime = formatGameTime(today?.game_time);
+      const venue    = today?.venue || '';
+      const todaySub = today
+        ? `${team}${today.opp_pitcher ? ' · vs. ' + today.opp_pitcher : ''}${gameTime ? ' · ' + gameTime : ''}${venue ? ' · ' + venue : ''}`
+        : team;
+
+      let html = `
+        <div class="modal-head">
+          <img class="modal-headshot" src="${headshot}" alt="${name}" onerror="this.style.display='none'"/>
+          <div>
+            <div class="modal-name">${name}</div>
+            <div class="modal-sub">${todaySub}</div>
+          </div>
+        </div>
+      `;
+
+      // Helper: render a vertical stat list. Each row = label/value pair,
+      // optional sub-line for ranks etc.
+      const lineRow = (label, value, sub) => `
+        <div class="card-line">
+          <div class="card-line-label">${label}</div>
+          <div class="card-line-value">${value ?? '—'}${sub ? `<span class="card-line-sub">${sub}</span>` : ''}</div>
+        </div>
+      `;
+      const fmtRank = r => r ? `#${r}` : '—';
+      const fmtPct  = v => (v == null) ? '—' : `${(v * 100).toFixed(1)}%`;
+      const fmtN    = (v, d=0) => (v == null) ? '—' : (typeof v === 'number' ? v.toFixed(d) : v);
+
+      if (today) {
+        const boardSize = _picksLatestCache?.board_size || (_picksLatestCache?.full_board?.length) || 280;
+        html += `
+          <div class="modal-section">
+            <h4>vs. Today's Pitcher</h4>
+            ${lineRow('Composite', `<strong style="color:var(--signal);font-size:18px">${(today.composite||0).toFixed(1)}</strong>`, today.rank_in_board ? `Board rank ${fmtRank(today.rank_in_board)} of ${boardSize}` : '')}
+            ${lineRow('Power',     fmtN(today.power_score,   1),  fmtRank(today.rank_power))}
+            ${lineRow('Matchup',   fmtN(today.matchup_score, 1),  fmtRank(today.rank_matchup))}
+            ${lineRow('Form',      fmtN(today.form_score,    1),  fmtRank(today.rank_form))}
+            ${lineRow('Park',      fmtN(today.park_score,    1),  fmtRank(today.rank_park))}
+            ${lineRow('Weather',   fmtN(today.weather_score, 1),  fmtRank(today.rank_weather))}
+            ${lineRow('Lineup',    orderLabel(today.batting_order), fmtRank(today.rank_lineup))}
+          </div>
+        `;
+      }
+
+      // Season stats — actual season-to-date numbers from season_batting,
+      // not derived from our board.
+      if (Object.values(ss).some(v => v != null)) {
+        html += `
+          <div class="modal-section">
+            <h4>This Year</h4>
+            ${lineRow('Home Runs',    ss.hr ?? '—')}
+            ${lineRow('At-Bats',      ss.ab ?? '—')}
+            ${lineRow('Plate Appear.',ss.pa ?? '—')}
+            ${lineRow('Batting Avg.', fmtN(ss.avg, 3))}
+            ${lineRow('Slugging',     fmtN(ss.slg, 3))}
+            ${lineRow('On-Base',      fmtN(ss.obp, 3))}
+            ${lineRow('ISO',          fmtN(ss.iso, 3))}
+            ${lineRow('wOBA',         fmtN(ss.woba, 3))}
+            ${lineRow('Barrel %',     ss.barrel_pct  != null ? fmtN(ss.barrel_pct, 1) + '%' : '—')}
+            ${lineRow('Exit Velo',    ss.exit_velo   != null ? fmtN(ss.exit_velo, 1)  + ' mph' : '—')}
+            ${lineRow('HR/FB %',      ss.hr_fb_pct   != null ? fmtN(ss.hr_fb_pct, 1)  + '%' : '—')}
+          </div>
+        `;
+      }
+
+      // Model track — how this player performs *for our card*, distinct
+      // from their season stats. "Model Hits" preserved per the brief.
+      html += `
+        <div class="modal-section">
+          <h4>Model Track Record</h4>
+          ${lineRow('Days Picked',  mt.days_picked || 0)}
+          ${lineRow('Model Hits',   `<span style="color:var(--grass-deep);font-weight:600">${mt.model_hits || 0}</span>`, 'HR on a day we picked')}
+          ${lineRow('Hit Rate',     mt.hit_rate != null ? `<strong>${mt.hit_rate}%</strong>` : '—')}
+        </div>
+      `;
+
+      if (recent.length > 0) {
+        html += `
+          <div class="modal-section">
+            <h4>Recent · last ${Math.min(recent.length, 14)} picked days</h4>
+            <table class="picks-table" style="font-size:12px;border:none;box-shadow:none">
+              <thead><tr>
+                <th>Date</th><th>vs</th><th>Comp</th><th>Result</th><th>Line</th>
+              </tr></thead><tbody>
+        `;
+        recent.slice(0, 14).forEach(r => {
+          const result = r.hr_count > 0 ? '<span style="color:var(--grass-deep);font-weight:700">HR</span>'
+                       : r.hr_count >= 0 ? '<span style="color:var(--ink-muted)">·</span>'
+                       : '<span style="color:var(--ink-muted)">pending</span>';
+          const line = r.ab > 0 ? `${r.hits}/${r.ab}, ${r.total_bases||0} TB` : '—';
+          html += `<tr>
+            <td>${formatMediumDate(r.date)}</td>
+            <td>${(r.opp_pitcher||'-').slice(0,18)}</td>
+            <td>${(r.composite||0).toFixed(1)}</td>
+            <td>${result}</td>
+            <td style="color:var(--ink-muted);font-size:11px">${line}</td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      }
+
+      document.getElementById('modalBody').innerHTML = html;
+      document.getElementById('playerModal').classList.add('open');
+    }
+
+    function closePlayerModal() {
+      document.getElementById('playerModal').classList.remove('open');
+    }
+
+    document.getElementById('playerModal').addEventListener('click', (e) => {
+      if (e.target.id === 'playerModal') closePlayerModal();
+    });
+
+    // ── Game card modal (opened from Big Board slate rail) ──
+    // Shows full game details: weather (temp / wind / humidity / dome),
+    // both starting pitchers, and a list of every batter from this game
+    // who lands in today's top-25 composites. Each batter is itself
+    // clickable → opens the player modal (chained navigation).
+    function openGameModal(gpk) {
+      if (!gpk || !_picksLatestCache) return;
+      const game = (_picksLatestCache.slate_games || []).find(g => g.game_pk === gpk);
+      if (!game) return;
+      const board = _picksLatestCache.full_board || [];
+      // Top-25 batters from this game, sorted by composite
+      const top25Cutoff = board.slice().sort((a, b) => (b.composite || 0) - (a.composite || 0))[24]?.composite || 0;
+      const inGame = board
+        .filter(b => b.game_pk === gpk && (b.composite || 0) >= top25Cutoff)
+        .sort((a, b) => (b.composite || 0) - (a.composite || 0));
+
+      const time = formatGameTime(game.game_time) || 'TBD';
+      const wxParts = [];
+      if (game.dome) wxParts.push('🏟 Dome');
+      else {
+        if (game.temperature_f != null) wxParts.push(`${Math.round(game.temperature_f)}°F`);
+        if (game.wind_mph != null)      wxParts.push(`${Math.round(game.wind_mph)} mph wind`);
+      }
+      const wxLine = wxParts.join(' · ') || '—';
+
+      const lineRow = (label, value) => `
+        <div class="card-line">
+          <div class="card-line-label">${label}</div>
+          <div class="card-line-value">${value ?? '—'}</div>
+        </div>
+      `;
+
+      let html = `
+        <div class="modal-head">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:700;letter-spacing:0.04em;color:var(--ink);text-align:center;width:88px;line-height:1.1">
+            ${game.away_team || '?'}<br/>
+            <span style="font-size:13px;color:var(--ink-muted);font-weight:500">@</span><br/>
+            ${game.home_team || '?'}
+          </div>
+          <div>
+            <div class="modal-name">${game.away_team || '?'} at ${game.home_team || '?'}</div>
+            <div class="modal-sub">${time} · ${game.venue || '—'}</div>
+          </div>
+        </div>
+        <div class="modal-section">
+          <h4>Conditions</h4>
+          ${lineRow('Weather', wxLine)}
+          ${lineRow('Vegas team total %ile', game.vegas_pct_avg != null ? `${game.vegas_pct_avg}%` : '—')}
+        </div>
+        <div class="modal-section">
+          <h4>Pitching Matchup</h4>
+          ${lineRow(`${game.away_team || 'AWAY'} starter`, game.away_pitcher || '—')}
+          ${lineRow(`${game.home_team || 'HOME'} starter`, game.home_pitcher || '—')}
+        </div>
+        <div class="modal-section">
+          <h4>Top-25 Batters in This Game · ${inGame.length}</h4>
+      `;
+      if (inGame.length === 0) {
+        html += `<div class="empty" style="padding:12px 0">No batters from this game in today's top 25.</div>`;
+      } else {
+        inGame.forEach(b => {
+          html += `<div class="game-card-batter" data-pid="${b.batter_id || ''}">
+            <div class="b-rank">#${b.rank_in_board || '?'}</div>
+            <div class="b-name">${b.batter_name || '—'}<span class="b-team">${b.team || ''}${b.batting_order ? ' · #' + b.batting_order : ''}</span></div>
+            <div class="b-comp">${(b.composite || 0).toFixed(1)}</div>
+          </div>`;
+        });
+      }
+      html += `</div>`;
+
+      document.getElementById('gameModalBody').innerHTML = html;
+      document.getElementById('gameModal').classList.add('open');
+
+      // Chain: clicking a batter inside the game modal closes it and
+      // opens the player modal for that batter.
+      document.querySelectorAll('#gameModalBody [data-pid]').forEach(row => {
+        row.addEventListener('click', () => {
+          const pid = row.dataset.pid;
+          closeGameModal();
+          if (pid) openPlayerModal(pid);
+        });
+      });
+    }
+
+    function closeGameModal() {
+      document.getElementById('gameModal').classList.remove('open');
+    }
+
+    document.getElementById('gameModal').addEventListener('click', (e) => {
+      if (e.target.id === 'gameModal') closeGameModal();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closePlayerModal(); closeGameModal(); }
+    });
+
+    function bindPlayerClicks() {
+      document.querySelectorAll('.clickable-row').forEach(row => {
+        row.onclick = () => openPlayerModal(row.dataset.pid);
+      });
+    }
+
+    // ── Mobile table setup ──
+    // Walks all `mobile-cards` and `mobile-expandable` tables and:
+    //   1. Auto-attaches `data-label` to every <td> based on the thead text
+    //      so the CSS card layout can prefix each value with its label.
+    //   2. For expandable tables, marks player-name cells specially and
+    //      binds a tap handler that toggles `.expanded` on the row to
+    //      reveal hidden cells. Click on .player-link still fires the modal
+    //      (we stopPropagation there so taps on the name don't expand).
+    // Idempotent — safe to call after every render. Only activates layout
+    // changes when CSS @media query matches (≤768px).
+    function bindMobileTables() {
+      document.querySelectorAll('table.mobile-cards, table.mobile-expandable').forEach(table => {
+        const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+        table.querySelectorAll('tbody tr').forEach(tr => {
+          Array.from(tr.children).forEach((td, i) => {
+            // Skip cells that are inherently visual (rank #, headshot img,
+            // colored bar) — labels would clutter rather than help.
+            if (td.querySelector('img.headshot')) return;
+            if (td.classList.contains('bar-cell')) {
+              if (!td.hasAttribute('data-label')) td.setAttribute('data-label', headers[i] || '');
+              return;
+            }
+            if (i === 0 && (!headers[i] || headers[i] === '#')) return;
+            if (headers[i] && !td.hasAttribute('data-label')) {
+              td.setAttribute('data-label', headers[i]);
+            }
+          });
+        });
+      });
+
+      // Tap-to-expand on .mobile-expandable rows. Stop propagation on
+      // .player-link so the modal click still works on the player name.
+      document.querySelectorAll('table.mobile-expandable tbody tr').forEach(tr => {
+        // Only bind once
+        if (tr.dataset.expandBound) return;
+        tr.dataset.expandBound = '1';
+        tr.addEventListener('click', (ev) => {
+          // If the click landed on a player-link cell, defer to the modal handler
+          if (ev.target.closest('.player-link')) return;
+          tr.classList.toggle('expanded');
+        });
+      });
+    }
+
+    // Init
     renderToday();
+    renderBoard();
+    renderHRRecap();
+    renderHitters();
     renderHistory();
     renderPerformance();
   </script>

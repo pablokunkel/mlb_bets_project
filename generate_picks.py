@@ -35,7 +35,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from score_batters import WEIGHT_CONFIGS, compute_composite, select_top_picks
+from score_batters import (
+    WEIGHT_CONFIGS,
+    compute_composite,
+    select_top_picks,
+    compute_slate_context,
+)
 from fetch_daily_data import (
     DOME_STADIUMS,
     VENUE_COORDS,
@@ -59,6 +64,20 @@ from pitcher_profile import (
     build_victim_profile,
     build_pitcher_profile as build_single_pitcher_profile,
 )
+from features_v2 import (
+    fetch_batter_advanced_batch,
+    fetch_pitcher_bb_batch,
+    fetch_vegas_implied_totals,
+    fetch_batter_xwoba_bulk,
+    fetch_pitcher_fb_bulk,
+)
+
+# Toggle for the slow per-player Statcast paths (archetype profiles +
+# per-batter advanced stats). Set to False for the daily live path; the
+# bulk Savant CSV fetchers fill the same data in ~2 seconds vs ~25 minutes.
+# Re-enable manually if you want richer matchup_v2 archetype scoring on
+# a one-off run.
+USE_PER_PLAYER_STATCAST = True
 
 # ---------------------------------------------------------------------------
 # Data source status tracking
@@ -444,17 +463,63 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
                 pitcher_id_map[pname] = pid
 
     pitcher_profiles = {}
+    if USE_PER_PLAYER_STATCAST:
+        try:
+            print(f"  [ARCHETYPE] Building pitcher profiles for {len(pitcher_id_map)} starters...")
+            pitcher_profiles = build_pitcher_profiles_batch(pitcher_id_map, season)
+            statcast_count = sum(1 for p in pitcher_profiles.values() if p.get("source") == "statcast")
+            estimate_count = sum(1 for p in pitcher_profiles.values() if p.get("source") != "statcast")
+            if statcast_count > 0:
+                status.ok("Pitcher Archetypes", f"{statcast_count} Statcast, {estimate_count} estimated")
+            else:
+                status.warn("Pitcher Archetypes", f"0 Statcast — {estimate_count} estimated from MLB API")
+        except Exception as e:
+            status.warn("Pitcher Archetypes", f"Failed: {e} — matchup v2 will use fallback")
+    else:
+        # Skipped on daily path — per-pitcher Statcast arsenal builds are slow
+        # and prone to hangs. Falls through to score_matchup() v1 which is
+        # already slate-context aware (no archetype similarity, but vulnerability
+        # + Vegas + platoon all still flow). Re-enable USE_PER_PLAYER_STATCAST
+        # manually for one-off runs that want archetype matching.
+        status.warn("Pitcher Archetypes", "skipped (USE_PER_PLAYER_STATCAST=False) - matchup v1 path")
+
+    # ── Pitcher FB% allowed via BULK Savant CSV (one HTTP call) ────────
+    # Was per-pitcher Statcast — wedged the noon run on 2026-04-29.
     try:
-        print(f"  [ARCHETYPE] Building pitcher profiles for {len(pitcher_id_map)} starters...")
-        pitcher_profiles = build_pitcher_profiles_batch(pitcher_id_map, season)
-        statcast_count = sum(1 for p in pitcher_profiles.values() if p.get("source") == "statcast")
-        estimate_count = sum(1 for p in pitcher_profiles.values() if p.get("source") != "statcast")
-        if statcast_count > 0:
-            status.ok("Pitcher Archetypes", f"{statcast_count} Statcast, {estimate_count} estimated")
+        bulk_pitcher_fb = fetch_pitcher_fb_bulk(season)
+        for pname, pid in pitcher_id_map.items():
+            if pid in bulk_pitcher_fb and pname in pitcher_lookup:
+                pitcher_lookup[pname]["fb_pct_allowed"] = bulk_pitcher_fb[pid]
+        n_with_fb = sum(1 for p in pitcher_lookup.values() if p.get("fb_pct_allowed") is not None)
+        if n_with_fb > 0:
+            status.ok("Pitcher FB% Allowed", f"{n_with_fb}/{len(pitcher_lookup)} via bulk Savant")
         else:
-            status.warn("Pitcher Archetypes", f"0 Statcast — {estimate_count} estimated from MLB API")
+            status.warn("Pitcher FB% Allowed", "0 starters — vulnerability falls back to league avg")
     except Exception as e:
-        status.warn("Pitcher Archetypes", f"Failed: {e} — matchup v2 will use fallback")
+        status.warn("Pitcher FB% Allowed", f"Bulk fetch failed: {e}")
+
+    # ── Batter xwOBA on contact via BULK Savant CSV (one HTTP call) ────
+    # Replaces per-batter Statcast in score_live_slate. Slate-level cache.
+    bulk_batter_xwoba: dict = {}
+    try:
+        bulk_batter_xwoba = fetch_batter_xwoba_bulk(season)
+        if bulk_batter_xwoba:
+            status.ok("Batter xwOBA (bulk)", f"{len(bulk_batter_xwoba)} batters via Savant")
+        else:
+            status.warn("Batter xwOBA (bulk)", "No data — power score falls back to ISO/EV")
+    except Exception as e:
+        status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
+
+    # ── Vegas implied team totals ──────────────────────────────────────
+    implied_totals: dict = {}
+    try:
+        implied_totals = fetch_vegas_implied_totals(date_str=date_str)
+        if implied_totals:
+            status.ok("Vegas Implied Totals", f"{len(implied_totals)} teams (the-odds-api)")
+        else:
+            status.warn("Vegas Implied Totals", "No data — set VEGAS_ODDS_API_KEY to enable")
+    except Exception as e:
+        status.warn("Vegas Implied Totals", f"Failed: {e}")
 
     # ── Live tiers (rolling window) ───────────────────────────────────
     live_tiers = build_live_tiers(date_str)
@@ -471,6 +536,8 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         "pitchers": pitcher_lookup,
         "pitcher_profiles": pitcher_profiles,
         "live_tiers": live_tiers,
+        "implied_totals": implied_totals,
+        "bulk_batter_xwoba": bulk_batter_xwoba,
     }
 
 
@@ -486,11 +553,17 @@ def score_live_slate(
     tier: int,
     config_name: str,
     pf,
+    slate_ctx: dict | None = None,
 ) -> list:
     """
     Score all batters in a tier against the live slate.
     Matches batters to their actual games/opponents from the schedule.
     Uses confirmed batting order position for lineup factor scoring.
+
+    *slate_ctx* — optional pre-computed within-slate percentile context.
+    When provided, park/weather/pitcher-vulnerability scoring uses
+    within-slate percentile rankings rather than fixed-anchor scaling.
+    Computed once in generate_card() and passed into all 3 tier passes.
     """
     # Use live tiers if available, otherwise fall back to hardcoded
     active_tiers = slate.get("live_tiers") or ALL_TIERS
@@ -522,21 +595,35 @@ def score_live_slate(
         names = set()
         order_by_id = {}
         order_by_name = {}
+        # bdfed returns ALL roster players for each side (~13-15 entries)
+        # with the 9 starters first, then bench. Cap real batting orders at 9;
+        # positions 10+ are bench/reserves. Without this cap, bench players
+        # got batting_order=11/12 which fell into score_lineup_position's
+        # catch-all (35) instead of bench (15) and slipped into top-8 picks.
+        bench_ids = set()
+        bench_names = set()
         for side in ["home", "away"]:
             for i, p in enumerate(lu.get(side, []), 1):
                 pid = p.get("player_id")
                 pname = p.get("name", "").lower().strip()
-                bat_order = i  # bdfed returns players in batting order
-                if pid:
-                    ids.add(pid)
-                    order_by_id[pid] = bat_order
-                if pname:
-                    names.add(pname)
-                    order_by_name[pname] = bat_order
+                if i <= 9:
+                    if pid:
+                        ids.add(pid)
+                        order_by_id[pid] = i
+                    if pname:
+                        names.add(pname)
+                        order_by_name[pname] = i
+                else:
+                    if pid:
+                        bench_ids.add(pid)
+                    if pname:
+                        bench_names.add(pname)
         confirmed_ids[gpk] = ids
         confirmed_names[gpk] = names
         lineup_order_by_id[gpk] = order_by_id
         lineup_order_by_name[gpk] = order_by_name
+        slate.setdefault("_bench_ids", {})[gpk] = bench_ids
+        slate.setdefault("_bench_names", {})[gpk] = bench_names
 
     all_scored = []
     season = int(date_str[:4])
@@ -585,10 +672,25 @@ def score_live_slate(
     print(f"  [FORM] Fetched game logs for {log_hit}/{len(eligible_batters)} "
           f"T{tier} batters")
 
-    # Build victim profiles for archetype matching (v2 matchup scoring)
+    # xwOBA on contact: read from slate-level bulk pull (one HTTP call total
+    # across the whole day, populated in fetch_live_slate). Per-player
+    # statcast_batter calls used to live here and were the second
+    # contributor to the noon-run hang on 2026-04-29.
+    bulk_xwoba = slate.get("bulk_batter_xwoba", {})
+    batter_adv = {pid: {"xwoba_contact": v} for pid, v in bulk_xwoba.items()}
+    adv_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in batter_adv)
+    print(f"  [ADV-BULK] xwOBA on contact: {adv_hit}/{len(eligible_batters)} T{tier} batters")
+    # Note: pull_fb_pct is no longer fetched on the daily path — Savant has no
+    # bulk endpoint for it. Defaults to 50/neutral in score_power. Re-enable
+    # via per-player fetch_batter_advanced_batch by setting USE_PER_PLAYER_STATCAST=True.
+
+    # Build victim profiles for archetype matching (v2 matchup scoring).
+    # Only runs when USE_PER_PLAYER_STATCAST=True — otherwise the third
+    # source of per-player Statcast hangs. With it off, score_matchup_v2
+    # is bypassed and score_matchup() v1 (slate-aware) is used instead.
     pitcher_profiles = slate.get("pitcher_profiles", {})
     victim_profiles = {}
-    if pitcher_profiles:
+    if pitcher_profiles and USE_PER_PLAYER_STATCAST:
         print(f"  [ARCHETYPE] Building victim profiles for {len(eligible_batters)} T{tier} batters...")
         try:
             victim_profiles = build_victim_profiles_batch(player_id_list, season)
@@ -639,6 +741,13 @@ def score_live_slate(
             "recent_barrel_pct_14d": recent_barrel_est,
             "ev_trend_14d": ev_proxy,
         }
+        # Layer in advanced Statcast features when available (defaults
+        # to neutral if missing — score_power handles None gracefully).
+        adv = batter_adv.get(player_id, {})
+        if adv.get("xwoba_contact") is not None:
+            entry["xwoba_contact"] = adv["xwoba_contact"]
+        if adv.get("pull_fb_pct") is not None:
+            entry["pull_fb_pct"] = adv["pull_fb_pct"]
 
         # Get archetype profiles for v2 matchup scoring
         vp = victim_profiles.get(player_id)
@@ -649,6 +758,8 @@ def score_live_slate(
             victim_profile=vp,
             pitcher_profile=pp,
             batting_order=batting_order,
+            slate_ctx=slate_ctx,
+            game_pk=gpk,
         )
         result["player_id"] = player_id
         result["game_pk"] = gpk
@@ -677,8 +788,13 @@ def date_seed(date_str):
     return int(hashlib.md5(date_str.encode()).hexdigest()[:8], 16)
 
 
-def simulate_slate(date_str, tier, config_name, rng, pf):
-    """Simulate a day's games for one tier and score all batters."""
+def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None = None):
+    """Simulate a day's games for one tier and score all batters.
+
+    *slate_ctx* — optional pre-computed slate context. In offline mode this
+    is rarely populated since each call generates fresh random venues, but
+    it's wired through for parity with the live path.
+    """
     pitcher_lookup = {p["name"]: p for p in PITCHERS_2025}
     pitcher_names = list(pitcher_lookup.keys())
     batters = [b for b in ALL_TIERS[tier] if b["name"] not in EXCLUDED_PLAYERS]
@@ -730,6 +846,8 @@ def simulate_slate(date_str, tier, config_name, rng, pf):
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,
                     batting_order=batting_order,
+                    slate_ctx=slate_ctx,
+                    game_pk=gpk,
                 )
                 result["player_id"] = entry["player_id"]
                 result["game_pk"] = gpk
@@ -781,18 +899,45 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
     # Tiers are kept as labels (chalk/mid/longshot) but don't constrain selection.
     config = "default"  # single weight config for all batters
 
+    # Compute slate-context percentile rankings ONCE for the whole day.
+    # Park, weather, and pitcher-vulnerability scoring will use within-slate
+    # ranks instead of fixed-anchor scaling, fixing the score-compression
+    # problem where the worst HR-allowing pitchers all clustered at ~70.
+    slate_ctx = None
+    if live_slate:
+        try:
+            slate_ctx = compute_slate_context(
+                games=live_slate["games"],
+                weather_by_gpk=live_slate.get("weather", {}),
+                pitcher_stats_by_name=live_slate.get("pitchers", {}),
+                park_factors=pf,
+                implied_totals_by_team=live_slate.get("implied_totals", {}),
+            )
+            n_parks = len(slate_ctx.get("park_pct", {}))
+            n_weather = len(slate_ctx.get("weather_pct", {}))
+            n_pitchers = len(slate_ctx.get("pitcher_pct", {}))
+            n_totals = len(slate_ctx.get("team_total_pct", {}))
+            status.ok(
+                "Slate-Rank Context",
+                f"{n_parks} venues, {n_weather} games, {n_pitchers} pitchers, {n_totals} team totals",
+            )
+        except Exception as e:
+            status.warn("Slate-Rank Context", f"Failed: {e} — falling back to fixed-anchor scoring")
+            slate_ctx = None
+
     for tier in [1, 2, 3]:
         if live_slate:
             scored = score_live_slate(
                 live_slate, date_str, tier, config, pf,
+                slate_ctx=slate_ctx,
             )
         else:
-            scored = simulate_slate(date_str, tier, config, rng, pf)
+            scored = simulate_slate(date_str, tier, config, rng, pf, slate_ctx=slate_ctx)
 
         if not scored:
             print(f"  WARNING: No batters scored for tier {tier} — "
                   f"team may have off day. Falling back to offline.")
-            scored = simulate_slate(date_str, tier, config, rng, pf)
+            scored = simulate_slate(date_str, tier, config, rng, pf, slate_ctx=slate_ctx)
 
         tier_label = {1: "T1-Chalk", 2: "T2-Mid", 3: "T3-Longshot"}[tier]
         for s in scored:
@@ -819,6 +964,13 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
             break
         name = batter.get("name", "")
         if name in seen_names:
+            continue
+        # Hard exclude: only confirmed starters (batting_order int 1-9) make
+        # the card. Bench / roster_only / null are still on the full_board
+        # for visibility but never get selected. Fixes 2026-04-29 noon
+        # case where Suzuki at "BO=12" (a bench reserve) was top-8.
+        bo = batter.get("batting_order")
+        if not (isinstance(bo, int) and 1 <= bo <= 9):
             continue
         gpk = batter.get("game_pk")
         if global_game_counts.get(gpk, 0) >= GLOBAL_MAX_PER_GAME:
@@ -1040,20 +1192,22 @@ def main():
         "date": date_str,
         "mode": mode,
         "n_picks": len(card),
-        "scoring_config": SCORING_CONFIG,
         "picks": [
             {
                 "rank": i + 1,
                 "name": p["name"],
+                "player_id": p.get("player_id", 0),
                 "team": p["team"],
                 "bats": p["bats"],
                 "tier": p.get("tier", 0),
                 "tier_label": p.get("tier_label", ""),
                 "venue": p["venue"],
                 "opp_pitcher": p.get("opp_pitcher", ""),
+                "opp_pitcher_id": p.get("opp_pitcher_id", 0),
                 "composite": p["composite"],
                 "power_score": p["power_score"],
                 "matchup_score": p["matchup_score"],
+                "matchup_version": p.get("matchup_version", "v1"),
                 "park_score": p["park_score"],
                 "form_score": p["form_score"],
                 "weather_score": p["weather_score"],
@@ -1062,6 +1216,9 @@ def main():
                 "tier_pts": p.get("tier_pts", 1),
                 "game_pk": p.get("game_pk"),
                 "gameday_url": f"https://www.mlb.com/gameday/{p.get('game_pk', '')}" if p.get("game_pk") else "",
+                # Raw factor inputs that fed each score; consumed by load_picks_to_db
+                # to populate pick_inputs for the per-factor decomposition charts.
+                "inputs": p.get("inputs", {}),
             }
             for i, p in enumerate(card)
         ],
@@ -1070,20 +1227,25 @@ def main():
             {
                 "rank": i + 1,
                 "name": p.get("name", ""),
+                "player_id": p.get("player_id", 0),
                 "team": p.get("team", ""),
                 "tier": p.get("tier", 0),
                 "tier_label": p.get("tier_label", ""),
                 "venue": p.get("venue", ""),
                 "opp_pitcher": p.get("opp_pitcher", ""),
+                "opp_pitcher_id": p.get("opp_pitcher_id", 0),
                 "composite": p.get("composite", 0),
                 "power_score": p.get("power_score", 0),
                 "matchup_score": p.get("matchup_score", 0),
+                "matchup_version": p.get("matchup_version", "v1"),
                 "park_score": p.get("park_score", 0),
                 "form_score": p.get("form_score", 0),
                 "weather_score": p.get("weather_score", 0),
-                "lineup_score": p.get("lineup_score", 0),
                 "batting_order": p.get("batting_order"),
+                "game_pk": p.get("game_pk"),
                 "selected": p.get("selected", False),
+                "inputs": p.get("inputs", {}),
+                "inputs": p.get("inputs", {}),
             }
             for i, p in enumerate(full_board)
         ],

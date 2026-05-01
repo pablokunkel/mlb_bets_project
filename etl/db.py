@@ -259,6 +259,9 @@ def create_tables(conn: sqlite3.Connection):
         hits            INTEGER,
         hr_count        INTEGER DEFAULT 0,
         rbi             INTEGER,
+        doubles         INTEGER DEFAULT 0,
+        triples         INTEGER DEFAULT 0,
+        total_bases     INTEGER DEFAULT 0,
         hit             INTEGER GENERATED ALWAYS AS (hr_count > 0) STORED,
         fetched_at      TEXT DEFAULT (datetime('now')),
         UNIQUE(date, batter_id, game_pk)
@@ -266,6 +269,62 @@ def create_tables(conn: sqlite3.Connection):
 
     CREATE INDEX IF NOT EXISTS idx_outcomes_date
         ON outcomes(date);
+
+    -- ================================================================
+    -- Raw factor inputs per (date, batter) — written by load_picks_to_db
+    -- after generate_picks emits them. Lets the dashboard's per-factor
+    -- decomposition charts compare HR hitters vs misses on each underlying
+    -- input (e.g., did the HR hitter have high xwoba_contact, or low?).
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS pick_inputs (
+        date            TEXT NOT NULL,
+        batter_id       INTEGER NOT NULL,
+
+        -- Power inputs
+        barrel_pct              REAL,
+        exit_velo               REAL,
+        hr_fb_pct               REAL,
+        iso                     REAL,
+        xwoba_contact           REAL,
+        pull_fb_pct             REAL,
+
+        -- Form inputs
+        recent_hr_14d           REAL,
+        recent_barrel_pct_14d   REAL,
+        ev_trend_14d            REAL,
+
+        -- Matchup: pitcher inputs
+        pitcher_hr_per_9        REAL,
+        pitcher_era             REAL,
+        pitcher_hh_pct          REAL,
+        pitcher_k_per_9         REAL,
+        pitcher_fb_pct_allowed  REAL,
+
+        -- Matchup: batter + game inputs
+        woba_vs_hand            REAL,
+        archetype_similarity    REAL,
+        vegas_implied_total     REAL,
+        platoon_advantage       INTEGER,        -- 0/1
+
+        -- Park
+        hr_park_factor          REAL,
+
+        -- Weather
+        temperature_f           REAL,
+        wind_mph                REAL,
+        wind_direction_deg      INTEGER,
+        humidity_pct            REAL,
+        is_dome                 INTEGER,        -- 0/1
+
+        -- Lineup (already in daily_picks but mirrored here for self-contained queries)
+        batting_order           INTEGER,        -- 1-9 only; null if not a starter
+
+        fetched_at              TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (date, batter_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pick_inputs_date
+        ON pick_inputs(date);
 
     -- ================================================================
     -- Park HR factors with L/R handedness splits (nightly ETL, weekly refresh)
@@ -283,6 +342,64 @@ def create_tables(conn: sqlite3.Connection):
     );
 
     -- ================================================================
+    -- Historical calibration (prior-season backfill for environmental
+    -- factor diagnostics). Populated by etl/historical_calibration.py.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS historical_batter_games (
+        date         TEXT NOT NULL,
+        game_pk      INTEGER NOT NULL,
+        batter_id    INTEGER NOT NULL,
+        home_team    TEXT,
+        season       INTEGER NOT NULL,
+        hr_count     INTEGER DEFAULT 0,
+        pa_count     INTEGER DEFAULT 0,
+        PRIMARY KEY (date, game_pk, batter_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_historical_bg_season
+        ON historical_batter_games(season);
+
+    CREATE TABLE IF NOT EXISTS historical_game_weather (
+        date            TEXT NOT NULL,
+        venue           TEXT NOT NULL,
+        home_team       TEXT,
+        season          INTEGER NOT NULL,
+        temperature_f   REAL,
+        wind_mph        REAL,
+        wind_dir_deg    REAL,
+        humidity_pct    REAL,
+        dome            INTEGER DEFAULT 0,
+        fetched_at      TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (date, venue)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_historical_gw_season
+        ON historical_game_weather(season);
+
+    -- Materialized join (built by build_historical_calibration_table).
+    -- Read by export_site_data._temp_humidity_heatmap_historical and
+    -- related diagnostics.
+    CREATE TABLE IF NOT EXISTS historical_calibration (
+        date            TEXT NOT NULL,
+        game_pk         INTEGER NOT NULL,
+        batter_id       INTEGER NOT NULL,
+        home_team       TEXT,
+        venue           TEXT,
+        season          INTEGER NOT NULL,
+        temperature_f   REAL,
+        wind_mph        REAL,
+        wind_dir_deg    REAL,
+        humidity_pct    REAL,
+        dome            INTEGER,
+        hr_count        INTEGER DEFAULT 0,
+        pa_count        INTEGER DEFAULT 0,
+        PRIMARY KEY (date, game_pk, batter_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_historical_cal_season
+        ON historical_calibration(season);
+
+    -- ================================================================
     -- ETL run log (tracks freshness)
     -- ================================================================
     CREATE TABLE IF NOT EXISTS etl_log (
@@ -293,9 +410,33 @@ def create_tables(conn: sqlite3.Connection):
         detail          TEXT,
         started_at      TEXT DEFAULT (datetime('now')),
         completed_at    TEXT,
-        rows_affected   INTEGER DEFAULT 0
+        rows_affected   INTEGER DEFAULT 0,
+        error           TEXT
     );
     """)
+
+    # Idempotent migrations for existing DBs that pre-date a column add.
+    # SQLite ALTER TABLE doesn't support IF NOT EXISTS, so PRAGMA-check first.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(outcomes)").fetchall()
+    }
+    for col, ddl in [
+        ("doubles",     "ALTER TABLE outcomes ADD COLUMN doubles INTEGER DEFAULT 0"),
+        ("triples",     "ALTER TABLE outcomes ADD COLUMN triples INTEGER DEFAULT 0"),
+        ("total_bases", "ALTER TABLE outcomes ADD COLUMN total_bases INTEGER DEFAULT 0"),
+    ]:
+        if col not in existing_cols:
+            conn.execute(ddl)
+
+    # Migration for existing DBs: add etl_log.error column if missing
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(etl_log)").fetchall()
+    }
+    if 'error' not in existing_cols:
+        try:
+            conn.execute("ALTER TABLE etl_log ADD COLUMN error TEXT")
+        except Exception:
+            pass
 
     conn.commit()
 
@@ -313,7 +454,7 @@ def get_latest_hr_date(conn: sqlite3.Connection, batter_id: int) -> str | None:
     return row[0] if row and row[0] else None
 
 
-def get_park_factors_age_days(conn: sqlite3.Connection, season: int) -> int | None:
+def get_park_factors_age_days(conn: sqlite3.Connection, season: int):
     """How many days old is the park_factors data for this season? None if missing."""
     row = conn.execute(
         "SELECT CAST(julianday('now') - julianday(MIN(fetched_at)) AS INTEGER) "
@@ -323,80 +464,42 @@ def get_park_factors_age_days(conn: sqlite3.Connection, season: int) -> int | No
     return row[0] if row and row[0] is not None else None
 
 
-def get_arsenal_age_days(conn: sqlite3.Connection, pitcher_id: int, season: int) -> int | None:
-    """How many days old is this pitcher's arsenal data? None if missing."""
+def get_arsenal_age_days(conn, pitcher_id, season):
+    """How many days old is the pitcher_arsenals data for one pitcher+season? None if missing."""
     row = conn.execute(
         "SELECT CAST(julianday('now') - julianday(fetched_at) AS INTEGER) "
         "FROM pitcher_arsenals WHERE pitcher_id = ? AND season = ?",
-        (pitcher_id, season)
+        (pitcher_id, season),
     ).fetchone()
     return row[0] if row and row[0] is not None else None
 
 
-def log_etl_start(conn: sqlite3.Connection, job: str, date: str) -> int:
-    """Log ETL job start. Returns the log row id."""
+def log_etl_start(conn, job, date_str):
+    """Insert a row into etl_log marking the start of a job. Returns the row id."""
     cur = conn.execute(
-        "INSERT INTO etl_log (job, date, status) VALUES (?, ?, 'started')",
-        (job, date)
+        "INSERT INTO etl_log (job, date, status, started_at) "
+        "VALUES (?, ?, 'running', datetime('now'))",
+        (job, date_str),
     )
     conn.commit()
     return cur.lastrowid
 
 
-def log_etl_complete(conn: sqlite3.Connection, log_id: int, rows: int = 0, detail: str = ""):
-    """Mark ETL job as completed."""
+def log_etl_complete(conn, log_id, rows=0, detail=""):
+    """Mark a previously-started etl_log row as completed."""
     conn.execute(
         "UPDATE etl_log SET status='completed', completed_at=datetime('now'), "
-        "rows_affected=?, detail=? WHERE id=?",
-        (rows, detail, log_id)
+        "rows_affected=?, error=? WHERE id=?",
+        (rows, detail, log_id),
     )
     conn.commit()
 
 
-def log_etl_fail(conn: sqlite3.Connection, log_id: int, detail: str = ""):
-    """Mark ETL job as failed."""
+def log_etl_fail(conn, log_id, error_msg):
+    """Mark a previously-started etl_log row as failed."""
     conn.execute(
         "UPDATE etl_log SET status='failed', completed_at=datetime('now'), "
-        "detail=? WHERE id=?",
-        (detail, log_id)
+        "error=? WHERE id=?",
+        (str(error_msg)[:500], log_id),
     )
     conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# CLI — create / inspect the database
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Manage the HR Bets database")
-    parser.add_argument("--create", action="store_true", help="Create all tables")
-    parser.add_argument("--stats", action="store_true", help="Show table row counts")
-    parser.add_argument("--db", default=None, help="Custom DB path")
-    args = parser.parse_args()
-
-    db = get_db(args.db)
-
-    if args.create:
-        create_tables(db)
-        print(f"Database created at {DB_PATH}")
-
-    if args.stats or args.create:
-        tables = [
-            "batter_hr_events", "pitcher_arsenals", "victim_profiles",
-            "daily_slate", "daily_lineup", "season_batting", "season_pitching",
-            "park_factors", "daily_picks", "outcomes", "etl_log",
-        ]
-        print(f"\n  DATABASE: {DB_PATH}")
-        print(f"  {'Table':<24} {'Rows':>8}")
-        print(f"  {'-' * 34}")
-        for t in tables:
-            try:
-                count = db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                print(f"  {t:<24} {count:>8}")
-            except sqlite3.OperationalError:
-                print(f"  {t:<24} {'(missing)':>8}")
-        print()
-
-    db.close()

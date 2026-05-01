@@ -25,14 +25,24 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 WEIGHT_CONFIGS = {
-    # Diagnostic-tuned default — weights reflect measured factor correlations
-    # (form +0.248, power +0.239, matchup +0.145, weather +0.052, park +0.021)
-    # Lineup is new: batting order position = AB opportunity.
-    "default":       {"power": 0.25, "matchup": 0.20, "park": 0.08, "form": 0.25, "weather": 0.07, "lineup": 0.15},
-    "matchup_heavy": {"power": 0.20, "matchup": 0.30, "park": 0.07, "form": 0.20, "weather": 0.05, "lineup": 0.18},
-    "power_heavy":   {"power": 0.35, "matchup": 0.18, "park": 0.07, "form": 0.18, "weather": 0.05, "lineup": 0.17},
-    "form_heavy":    {"power": 0.20, "matchup": 0.18, "park": 0.07, "form": 0.35, "weather": 0.05, "lineup": 0.15},
-    "no_weather":    {"power": 0.27, "matchup": 0.22, "park": 0.08, "form": 0.27, "weather": 0.00, "lineup": 0.16},
+    # Default — learned via logistic regression on enriched 20-day backfill
+    # (2026-03-27 -> 2026-04-15, 5,196 batter-game rows, hit_hr as target,
+    # 7 features: 5 original + xwoba_contact + fb_pct_allowed).
+    # Standardized coefficients: form 0.496, matchup 0.468, power 0.346,
+    # weather 0.102, xwoba 0.097, fb_pct_allowed -0.013, park -0.011 (drop).
+    # Power bucket includes xwoba_contact + pull_fb_pct sub-scores.
+    # Matchup bucket includes fb_pct_allowed + Vegas implied_total when avail.
+    # Backtested top-8 hit rate progression: 36.04% (legacy) -> 38.75% (v1
+    # learned + percentile rerank) -> 40.00% (this config, v2 enriched).
+    "default":       {"power": 0.250, "matchup": 0.264, "park": 0.000, "form": 0.279, "weather": 0.057, "lineup": 0.150},
+    # v1 weights — kept for ablation comparison.
+    "v1_learned":    {"power": 0.217, "matchup": 0.270, "park": 0.000, "form": 0.304, "weather": 0.060, "lineup": 0.150},
+    # Legacy fixed-anchor default (kept for ablation comparison).
+    "legacy":        {"power": 0.25,  "matchup": 0.20,  "park": 0.08,  "form": 0.25,  "weather": 0.07,  "lineup": 0.15},
+    "matchup_heavy": {"power": 0.20,  "matchup": 0.30,  "park": 0.00,  "form": 0.27,  "weather": 0.05,  "lineup": 0.18},
+    "power_heavy":   {"power": 0.35,  "matchup": 0.20,  "park": 0.00,  "form": 0.23,  "weather": 0.05,  "lineup": 0.17},
+    "form_heavy":    {"power": 0.20,  "matchup": 0.20,  "park": 0.00,  "form": 0.40,  "weather": 0.05,  "lineup": 0.15},
+    "no_weather":    {"power": 0.23,  "matchup": 0.29,  "park": 0.00,  "form": 0.32,  "weather": 0.00,  "lineup": 0.16},
 }
 
 # Legacy compat: configs without "lineup" key get it defaulted to 0
@@ -72,11 +82,12 @@ PARK_CF_BEARING = {
     "Rogers Centre":                0,
     "T-Mobile Park":                0,
     "Target Field":                 345,
-    "Tropicana Field":              0,    # dome — bearing doesn't matter
+    "Tropicana Field":              0,    # dome
     "Truist Park":                  2,
     "Wrigley Field":                68,
     "Yankee Stadium":               18,
-    "American Family Field":        0,    # retractable — bearing rarely matters
+    "American Family Field":        0,    # retractable
+    "Sutter Health Park":           340,  # Sacramento A's temp home (2025-26); CF roughly NNW — verify
 }
 
 
@@ -99,6 +110,151 @@ def percentile_rank(value: float, values: list) -> float:
     return float(np.searchsorted(np.sort(arr), value) / len(arr) * 100)
 
 
+def percentile_rank_dict(values_by_key: dict) -> dict:
+    """
+    Convert {key: raw_value} -> {key: percentile_rank_0_to_100}.
+
+    Used by compute_slate_context to spread within-slate values across the
+    full 0-100 range so park/weather/matchup don't compress into a thin band.
+
+    Ties get the average rank (mid-rank), so two venues with identical
+    park factors both end up at 50 rather than splitting 25/75.
+
+    If only one key is present, returns 50 (neutral) for that key.
+    """
+    if not values_by_key:
+        return {}
+    keys = list(values_by_key.keys())
+    vals = [values_by_key[k] for k in keys]
+    n = len(vals)
+    if n == 1:
+        return {keys[0]: 50.0}
+
+    sorted_vals = sorted(vals)
+    out = {}
+    for k, v in values_by_key.items():
+        # Mid-rank: average of (count_less, count_less_or_equal)
+        lt = sum(1 for x in sorted_vals if x < v)
+        lte = sum(1 for x in sorted_vals if x <= v)
+        mid_rank = (lt + lte) / 2.0
+        # Map to 0-100; mid_rank ranges 0.5..n-0.5, scale to 0..100
+        out[k] = (mid_rank / n) * 100.0
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Slate context — pre-computed within-slate percentile rankings
+# ---------------------------------------------------------------------------
+
+def compute_slate_context(
+    games: list,
+    weather_by_gpk: dict,
+    pitcher_stats_by_name: dict,
+    park_factors: pd.DataFrame,
+    implied_totals_by_team: dict | None = None,
+) -> dict:
+    """
+    Pre-compute within-slate percentile rankings for park, weather,
+    pitcher vulnerability, and (optionally) Vegas implied team totals.
+
+    Called once per day in score_live_slate; the returned context is then
+    passed into compute_composite so each batter's park/weather/vulnerability/
+    game-environment score reflects rank-within-today rather than absolute
+    fixed-anchor scaling.
+
+    Returns:
+        {
+            "park_pct":      {venue:        0-100},
+            "weather_pct":   {game_pk:      0-100},
+            "pitcher_pct":   {pitcher_name: 0-100},
+            "team_total_pct":{team_abbrev:  0-100},   # may be empty
+            "active": True
+        }
+    """
+    # Park: percentile rank of overall HR park factor
+    venue_pf = {}
+    if park_factors is not None and not park_factors.empty:
+        for g in games:
+            venue = g.get("venue", "")
+            if not venue or venue in venue_pf:
+                continue
+            match = park_factors[park_factors["venue"] == venue]
+            if match.empty:
+                continue
+            row = match.iloc[0]
+            if "hr_pf_overall" in row.index:
+                venue_pf[venue] = float(row["hr_pf_overall"])
+            elif "hr_park_factor" in row.index:
+                venue_pf[venue] = float(row["hr_park_factor"])
+            else:
+                lhb = float(row.get("hr_pf_lhb", 100))
+                rhb = float(row.get("hr_pf_rhb", 100))
+                venue_pf[venue] = (lhb + rhb) / 2.0
+    park_pct = percentile_rank_dict(venue_pf)
+
+    # Weather: base quality per game (temp + wind speed proxy).
+    # Direction/handedness is per-batter, so we percentile the base
+    # "is this a HR-conducive ballpark conditions day?" only.
+    game_weather_q = {}
+    for gpk, w in (weather_by_gpk or {}).items():
+        if not w:
+            continue
+        if w.get("dome", False):
+            game_weather_q[gpk] = 50.0
+            continue
+        temp = w.get("temperature_f", 70) or 70
+        wind = w.get("wind_mph", 0) or 0
+        humidity = w.get("humidity_pct", 50) or 50
+        game_weather_q[gpk] = temp + wind * 0.5 + humidity * 0.05
+    weather_pct = percentile_rank_dict(game_weather_q)
+
+    # Pitcher vulnerability: HR/9-driven raw vulnerability, no caps.
+    # Now includes fly-ball% allowed: FB pitchers give up more HRs at the
+    # same HR/9 (deeper carry on fly balls means more leave the yard).
+    # League-average FB% allowed ~35; elite GB pitchers ~25; FB pitchers ~45.
+    pitcher_vuln_raw = {}
+    for pname, p in (pitcher_stats_by_name or {}).items():
+        if not p:
+            continue
+        hr9 = p.get("hr_per_9", 1.2) or 1.2
+        era = p.get("era", 4.0) or 4.0
+        hh = p.get("hard_hit_pct_allowed", 35) or 35
+        k9 = p.get("k_per_9", 8.0) or 8.0
+        ip = p.get("ip", 50) or 50
+        fb_pct_allowed = p.get("fb_pct_allowed", 35) or 35
+
+        raw = (
+            hr9 * 30.0
+            + era * 5.0
+            + hh * 0.6
+            - k9 * 2.0
+            + (fb_pct_allowed - 35) * 0.8   # +0.8 raw points per pp above league avg
+        )
+        if ip < 10:
+            league_avg_raw = 1.2 * 30 + 4.0 * 5 + 35 * 0.6 - 8 * 2
+            raw = (raw + league_avg_raw * 2) / 3.0
+        pitcher_vuln_raw[pname] = raw
+    pitcher_pct = percentile_rank_dict(pitcher_vuln_raw)
+
+    # Vegas implied team totals: percentile within today's slate.
+    # If no totals are provided (no API key, or feed unavailable), this
+    # dict is empty and score_matchup falls back to neutral (50) for the
+    # game-environment signal.
+    team_total_pct = {}
+    if implied_totals_by_team:
+        team_total_pct = percentile_rank_dict(
+            {t: float(v) for t, v in implied_totals_by_team.items() if v is not None}
+        )
+
+    return {
+        "park_pct": park_pct,
+        "weather_pct": weather_pct,
+        "pitcher_pct": pitcher_pct,
+        "team_total_pct": team_total_pct,
+        "active": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Factor scoring functions
 # ---------------------------------------------------------------------------
@@ -110,55 +266,95 @@ def score_power(batter: dict) -> float:
     """
     scores = []
 
-    # Barrel%: 0-25% → 0-100
     barrel = batter.get("barrel_pct", 0)
     if barrel is not None:
         scores.append(min_max_scale(barrel, 0, 25))
 
-    # Exit Velocity: 80-100 mph → 0-100
     ev = batter.get("exit_velo", 0)
     if ev and ev > 0:
         scores.append(min_max_scale(ev, 80, 100))
 
-    # HR/FB%: 0-30% → 0-100
     hr_fb = batter.get("hr_fb_pct", 0)
     if hr_fb is not None:
-        # Handle both decimal (0.15) and percentage (15.0) formats
         if hr_fb < 1:
             hr_fb *= 100
         scores.append(min_max_scale(hr_fb, 0, 30))
 
-    # ISO as power proxy: .100-.350 → 0-100
     iso = batter.get("iso", 0)
     if iso and iso > 0:
         scores.append(min_max_scale(iso, 0.100, 0.350))
 
+    # xwOBA on contact: .280 (poor contact) -> .500 (elite). One of the
+    # most HR-predictive Statcast metrics. Defaults missing.
+    xwoba_contact = batter.get("xwoba_contact")
+    if xwoba_contact is not None and xwoba_contact > 0:
+        scores.append(min_max_scale(xwoba_contact, 0.280, 0.500))
+
+    # Pull-FB%: percentage of contact that is pulled fly balls. HRs come
+    # almost exclusively from pulled fly balls. League avg ~12%, elite ~22%.
+    pull_fb = batter.get("pull_fb_pct")
+    if pull_fb is not None and pull_fb > 0:
+        if pull_fb < 1:
+            pull_fb *= 100
+        scores.append(min_max_scale(pull_fb, 5, 25))
+
     return float(np.mean(scores)) if scores else 50.0
 
 
-def score_matchup(batter: dict, pitcher: dict) -> float:
+def score_matchup(
+    batter: dict,
+    pitcher: dict,
+    slate_ctx: dict | None = None,
+    batter_team: str | None = None,
+) -> float:
     """
-    Factor 2: Matchup quality (pitcher HR/9, hard-hit% allowed, batter vs hand).
+    Factor 2: Matchup quality.
     Returns 0-100.
+
+    With slate_ctx active, the pitcher-vulnerability portion is replaced by
+    the within-slate percentile rank — fixes the HR/9 cap compression where
+    the 5 worst HR-allowing pitchers all clustered at score ~70.
+
+    If slate_ctx contains a non-empty team_total_pct map and *batter_team*
+    is provided, the Vegas implied team total percentile is added as a
+    third equal-weighted signal (game environment).
     """
     scores = []
 
-    # Pitcher HR/9: 0-3.0 → 0-100 (higher = better for batter)
-    hr9 = pitcher.get("hr_per_9", 1.2)
-    if hr9 is not None:
-        scores.append(min_max_scale(hr9, 0, 3.0))
+    pname = pitcher.get("name", "")
+    if slate_ctx and slate_ctx.get("active") and pname in slate_ctx.get("pitcher_pct", {}):
+        scores.append(slate_ctx["pitcher_pct"][pname])
+    else:
+        # Fallback: HR/9 cap raised from 3.0 to 4.5 so 4+ HR/9 outliers can rank.
+        hr9 = pitcher.get("hr_per_9", 1.2)
+        if hr9 is not None:
+            scores.append(min_max_scale(hr9, 0, 4.5))
 
-    # Pitcher hard-hit% allowed: 25-50% → 0-100
-    hh = pitcher.get("hard_hit_pct_allowed", 35)
-    if hh is not None:
-        scores.append(min_max_scale(hh, 25, 50))
+        hh = pitcher.get("hard_hit_pct_allowed", 35)
+        if hh is not None:
+            scores.append(min_max_scale(hh, 25, 50))
 
-    # Batter wOBA vs hand: .250-.450 → 0-100
     woba = batter.get("woba_vs_hand", batter.get("woba", 0.320))
     if woba:
-        scores.append(min_max_scale(woba, 0.250, 0.450))
+        # Tightened anchors 2026-04-30: input calibration showed woba had
+        # 4.5x HR-rate signal across quintiles (3.8% -> 17.1%) but the
+        # 0.250-0.450 range mapped most batters to a narrow 30-60 band.
+        # Empirical 20th/80th percentiles are ~0.283 / ~0.394, so anchoring
+        # 0.280-0.420 spreads the score function across the active data
+        # distribution and steepens at the top end.
+        scores.append(min_max_scale(woba, 0.280, 0.420))
 
-    # Platoon advantage bonus: +10 if batter has platoon advantage
+    # Vegas implied team total — game environment signal. Bundles park,
+    # weather, lineup quality, and opposing pitcher into a market-blessed
+    # number. Only applied if slate has the data (silently skipped otherwise).
+    if (
+        slate_ctx
+        and batter_team
+        and slate_ctx.get("team_total_pct")
+        and batter_team in slate_ctx["team_total_pct"]
+    ):
+        scores.append(slate_ctx["team_total_pct"][batter_team])
+
     batter_hand = batter.get("bats", "R")
     pitcher_hand = pitcher.get("throws", "R")
     platoon_bonus = 10 if batter_hand != pitcher_hand else 0
@@ -167,28 +363,56 @@ def score_matchup(batter: dict, pitcher: dict) -> float:
     return min(100, base + platoon_bonus)
 
 
-def score_park(batter: dict, venue: str, park_factors: pd.DataFrame) -> float:
+def score_park(
+    batter: dict,
+    venue: str,
+    park_factors: pd.DataFrame,
+    slate_ctx: dict | None = None,
+) -> float:
     """
     Factor 3: Park Factor for HRs.
     Returns 0-100.
 
-    Uses split L/R factors (`hr_pf_lhb` / `hr_pf_rhb`) if they're in the
-    DataFrame; falls back to the legacy `hr_park_factor` column if not,
-    which preserves backward compatibility with older DataFrames.
+    With slate_ctx active, returns within-slate percentile rank for this
+    venue (with small L/R adjustment). Without slate_ctx, falls back to
+    fixed-anchor 70-130 -> 0-100 scaling.
 
-    Switch-hitters (bats == 'S') are scored as a 50/50 average of LHB and
-    RHB factors — most switch-hitters face RHP more often but over a
-    season that balances out in the aggregate.
+    Note: park_score is currently weighted 0 in the default config (the
+    20-day backfit found near-zero predictive coefficient). Function is
+    retained so it can be brought back if future seasons show signal.
     """
-    pf = 100.0  # neutral default
+    if not venue:
+        return 50.0
 
-    if not park_factors.empty and venue:
+    # Slate-relative path
+    if slate_ctx and slate_ctx.get("active") and venue in slate_ctx.get("park_pct", {}):
+        base_pct = slate_ctx["park_pct"][venue]
+        if park_factors is not None and not park_factors.empty:
+            match = park_factors[park_factors["venue"] == venue]
+            if not match.empty:
+                row = match.iloc[0]
+                if "hr_pf_lhb" in row.index and "hr_pf_rhb" in row.index:
+                    bats = batter.get("bats", "R") or "R"
+                    lhb = float(row["hr_pf_lhb"])
+                    rhb = float(row["hr_pf_rhb"])
+                    overall = float(row.get("hr_pf_overall", (lhb + rhb) / 2.0))
+                    if overall > 0:
+                        if bats == "L":
+                            adj = (lhb - overall) / overall
+                        elif bats == "R":
+                            adj = (rhb - overall) / overall
+                        else:
+                            adj = 0.0
+                        base_pct = max(0, min(100, base_pct + adj * 50))
+        return base_pct
+
+    # Fallback: fixed-anchor scaling (legacy)
+    pf = 100.0
+    if park_factors is not None and not park_factors.empty:
         match = park_factors[park_factors["venue"] == venue]
         if not match.empty:
             row = match.iloc[0]
             bats = batter.get("bats", "R") or "R"
-
-            # Prefer split factors if the columns exist
             if "hr_pf_lhb" in row.index and "hr_pf_rhb" in row.index:
                 lhb = float(row["hr_pf_lhb"])
                 rhb = float(row["hr_pf_rhb"])
@@ -201,10 +425,8 @@ def score_park(batter: dict, venue: str, park_factors: pd.DataFrame) -> float:
                 else:
                     pf = float(row.get("hr_pf_overall", (lhb + rhb) / 2.0))
             else:
-                # Legacy path: only overall factor available
                 pf = float(row.get("hr_park_factor", row.get("hr_pf_overall", 100.0)))
 
-    # Scale: 70-130 → 0-100
     return min_max_scale(pf, 70, 130)
 
 
@@ -215,16 +437,13 @@ def score_form(batter: dict) -> float:
     """
     scores = []
 
-    # HRs in last 14 days: 0-5+ → 0-100
     recent_hr = batter.get("recent_hr_14d", 0)
     scores.append(min_max_scale(recent_hr, 0, 5))
 
-    # Recent barrel%: 0-25% → 0-100
     recent_barrel = batter.get("recent_barrel_pct_14d", 0)
     if recent_barrel is not None:
         scores.append(min_max_scale(recent_barrel, 0, 25))
 
-    # Exit velo trend (recent - season avg): -5 to +5 → 0-100
     ev_trend = batter.get("ev_trend_14d", 0)
     scores.append(min_max_scale(ev_trend, -5, 5))
 
@@ -239,49 +458,24 @@ def score_lineup_position(batting_order) -> float:
     Based on real MLB AB-per-game averages by batting order position:
       1: 4.7 AB/G   2: 4.6   3: 4.5   4: 4.4   5: 4.2
       6: 4.0   7: 3.7   8: 3.4   9: 3.2
-      Bench: ~0.4 expected AB (pinch-hit or DNP)
-
-    Confirmed starters get positioned scores; bench/roster-only bats get
-    a heavy penalty since they may not play at all.
     """
     SCORES = {
-        1: 85,    # leadoff — most ABs
-        2: 82,    # 2-hole — high OBP + power in modern MLB
-        3: 78,    # 3-hole — traditional best hitter
-        4: 75,    # cleanup — power spot
-        5: 65,    # 5-hole — solid but fewer ABs
-        6: 58,    # bottom third starts here
-        7: 48,    # significantly fewer ABs
-        8: 42,    # low leverage
-        9: 38,    # fewest regular ABs
+        1: 85, 2: 82, 3: 78, 4: 75, 5: 65,
+        6: 58, 7: 48, 8: 42, 9: 38,
     }
 
     if batting_order is None:
-        return 35.0          # unknown — assume worst starter
+        return 35.0
     if isinstance(batting_order, int) and 1 <= batting_order <= 9:
         return float(SCORES[batting_order])
     if str(batting_order) in ("bench", "roster_only"):
-        return 15.0          # may not play at all
+        return 15.0
     return 35.0
 
 
 def score_temperature(temp_f: float) -> float:
     """
-    Piecewise temperature → 0-100 score.
-
-    Gentler curve than v1 — compressed range so temperature doesn't
-    dominate the weather factor. The real effect of temperature on HR
-    rate is ~1-2% per 10°F, which is meaningful but modest.
-
-    Anchor points (gentler than v1):
-        40°F →  25   (cold, suppressed — was 10)
-        50°F →  35   (cool — was 25)
-        60°F →  44   (playable)
-        68°F →  50   (league-neutral)
-        75°F →  55   (warm, mild boost)
-        85°F →  63   (hot, moderate boost — was 72)
-        95°F →  72   (very hot — was 88)
-       100°F+ → 78   (capped — was 95)
+    Piecewise temperature -> 0-100 score.
     """
     anchors = [
         (40, 25),
@@ -320,70 +514,45 @@ def score_wind(
     Wind scoring relative to park orientation and batter handedness.
 
     wind_dir_from: compass direction the wind is COMING FROM (meteorological).
-    venue: canonical venue name → looks up CF bearing from PARK_CF_BEARING.
+    venue: canonical venue name -> looks up CF bearing from PARK_CF_BEARING.
     batter_hand: "L", "R", or "S" (switch).
 
-    Logic:
-      - Compute wind_to = (wind_from + 180) % 360  (direction wind blows TOWARD)
-      - Park has a CF bearing. RF ≈ CF+45°, LF ≈ CF-45°.
-      - LHB pull to RF → wind blowing toward RF helps them
-      - RHB pull to LF → wind blowing toward LF helps them
-      - Cosine similarity between wind_to and the relevant field sector
-        gives a -1..+1 alignment score.
-      - Scale by wind speed (calm wind = neutral regardless of direction).
+    LHB pull to RF; RHB pull to LF; switch averages both.
     """
     if wind_dir_from is None or wind_mph < 2:
-        return 50.0  # calm or unknown → neutral
+        return 50.0
 
     cf_bearing = PARK_CF_BEARING.get(venue, 0)
     wind_to = (wind_dir_from + 180) % 360
 
-    # Determine target bearing based on handedness
-    #   LHB pulls to RF → RF_BEARING ≈ CF + 45
-    #   RHB pulls to LF → LF_BEARING ≈ CF - 45
-    #   Switch → average of both
     if batter_hand == "L":
         target = (cf_bearing + 45) % 360
     elif batter_hand == "R":
         target = (cf_bearing - 45) % 360
     else:
-        # Switch: average alignment to both RF and LF
         rf_target = (cf_bearing + 45) % 360
         lf_target = (cf_bearing - 45) % 360
         rf_align = np.cos(np.radians(_angular_diff(wind_to, rf_target)))
         lf_align = np.cos(np.radians(_angular_diff(wind_to, lf_target)))
         alignment = (rf_align + lf_align) / 2
-        # Scale: alignment -1..+1 → 0..100, modulated by wind speed
-        speed_factor = min(1.0, wind_mph / 15)  # caps at 15 mph
+        speed_factor = min(1.0, wind_mph / 15)
         return 50 + alignment * 25 * speed_factor
 
-    # Cosine of angle between wind direction and target sector
     angle_diff = _angular_diff(wind_to, target)
-    alignment = np.cos(np.radians(angle_diff))  # -1 (blowing in) to +1 (blowing out)
-
-    # Scale by wind speed — stronger wind = bigger effect
-    # Cap at 15 mph (beyond that, diminishing returns)
+    alignment = np.cos(np.radians(angle_diff))
     speed_factor = min(1.0, wind_mph / 15)
 
-    # alignment * speed_factor gives -1..+1, map to 0..100 centered on 50
     return 50 + alignment * 25 * speed_factor
 
 
 def score_humidity(humidity_pct: float | None) -> float:
     """
-    Humidity → 0-100 score.
-
-    Humid air is LESS dense than dry air (water vapor MW=18 vs N2=28, O2=32),
-    so baseballs carry farther in humid conditions. The effect is real but
-    small: ~1-2% on ball carry across the full 0-100% humidity range.
-
-    We give a mild linear boost: 20% RH → 42, 50% → 50, 80% → 58, 100% → 65.
+    Humidity -> 0-100 score.
+    Humid air carries baseballs farther; mild linear boost.
     """
     if humidity_pct is None:
         return 50.0
-    # Clamp 0-100
     h = max(0, min(100, humidity_pct))
-    # Linear: 0% → 35, 50% → 50, 100% → 65
     return 35 + h * 0.30
 
 
@@ -391,27 +560,42 @@ def score_weather(
     weather: dict,
     venue: str = "",
     batter_hand: str = "R",
+    slate_ctx: dict | None = None,
+    game_pk: int | None = None,
 ) -> float:
     """
     Factor 5: Weather conditions (temperature + wind + humidity).
     Returns 0-100.
 
-    Now uses park-relative wind direction and batter handedness.
+    With slate_ctx active and a game_pk match, blends:
+      - 60% within-slate base-quality percentile (temp + speed + humidity)
+      - 40% per-batter wind-alignment score (handedness-specific)
+
+    Without slate_ctx, falls back to fixed-anchor blend.
     """
     if weather.get("dome", False):
-        return 50.0  # Neutral for dome stadiums
-
-    temp = weather.get("temperature_f", 68)
-    temp_score = score_temperature(temp)
+        return 50.0
 
     wind_mph = weather.get("wind_mph", 5) or 0
     wind_dir = weather.get("wind_direction_deg", None)
     wind_score = score_wind(wind_mph, wind_dir, venue, batter_hand)
 
+    if (
+        slate_ctx
+        and slate_ctx.get("active")
+        and game_pk is not None
+        and game_pk in slate_ctx.get("weather_pct", {})
+    ):
+        base_pct = slate_ctx["weather_pct"][game_pk]
+        return base_pct * 0.60 + wind_score * 0.40
+
+    # Fallback: fixed-anchor blend
+    temp = weather.get("temperature_f", 68)
+    temp_score = score_temperature(temp)
+
     humidity = weather.get("humidity_pct", None)
     humidity_score = score_humidity(humidity)
 
-    # Weighted blend: temp is most impactful, wind next, humidity mild
     return temp_score * 0.45 + wind_score * 0.35 + humidity_score * 0.20
 
 
@@ -429,36 +613,47 @@ def compute_composite(
     victim_profile: dict | None = None,
     pitcher_profile: dict | None = None,
     batting_order: int | str | None = None,
+    slate_ctx: dict | None = None,
+    game_pk: int | None = None,
 ) -> dict:
     """
     Compute composite score for a single batter.
     Returns dict with factor scores and weighted composite.
 
-    If *victim_profile* and *pitcher_profile* are provided, uses the
-    two-signal matchup v2 scoring (archetype similarity + vulnerability).
-    Otherwise falls back to the original score_matchup().
-
-    *batting_order* — int 1-9 for confirmed starters, "bench"/"roster_only"
-    for non-starters, or None if unknown.
+    *slate_ctx* — optional pre-computed slate context. When provided,
+    park/weather/matchup-vulnerability scoring uses within-slate percentile
+    rankings instead of fixed-anchor scaling.
     """
     weights = WEIGHT_CONFIGS[config_name]
 
     power = score_power(batter)
 
-    # Use v2 matchup scoring if archetype profiles are available
+    batter_team = batter.get("team", "")
+
     if victim_profile is not None and pitcher_profile is not None:
         from pitcher_profile import score_matchup_v2
-        matchup = score_matchup_v2(batter, pitcher, victim_profile, pitcher_profile)
+        matchup = score_matchup_v2(
+            batter, pitcher, victim_profile, pitcher_profile,
+            slate_ctx=slate_ctx,
+            batter_team=batter_team,
+        )
         matchup_version = "v2"
     else:
-        matchup = score_matchup(batter, pitcher)
+        matchup = score_matchup(
+            batter, pitcher,
+            slate_ctx=slate_ctx,
+            batter_team=batter_team,
+        )
         matchup_version = "v1"
 
-    park = score_park(batter, venue, park_factors)
+    park = score_park(batter, venue, park_factors, slate_ctx=slate_ctx)
     form = score_form(batter)
 
     batter_hand = batter.get("bats", "R") or "R"
-    weather_score = score_weather(weather, venue=venue, batter_hand=batter_hand)
+    weather_score = score_weather(
+        weather, venue=venue, batter_hand=batter_hand,
+        slate_ctx=slate_ctx, game_pk=game_pk,
+    )
 
     lineup = score_lineup_position(batting_order)
 
@@ -470,6 +665,66 @@ def compute_composite(
         + weights["weather"] * weather_score
         + weights.get("lineup", 0) * lineup
     )
+
+    # Snapshot all raw inputs that fed each factor — used by load_picks_to_db
+    # to populate pick_inputs so the dashboard's per-factor decomposition
+    # charts can compare HR hitters vs misses on each underlying signal.
+    pf_overall = None
+    if park_factors is not None and not park_factors.empty and venue:
+        pf_match = park_factors[park_factors["venue"] == venue]
+        if not pf_match.empty:
+            row = pf_match.iloc[0]
+            pf_overall = float(row.get("hr_pf_overall", row.get("hr_park_factor", 100)))
+
+    archetype_sim = None
+    if victim_profile is not None and pitcher_profile is not None:
+        try:
+            from pitcher_profile import archetype_similarity
+            archetype_sim = archetype_similarity(victim_profile, pitcher_profile)
+        except Exception:
+            archetype_sim = None
+
+    vegas_total = None
+    if slate_ctx and batter_team:
+        # Note: slate_ctx stores percentile, not raw — but the raw is in
+        # the pitcher dict if we ever emit it. For now persist the percentile,
+        # which is what's actually feeding the score.
+        vegas_total = slate_ctx.get("team_total_pct", {}).get(batter_team)
+
+    inputs_snapshot = {
+        # Power
+        "barrel_pct":              batter.get("barrel_pct"),
+        "exit_velo":               batter.get("exit_velo"),
+        "hr_fb_pct":               batter.get("hr_fb_pct"),
+        "iso":                     batter.get("iso"),
+        "xwoba_contact":           batter.get("xwoba_contact"),
+        "pull_fb_pct":             batter.get("pull_fb_pct"),
+        # Form
+        "recent_hr_14d":           batter.get("recent_hr_14d"),
+        "recent_barrel_pct_14d":   batter.get("recent_barrel_pct_14d"),
+        "ev_trend_14d":            batter.get("ev_trend_14d"),
+        # Matchup — pitcher
+        "pitcher_hr_per_9":        pitcher.get("hr_per_9"),
+        "pitcher_era":             pitcher.get("era"),
+        "pitcher_hh_pct":          pitcher.get("hard_hit_pct_allowed"),
+        "pitcher_k_per_9":         pitcher.get("k_per_9"),
+        "pitcher_fb_pct_allowed":  pitcher.get("fb_pct_allowed"),
+        # Matchup — batter / game
+        "woba_vs_hand":            batter.get("woba_vs_hand", batter.get("woba")),
+        "archetype_similarity":    archetype_sim,
+        "vegas_implied_total":     vegas_total,
+        "platoon_advantage":       1 if batter_hand != pitcher.get("throws", "R") else 0,
+        # Park
+        "hr_park_factor":          pf_overall,
+        # Weather
+        "temperature_f":           weather.get("temperature_f"),
+        "wind_mph":                weather.get("wind_mph"),
+        "wind_direction_deg":      weather.get("wind_direction_deg"),
+        "humidity_pct":            weather.get("humidity_pct"),
+        "is_dome":                 1 if weather.get("dome") else 0,
+        # Lineup
+        "batting_order":           batting_order if isinstance(batting_order, int) else None,
+    }
 
     return {
         "name": batter.get("name", "Unknown"),
@@ -486,71 +741,47 @@ def compute_composite(
         "composite": round(composite, 1),
         "config": config_name,
         "matchup_version": matchup_version,
+        "inputs": inputs_snapshot,
     }
 
 
-def score_all_batters(
-    batters: list[dict],
-    pitchers: dict,  # keyed by game_pk or team
-    games: list[dict],
-    weather_data: dict,
-    park_factors: pd.DataFrame,
-    config_name: str = "default",
-) -> list[dict]:
-    """
-    Score all batters for a given day.
-    Returns sorted list (highest composite first).
-    """
+def score_all_batters(batters, pitchers, games, weather_data, park_factors, config_name="default"):
+    """Score all batters for a given day. Returns sorted list (highest composite first)."""
     results = []
     for batter in batters:
         game_pk = batter.get("game_pk")
         venue = batter.get("venue", "")
         pitcher = pitchers.get(batter.get("opposing_pitcher_id"), {})
         weather = weather_data.get(game_pk, {})
-
         score = compute_composite(batter, pitcher, venue, weather, park_factors, config_name)
         score["game_pk"] = game_pk
         score["player_id"] = batter.get("player_id")
         results.append(score)
-
-    # Sort by composite score descending
     results.sort(key=lambda x: x["composite"], reverse=True)
     return results
 
 
-def select_top_picks(scored: list[dict], n: int = 8, max_per_game: int = 2, min_score: float = 0) -> list[dict]:
-    """
-    Select top N picks with diversification constraint.
-    Max 2 batters from same game.
-    """
+def select_top_picks(scored, n=8, max_per_game=2, min_score=0):
+    """Select top N picks with diversification constraint. Max 2 batters from same game."""
     picks = []
     game_counts = {}
     seen_names = set()
-
     for batter in scored:
         if len(picks) >= n:
             break
         if batter["composite"] < min_score:
             continue
-
         name = batter.get("name", "")
         if name in seen_names:
             continue
-
         gp = batter.get("game_pk")
         if game_counts.get(gp, 0) >= max_per_game:
             continue
-
         picks.append(batter)
         seen_names.add(name)
         game_counts[gp] = game_counts.get(gp, 0) + 1
-
     return picks
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Score batters for HR parlay")
@@ -571,8 +802,6 @@ def main():
         data = json.load(f)
 
     print(f"Scoring batters for {args.date} with config '{args.config}'")
-    # In live mode, this would use the full fetched data
-    # For now, print summary
     print(f"Games: {len(data['games'])}")
     print(f"Config weights: {WEIGHT_CONFIGS[args.config]}")
 
