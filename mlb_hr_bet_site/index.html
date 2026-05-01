@@ -939,60 +939,53 @@
     }
 
     /* ────────────────────────────────────────────────────────────
-       HITTERS SCOREBOARD (Phase 4)
-       Stadium hand-operated scoreboard cross-tab. Rows = batters,
-       columns = days (innings). ⚾ glyphs mark HRs with our rank.
+       HITTERS STATBOOK (Phase 4 v2 — replaces the green scoreboard)
+       Rows = top HR hitters last 14d. Columns = days. Cells use a
+       small symbol grammar instead of the noisy green ⚾:
+         ★  picked + HR'd   (clay/signal)
+         ●  on board + HR'd (gray)
+         ◦  on board, no HR (faint)
+         ·  off board, HR'd (very faint)
+         (blank) didn't HR
+       Total HR column on the right gets the recessed cream cell.
        ──────────────────────────────────────────────────────────── */
     .hitters-scoreboard {
       background:
-        linear-gradient(180deg, #2a4a26 0%, #1d3519 100%);
+        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.12) 27px 28px),
+        var(--paper);
+      border: 1px solid var(--rule);
       border-radius: 6px;
-      padding: 14px;
-      box-shadow:
-        0 0 0 2px #2a4a26, 0 0 0 3px #c8a868, 0 0 0 4px #8c7637,
-        0 1px 0 rgba(255, 255, 255, 0.10) inset,
-        0 18px 40px -18px rgba(20, 35, 18, 0.6);
-      position: relative; overflow: hidden;
+      padding: 16px 18px;
+      box-shadow: 0 8px 22px -10px rgba(80, 55, 25, 0.20);
       margin-bottom: 22px;
-    }
-    .hitters-scoreboard::before {
-      content: ''; position: absolute; inset: 0; pointer-events: none;
-      background-image:
-        radial-gradient(rgba(255,255,255,0.04) 0.5px, transparent 1px),
-        radial-gradient(rgba(0,0,0,0.06) 0.4px, transparent 0.8px);
-      background-size: 3px 3px, 5px 5px;
-      mix-blend-mode: overlay; opacity: 0.5;
     }
     .hitters-scoreboard-head {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 4px 6px 12px;
-      border-bottom: 1px solid rgba(200, 168, 104, 0.25);
+      padding-bottom: 12px;
+      border-bottom: 2px solid var(--ink);
       margin-bottom: 10px;
-      position: relative; z-index: 1;
       flex-wrap: wrap; gap: 12px;
     }
     .hitters-scoreboard-head .title {
       font-family: 'Inter', sans-serif;
-      font-size: 11px; font-weight: 700;
-      letter-spacing: 0.20em; text-transform: uppercase;
-      color: #f4ecd8;
-      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+      font-size: 12px; font-weight: 700;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink);
     }
     .hitters-scoreboard-head .legend {
       display: flex; gap: 14px; align-items: center;
       font-family: 'Inter', sans-serif;
       font-size: 10px;
-      color: rgba(244, 236, 216, 0.7);
+      color: var(--ink-muted);
       flex-wrap: wrap;
     }
     .hitters-scoreboard-head .lg-item {
       display: inline-flex; align-items: center; gap: 4px;
     }
-    .hitters-scoreboard-head .lg-baseball.lg-picked  { color: #c8a868; font-size: 14px; }
-    .hitters-scoreboard-head .lg-baseball.lg-onboard { color: rgba(244, 236, 216, 0.55); font-size: 14px; }
-    .hitters-scoreboard-head .lg-dot { color: rgba(244, 236, 216, 0.4); font-size: 16px; line-height: 1; }
+    .hitters-scoreboard-head .lg-symbol.lg-picked  { color: var(--signal); font-weight: 700; font-size: 13px; }
+    .hitters-scoreboard-head .lg-symbol.lg-onboard { color: var(--ink-soft); font-size: 13px; }
+    .hitters-scoreboard-head .lg-symbol.lg-faint   { color: var(--ink-muted); font-size: 13px; }
     .hitters-scoreboard-body {
-      position: relative; z-index: 1;
       overflow-x: auto;
     }
     .hitters-innings-table {
@@ -1000,82 +993,73 @@
       font-family: 'Inter', sans-serif;
     }
     .hitters-innings-table th {
-      padding: 6px 8px; font-size: 9px; font-weight: 700;
+      padding: 7px 6px; font-size: 9px; font-weight: 700;
       letter-spacing: 0.10em; text-transform: uppercase;
-      color: rgba(244, 236, 216, 0.65);
+      color: var(--ink);
       text-align: center;
-      border-bottom: 1px solid rgba(200, 168, 104, 0.25);
-      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+      border-bottom: 1px solid var(--rule);
+      background: var(--paper-2);
       white-space: nowrap;
     }
     .hitters-innings-table th.col-batter { text-align: left; padding-left: 12px; }
     .hitters-innings-table td {
-      padding: 6px 8px; font-size: 12px;
-      border-bottom: 1px solid rgba(0, 0, 0, 0.15);
-      color: #f4ecd8;
+      padding: 7px 6px; font-size: 12px;
+      border-bottom: 1px solid var(--rule-soft);
+      color: var(--ink);
       vertical-align: middle;
     }
     .hitters-innings-table tbody tr {
       cursor: pointer;
       transition: background 0.12s ease;
     }
-    .hitters-innings-table tbody tr:hover {
-      background: rgba(244, 236, 216, 0.05);
+    .hitters-innings-table tbody tr:nth-child(odd) td { background: rgba(255, 250, 232, 0.35); }
+    .hitters-innings-table tbody tr:hover td {
+      background: rgba(196, 106, 58, 0.08);
     }
     .hitters-innings-table .col-batter {
       text-align: left; padding-left: 12px;
-      font-size: 13px; color: #fff;
-      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+      font-size: 13px;
+      color: var(--ink);
       white-space: nowrap;
+      font-weight: 600;
     }
     .hitters-innings-table .col-batter .batter-team {
       font-family: 'JetBrains Mono', monospace;
       font-size: 10px; font-weight: 500;
-      color: rgba(244, 236, 216, 0.6);
+      color: var(--ink-muted);
       margin-left: 6px; letter-spacing: 0.04em;
     }
     .hitters-innings-table .col-total {
       text-align: center;
       background: linear-gradient(180deg, #f4ecd8 0%, #e8dcbe 100%);
-      box-shadow: inset 0 2px 3px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.4);
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.18), inset 0 -1px 0 rgba(255,255,255,0.4);
+      width: 44px;
     }
     .hitters-innings-table .col-total .hr-total {
       font-family: 'Inter', sans-serif;
-      font-weight: 800; font-size: 18px;
-      color: #1a1f24; letter-spacing: -0.01em;
+      font-weight: 800; font-size: 16px;
+      color: var(--ink); letter-spacing: -0.01em;
     }
     .hitters-innings-table .col-day {
       text-align: center;
-      min-width: 42px;
+      min-width: 38px;
       font-feature-settings: 'tnum';
+      font-family: 'Inter', sans-serif;
     }
-    .hitters-innings-table .col-day.cell-picked {
-      background: rgba(200, 168, 104, 0.10);
+    .hitters-innings-table .col-day .symbol {
+      display: block; font-size: 16px; line-height: 1;
     }
-    .hitters-innings-table .col-day.cell-picked .baseball {
-      color: #c8a868; font-size: 16px;
-      text-shadow: 0 0 6px rgba(200, 168, 104, 0.5);
-    }
-    .hitters-innings-table .col-day.cell-picked .rank {
+    .hitters-innings-table .col-day .rank {
       display: block; font-size: 9px;
-      color: rgba(244, 236, 216, 0.7);
+      color: var(--ink-muted);
       font-family: 'JetBrains Mono', monospace;
       letter-spacing: 0.04em;
+      margin-top: 1px;
     }
-    .hitters-innings-table .col-day.cell-onboard .baseball {
-      color: rgba(244, 236, 216, 0.55); font-size: 16px;
-    }
-    .hitters-innings-table .col-day.cell-onboard .rank {
-      display: block; font-size: 9px;
-      color: rgba(244, 236, 216, 0.4);
-      font-family: 'JetBrains Mono', monospace;
-    }
-    .hitters-innings-table .col-day.cell-offboard .baseball {
-      color: rgba(244, 236, 216, 0.30); font-size: 14px;
-    }
-    .hitters-innings-table .col-day.cell-blank {
-      color: rgba(244, 236, 216, 0.15);
-    }
+    .hitters-innings-table .col-day.cell-picked .symbol  { color: var(--signal); font-weight: 700; }
+    .hitters-innings-table .col-day.cell-onboard .symbol { color: var(--ink-soft); }
+    .hitters-innings-table .col-day.cell-offboard .symbol { color: var(--ink-muted); opacity: 0.6; }
+    .hitters-innings-table .col-day.cell-blank { color: transparent; }
 
     /* ────────────────────────────────────────────────────────────
        BIG BOARD v1 — statbook ledger left, slate sidebar right
@@ -1489,9 +1473,9 @@
       <!-- Date selector — paginate ◀ ▶ between days OR jump via date input.
            Only one day's HRs visible at a time (statbook page metaphor). -->
       <div class="recap-controls">
-        <button class="recap-nav" id="recapPrev" title="Previous day">◀</button>
-        <select class="recap-date-select" id="recapDateSelect"></select>
-        <button class="recap-nav" id="recapNext" title="Next day">▶</button>
+        <button class="recap-nav" id="recapPrev" onclick="recapPrevDay()" title="Previous day">◀</button>
+        <select class="recap-date-select" id="recapDateSelect" onchange="recapJumpToDate(this.value)"></select>
+        <button class="recap-nav" id="recapNext" onclick="recapNextDay()" title="Next day">▶</button>
         <span class="recap-day-summary" id="recapDaySummary"></span>
       </div>
       <div id="hrRecapList"><div class="loading">Loading recap...</div></div>
@@ -3231,30 +3215,35 @@
       bindMobileTables();
     }
 
-    // Date selector + nav handlers
-    document.getElementById('recapDateSelect').addEventListener('change', (e) => {
-      _recapCurrentDate = e.target.value;
+    // Globals for inline onclick handlers — reliable across timing/scope.
+    // Buttons in HTML use onclick="recapPrevDay()" etc, which calls these.
+    function recapJumpToDate(d) {
+      _recapCurrentDate = d;
       _renderRecapDay();
-    });
-    document.getElementById('recapPrev').addEventListener('click', () => {
+    }
+    function recapPrevDay() {
       const recap = _recapCache?.recap || [];
+      if (!recap.length) return;
       const idx = recap.findIndex(d => d.date === _recapCurrentDate);
-      // recap is most-recent-first, so "prev day" = idx + 1
+      // recap is most-recent-first; "prev day" = older = idx + 1
       if (idx >= 0 && idx < recap.length - 1) {
         _recapCurrentDate = recap[idx + 1].date;
-        document.getElementById('recapDateSelect').value = _recapCurrentDate;
+        const sel = document.getElementById('recapDateSelect');
+        if (sel) sel.value = _recapCurrentDate;
         _renderRecapDay();
       }
-    });
-    document.getElementById('recapNext').addEventListener('click', () => {
+    }
+    function recapNextDay() {
       const recap = _recapCache?.recap || [];
+      if (!recap.length) return;
       const idx = recap.findIndex(d => d.date === _recapCurrentDate);
       if (idx > 0) {
         _recapCurrentDate = recap[idx - 1].date;
-        document.getElementById('recapDateSelect').value = _recapCurrentDate;
+        const sel = document.getElementById('recapDateSelect');
+        if (sel) sel.value = _recapCurrentDate;
         _renderRecapDay();
       }
-    });
+    }
 
     // ── Render: Hitters Leaderboard ──
     // ── Render: Hitters Scoreboard (Phase 4) ──
@@ -3285,9 +3274,9 @@
         <div class="hitters-scoreboard-head">
           <div class="title">Hot Sheet · Last ${window} Days</div>
           <div class="legend">
-            <span class="lg-item"><span class="lg-baseball lg-picked">⚾</span> picked &amp; HR'd</span>
-            <span class="lg-item"><span class="lg-baseball lg-onboard">⚾</span> on board, missed</span>
-            <span class="lg-item"><span class="lg-dot">·</span> on board, no HR</span>
+            <span class="lg-item"><span class="lg-symbol lg-picked">★</span> picked &amp; HR'd</span>
+            <span class="lg-item"><span class="lg-symbol lg-onboard">●</span> on board, HR'd</span>
+            <span class="lg-item"><span class="lg-symbol lg-faint">·</span> off board, HR'd</span>
           </div>
         </div>
         <div class="hitters-scoreboard-body">
@@ -3296,7 +3285,7 @@
             <th class="col-total">HR</th>`;
       days.forEach(d => {
         const dayObj = new Date(d);
-        const dayLabel = dayObj.toLocaleDateString(undefined, { weekday: 'narrow' }) + ' ' + (dayObj.getMonth() + 1) + '/' + dayObj.getDate();
+        const dayLabel = (dayObj.getMonth() + 1) + '/' + dayObj.getDate();
         html += `<th class="col-day">${dayLabel}</th>`;
       });
       html += '</tr></thead><tbody>';
@@ -3304,7 +3293,7 @@
       rows.forEach(r => {
         const pid = r.batter_id;
         html += `<tr data-pid="${pid}" class="clickable-row">`;
-        html += `<td class="col-batter" style="font-weight:600">
+        html += `<td class="col-batter">
           <span class="player-link">${r.batter_name}</span>
           <span class="batter-team">${r.team || ''}</span>
         </td>`;
@@ -3312,23 +3301,20 @@
         days.forEach(d => {
           const c = r.by_date[d];
           if (!c) {
-            html += '<td class="col-day cell-blank"></td>';
+            html += '<td class="col-day cell-blank">·</td>';
           } else if (c.selected) {
-            // Picked AND HR'd — gold baseball with rank
-            html += `<td class="col-day cell-picked">
-              <span class="baseball" title="Picked at #${c.rank ?? '?'} · ${c.hr_count} HR">⚾</span>
+            html += `<td class="col-day cell-picked" title="Picked at #${c.rank ?? '?'} · ${c.hr_count} HR">
+              <span class="symbol">★</span>
               <span class="rank">#${c.rank ?? '?'}</span>
             </td>`;
           } else if (c.rank != null) {
-            // On board but missed — muted baseball
-            html += `<td class="col-day cell-onboard">
-              <span class="baseball" title="On board at #${c.rank} · ${c.hr_count} HR · we missed">⚾</span>
+            html += `<td class="col-day cell-onboard" title="On board at #${c.rank} · ${c.hr_count} HR · missed">
+              <span class="symbol">●</span>
               <span class="rank">#${c.rank}</span>
             </td>`;
           } else {
-            // HR'd but wasn't on our board at all
-            html += `<td class="col-day cell-offboard">
-              <span class="baseball" title="${c.hr_count} HR · off our board">⚾</span>
+            html += `<td class="col-day cell-offboard" title="${c.hr_count} HR · off our board">
+              <span class="symbol">·</span>
             </td>`;
           }
         });
