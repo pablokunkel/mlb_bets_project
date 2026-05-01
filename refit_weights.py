@@ -213,29 +213,32 @@ def percentile_rerank(df: pd.DataFrame, col: str) -> pd.Series:
 
 
 def backtest(df: pd.DataFrame, factor_weights: dict, features: list[str]) -> dict:
-    """Run hit-rate backtest with old weights, new weights, percentile-reranked, etc."""
-    df = df.copy()
+    """
+    Run hit-rate backtest with old weights, new weights, etc.
 
-    # Percentile rerank for the within-slate factors (matchup/park/weather)
-    df["matchup_pct"] = percentile_rerank(df, "matchup_score")
-    df["park_pct_rr"] = percentile_rerank(df, "park_score")
-    df["weather_pct_rr"] = percentile_rerank(df, "weather_score")
+    NOTE 2026-05-01: dropped the percentile_rerank step on matchup/park/
+    weather. Those columns in the DB are ALREADY the final post-slate-
+    context scores from live scoring (score_matchup_v2 does the rerank
+    internally and returns the final number). Re-percentile-ranking on
+    top of that destroyed the signal — current_default backtested at 8.1%
+    instead of ~38% because of the double-rerank. Use the stored values
+    directly to mirror how compute_composite() actually combines them.
+    """
+    df = df.copy()
 
     # Variant A: stored composite from when the pick was scored (legacy baseline)
     a = hit_rate(df, "composite")
 
     # Variant B: CURRENT shipped default — pulled live from
     # WEIGHT_CONFIGS["default"] in score_batters so the lift number is
-    # an honest apples-to-apples comparison. (Was hardcoded to v1_learned
-    # weights, which is what made every past refit print a misleading
-    # "+1.25 pp lift_vs_current" no matter what.)
+    # an honest apples-to-apples comparison.
     w = SHIPPED_DEFAULT_W
     df["comp_default"] = (
         w["power"]   * df["power_score"]
-        + w["matchup"] * df["matchup_pct"]
-        + w["park"]    * df["park_pct_rr"]
+        + w["matchup"] * df["matchup_score"]
+        + w["park"]    * df["park_score"]
         + w["form"]    * df["form_score"]
-        + w["weather"] * df["weather_pct_rr"]
+        + w["weather"] * df["weather_score"]
     )
     # Include lineup_score if present in the data (DB always has it; some
     # legacy CSVs don't).
@@ -249,12 +252,11 @@ def backtest(df: pd.DataFrame, factor_weights: dict, features: list[str]) -> dic
         if feat == "lineup":
             continue
         if feat == "matchup":
-            # Apply over within-slate matchup percentile to mirror live scoring
-            df["comp_new"] += w * df["matchup_pct"]
+            df["comp_new"] += w * df["matchup_score"]
         elif feat == "park":
-            df["comp_new"] += w * df["park_pct_rr"]
+            df["comp_new"] += w * df["park_score"]
         elif feat == "weather":
-            df["comp_new"] += w * df["weather_pct_rr"]
+            df["comp_new"] += w * df["weather_score"]
         elif feat == "power":
             df["comp_new"] += w * df["power_score"]
             # Note: xwoba/pull_fb signal already lives inside the new
@@ -262,6 +264,8 @@ def backtest(df: pd.DataFrame, factor_weights: dict, features: list[str]) -> dic
             # treating the bucket weight as already-blended.
         elif feat == "form":
             df["comp_new"] += w * df["form_score"]
+    if "lineup_score" in df.columns:
+        df["comp_new"] += factor_weights.get("lineup", 0) * df["lineup_score"]
     c = hit_rate(df, "comp_new")
 
     return {
