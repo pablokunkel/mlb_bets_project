@@ -91,6 +91,24 @@ echo  [5/5] Pushing to GitHub (Cloudflare auto-deploys)... ^(~10s^)
 echo  [5/5] Pushing to GitHub... >> "%LOGFILE%" 2>&1
 git add mlb_hr_bet_site/data/*.json mlb_hr_bet_site/index.html >> "%LOGFILE%" 2>&1
 git commit -m "Daily update %TODAY%" --allow-empty >> "%LOGFILE%" 2>&1
+
+REM Pull --rebase BEFORE pushing. If main moved during the noon window
+REM (e.g., a PR merged on github.com), our daily-update commit would
+REM otherwise be rejected non-fast-forward (this happened 2026-05-02:
+REM 4 PRs merged between local's last sync and the noon run, push got
+REM rejected, today's picks stayed local until manual recovery).
+REM
+REM --autostash handles any unrelated working-tree changes by stashing
+REM them around the rebase. Daily-update touches only data/*.json which
+REM rarely conflict with PR changes (PRs touch source code).
+git pull --rebase --autostash origin main >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo       ERROR -- pull --rebase failed; see %LOGFILE%
+    echo  ERROR: git pull --rebase failed -- conflicts need manual resolution >> "%LOGFILE%" 2>&1
+    echo  Today's picks ARE committed locally but NOT pushed yet. >> "%LOGFILE%" 2>&1
+    exit /b 1
+)
+
 git push origin main >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo       ERROR -- see %LOGFILE%
