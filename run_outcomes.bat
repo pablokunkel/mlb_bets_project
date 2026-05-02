@@ -50,10 +50,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Step 4: Push refreshed JSON to GitHub (Cloudflare Pages auto-deploys)
+REM Step 4: Push refreshed JSON to GitHub (Cloudflare auto-deploys)
 echo  [4/4] Pushing to GitHub... >> "%LOGFILE%" 2>&1
 git add mlb_hr_bet_site/data/*.json >> "%LOGFILE%" 2>&1
 git commit -m "Outcomes + accuracy refresh" --allow-empty >> "%LOGFILE%" 2>&1
+
+REM Pull --rebase before pushing. Mirrors the run_daily.bat fix: avoids
+REM non-fast-forward rejection when main has moved since this machine's
+REM last sync. --autostash protects unrelated working-tree changes.
+git pull --rebase --autostash origin main >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo  ERROR: git pull --rebase failed -- conflicts need manual resolution >> "%LOGFILE%" 2>&1
+    echo  Outcomes ARE committed locally but NOT pushed yet. >> "%LOGFILE%" 2>&1
+    exit /b 1
+)
+
 git push origin main >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo  ERROR: Git push failed! >> "%LOGFILE%" 2>&1
