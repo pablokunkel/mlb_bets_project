@@ -308,11 +308,32 @@ def _splits_to_batters(splits: list) -> list[dict]:
         slg = float(stat.get("slg", ".000") or ".000")
         obp = float(stat.get("obp", ".000") or ".000")
         iso = round(slg - avg, 3)
+        # Audit MED: this is a SYNTHETIC wOBA proxy `0.7*OBP + 0.3*SLG`,
+        # NOT real wOBA which uses Tango-style linear weights on
+        # 1B/2B/3B/HR/BB/HBP. Effects: under-scores power-heavy hitters
+        # (slug component is under-weighted vs ~0.5 in real wOBA),
+        # over-scores walk-heavy guys without pop. The Stats API DOES
+        # return individual hit types — a future refactor could compute
+        # real wOBA. For now this estimate flows into season_batting and
+        # is the fallback `enrich_with_season_batting` reaches for, so
+        # caveats here propagate to score_matchup's woba_vs_hand.
         woba = round(obp * 0.7 + slg * 0.3, 3)
 
+        # Synthetic Statcast estimates from hr_per_pa. Constants are
+        # back-fit to MLB-Stats-API splits-only data, NOT real Statcast.
+        # Audit MED flag: these constants drift over time and have no
+        # source documentation. Consumers should prefer real Savant /
+        # FanGraphs values when available; `enrich_with_season_batting`
+        # only enriches when the live tier dict's value is zero/missing,
+        # so this synthesis is the floor when better data isn't there.
         hr_per_pa = hr / max(pa, 1)
+        # 200 = empirically back-fit constant; ~average HR/contact ratio
+        # times barrel-rate-on-HR-contact. Real barrel% is Statcast-tracked.
         est_barrel_pct = round(min(25, hr_per_pa * 200), 1)
+        # 82 + slg*15: linear extrapolation. Real exit velo ranges ~85-95.
         est_exit_velo = round(82 + slg * 15, 1)
+        # hr_per_pa * 100 * 1.8: HR/FB approximation assuming ~55% FB/PA
+        # contact rate. Real HR/FB% is computed from FB count, not PA.
         est_hr_fb_pct = round(hr_per_pa * 100 * 1.8, 1)
 
         team_name = team.get("name", "")

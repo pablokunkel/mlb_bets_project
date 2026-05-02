@@ -593,12 +593,39 @@ def score_lineup_position(batting_order) -> float:
         return float(SCORES[batting_order])
     if str(batting_order) in ("bench", "roster_only"):
         return 15.0
+    # Audit LOW: fallthrough handles unexpected `batting_order` values
+    # ("DH", 10+, etc.). In production these never reach here —
+    # generate_picks.score_live_slate emits only int 1-9, "bench",
+    # "roster_only", or None. Logging instead of silently returning 35
+    # would surface the assumption breaking. Kept as 35.0 for now to
+    # preserve daily-run resilience; any new caller should be updated
+    # to feed one of the documented inputs.
     return 35.0
 
 
 def score_temperature(temp_f: float) -> float:
     """
     Piecewise temperature -> 0-100 score.
+
+    Anchor curve sourced from the empirical HR-rate-vs-temperature
+    relationship in the historical_calibration table (see
+    `temp_humidity_heatmap` in export_site_data and the diagnostic
+    Performance tab → Temp × Humidity Heatmap). Hand-tuned so that:
+      - ≤40°F (frigid)   → ~25 (suppressed carry)
+      - 68°F (neutral)   → 50  (anchor for "average" night)
+      - 95°F (hot+humid) → 72  (peak carry per Statcast distance models)
+      - ≥100°F           → 78  (asymptote — beyond which player fatigue
+                                offsets the air-density gain)
+
+    Score is fed as one input into score_weather AND into
+    compute_slate_context's percentile-ranked weather_pct (which
+    already corrects for slate-specific temp distributions). Use the
+    slate-percentile path when slate_ctx is active — anchors only
+    matter on the v1 fallback.
+
+    Effective range on a typical April-October MLB slate: 50-65 (most
+    games are 60-85°F outdoors). The wider anchor table covers Marlins
+    Park summers and April Coors snow games at the tails.
     """
     anchors = [
         (40, 25),
