@@ -2286,7 +2286,14 @@
       // (Masthead JS removed 2026-05-01 — masthead element no longer in DOM.)
 
       // ─── Backtest table — current model re-scored on history ─────────
-      renderBacktest(backtest);
+      // Wrapped in try/catch so a render bug here can't kill the rest of
+      // the Performance tab (charts, factor decomp, etc.).
+      try { renderBacktest(backtest); }
+      catch (e) {
+        console.error('renderBacktest failed:', e);
+        const t = document.getElementById('backtestAccuracy');
+        if (t) t.innerHTML = '<div class="empty">Backtest panel failed to render — see console.</div>';
+      }
 
       const o = perf.overall;
       document.getElementById('perfStats').innerHTML = `
