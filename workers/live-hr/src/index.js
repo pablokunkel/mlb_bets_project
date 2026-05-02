@@ -139,6 +139,17 @@ function extractHRs(pbp, gameMeta) {
       launchSpeed: hitData?.launchSpeed ?? null,
       launchAngle: hitData?.launchAngle ?? null,
       totalDistance: hitData?.totalDistance ?? null,
+      // Spray-chart fields for the front-end Topps card diamond SVG.
+      // MLB coordinate system: home plate at ~(125, 200), X grows toward
+      // right field, Y *decreases* toward outfield (top of payload Y axis).
+      // Range is roughly 0–250. coordX/coordY are null when Statcast didn't
+      // track the hit (rare for HRs but happens — fall back to `location`).
+      coordX: hitData?.coordinates?.coordX ?? null,
+      coordY: hitData?.coordinates?.coordY ?? null,
+      // Trajectory and location (e.g. "fly_ball", "line_drive" / "7"|"8"|"9"
+      // for LF/CF/RF) are useful for fallback rendering when coords are null.
+      trajectory: hitData?.trajectory ?? null,
+      location: hitData?.location ?? null,
       // Score after the HR
       homeScore: result.homeScore ?? null,
       awayScore: result.awayScore ?? null,
