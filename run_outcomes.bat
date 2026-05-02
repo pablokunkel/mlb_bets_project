@@ -15,7 +15,10 @@ cd /d "%~dp0"
 
 set LOGDIR=%~dp0logs
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
-for /f "tokens=1-3 delims=/" %%a in ('echo %date%') do set TODAY=%%c-%%a-%%b
+REM Locale-proof date parsing (matches run_nightly.bat). Earlier brittle
+REM tokens=1-3 delims=/ parser was inserting day-of-week into the path,
+REM so the log file ended up at e.g. "outcomes_2026-Sat 05-02.log".
+for /f "delims=" %%i in ('python -c "import datetime; print(datetime.date.today().isoformat())"') do set TODAY=%%i
 set LOGFILE=%LOGDIR%\outcomes_%TODAY%.log
 
 echo ======================================== >> "%LOGFILE%" 2>&1

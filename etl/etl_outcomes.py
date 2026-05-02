@@ -334,8 +334,6 @@ def run_outcomes(date_str: str, backfill: bool = False, report: bool = False):
             log_etl_fail(conn, log_id, str(e))
             print(f"  FAILED: {e}")
 
-        print(f"  FAILED: {e}")
-
     if report:
         print_performance_report(conn)
 
