@@ -155,6 +155,164 @@ def fetch_outcomes_for_date(conn, date_str: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Per-HR Statcast events (separate from per-batter box-score outcomes)
+# ---------------------------------------------------------------------------
+
+def fetch_hr_events_for_date(conn, date_str: str) -> int:
+    """
+    Walk each completed game's playByPlay and extract every HR with full
+    Statcast detail. Mirrors workers/live-hr/src/index.js extractHRs() but
+    persists to the local SQLite `hr_events` table instead of Cloudflare KV.
+
+    Idempotent: UNIQUE(game_pk, at_bat_index) means INSERT OR IGNORE
+    silently skips already-captured rows on a re-run. Returns the number
+    of NEW rows inserted (not the total HRs in the slate).
+
+    Errors per-game are swallowed with a log line — a single missing
+    playByPlay shouldn't block the rest of the slate.
+    """
+    games = conn.execute(
+        "SELECT game_pk FROM daily_slate WHERE date = ?", (date_str,)
+    ).fetchall()
+
+    if not games:
+        # Same fallback as fetch_outcomes_for_date — pull completed games
+        # from /schedule when daily_slate doesn't have today (e.g.,
+        # backfilling a date predating daily_slate population).
+        try:
+            url = f"{MLB_API}/schedule"
+            params = {"sportId": 1, "date": date_str}
+            resp = requests.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            game_pks = []
+            for d in resp.json().get("dates", []):
+                for g in d.get("games", []):
+                    if g["status"]["detailedState"] in ("Final", "Game Over"):
+                        game_pks.append(g["gamePk"])
+            games = [{"game_pk": gpk} for gpk in game_pks]
+        except Exception as e:
+            print(f"    ERROR fetching schedule for hr_events: {e}")
+            return 0
+
+    inserted = 0
+    for game_row in games:
+        gpk = game_row["game_pk"] if isinstance(game_row, dict) else game_row[0]
+
+        try:
+            url = f"{MLB_API}/game/{gpk}/playByPlay"
+            resp = requests.get(url, timeout=20)
+            resp.raise_for_status()
+            pbp = resp.json()
+        except Exception:
+            continue
+
+        # Resolve game-level meta for batting-team / venue. Cheap to read
+        # from daily_slate since etl_morning already populated it; falls
+        # back to empty strings when daily_slate doesn't have the game.
+        meta_row = conn.execute(
+            "SELECT home_team, away_team, venue FROM daily_slate "
+            "WHERE game_pk = ? AND date = ?",
+            (gpk, date_str),
+        ).fetchone()
+        home_team = meta_row["home_team"] if meta_row else ""
+        away_team = meta_row["away_team"] if meta_row else ""
+        venue = meta_row["venue"] if meta_row else ""
+
+        for play in pbp.get("allPlays", []):
+            result = play.get("result") or {}
+            if result.get("eventType") != "home_run":
+                continue
+
+            matchup = play.get("matchup") or {}
+            about = play.get("about") or {}
+            batter = matchup.get("batter") or {}
+            pitcher = matchup.get("pitcher") or {}
+            half = about.get("halfInning") or ""
+
+            # Top of inning: away team bats; bottom: home team bats.
+            # Mirrors the live worker's logic.
+            batting_team = away_team if half == "top" else home_team
+            pitching_team = home_team if half == "top" else away_team
+
+            # hitData lives on the LAST playEvent that has it (final state
+            # of the at-bat — earlier pitches in the AB don't have hitData).
+            hit_data = None
+            for ev in play.get("playEvents", []) or []:
+                if ev.get("hitData"):
+                    hit_data = ev["hitData"]
+            hd = hit_data or {}
+            coords = hd.get("coordinates") or {}
+
+            batter_id = batter.get("id")
+            if not batter_id:
+                # Shouldn't happen for a HR play, but UNIQUE(game_pk,
+                # at_bat_index) doesn't constrain batter_id and we want a
+                # joinable batter id downstream.
+                continue
+
+            try:
+                cur = conn.execute("""
+                    INSERT OR IGNORE INTO hr_events
+                    (date, game_pk, at_bat_index,
+                     batter_id, batter_name, batting_team,
+                     pitcher_id, pitcher_name, pitching_team,
+                     inning, half_inning, play_time,
+                     launch_speed, launch_angle, total_distance,
+                     coord_x, coord_y, trajectory, location, hardness,
+                     home_score_after, away_score_after, description, venue)
+                    VALUES (?, ?, ?,  ?, ?, ?,  ?, ?, ?,
+                            ?, ?, ?,
+                            ?, ?, ?,  ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?)
+                """, (
+                    date_str, gpk, about.get("atBatIndex"),
+                    batter_id, batter.get("fullName", ""), batting_team,
+                    pitcher.get("id"), pitcher.get("fullName", ""), pitching_team,
+                    about.get("inning"), half,
+                    about.get("endTime") or about.get("startTime"),
+                    hd.get("launchSpeed"), hd.get("launchAngle"), hd.get("totalDistance"),
+                    coords.get("coordX"), coords.get("coordY"),
+                    hd.get("trajectory"), hd.get("location"), hd.get("hardness"),
+                    result.get("homeScore"), result.get("awayScore"),
+                    result.get("description", ""), venue,
+                ))
+                if cur.rowcount > 0:
+                    inserted += 1
+            except Exception as e:
+                print(f"    HR event insert failed (gpk={gpk}, abi={about.get('atBatIndex')}): {e}")
+
+    conn.commit()
+    return inserted
+
+
+def backfill_hr_events(conn):
+    """Find dates with rows in `outcomes` but no `hr_events`, fetch them all.
+
+    Used by the `--backfill` CLI flag. For a fresh checkout where
+    `outcomes` has 30+ days of history but `hr_events` is empty, this
+    walks the full set sequentially. ~1 sec per game * ~15 games/day,
+    so ~9 min for a 37-day backfill.
+    """
+    rows = conn.execute("""
+        SELECT DISTINCT o.date FROM outcomes o
+        WHERE o.date NOT IN (SELECT DISTINCT date FROM hr_events)
+        ORDER BY o.date
+    """).fetchall()
+    dates = [r[0] for r in rows]
+    if not dates:
+        print("  No dates need hr_events backfill.")
+        return
+    print(f"  Found {len(dates)} dates needing hr_events: "
+          f"{dates[:5]}{'...' if len(dates) > 5 else ''}")
+    grand = 0
+    for d in dates:
+        n = fetch_hr_events_for_date(conn, d)
+        print(f"    [{d}] {n} HR events recorded")
+        grand += n
+    print(f"  Backfill complete: {grand} total HR events across {len(dates)} dates")
+
+
+# ---------------------------------------------------------------------------
 # Backfill from JSON results
 # ---------------------------------------------------------------------------
 
@@ -319,6 +477,8 @@ def run_outcomes(date_str: str, backfill: bool = False, report: bool = False):
         print("  OUTCOME BACKFILL")
         print("=" * 60)
         backfill_outcomes(conn)
+        print("\n  HR events backfill...")
+        backfill_hr_events(conn)
 
     elif date_str:
         print("=" * 60)
@@ -333,6 +493,17 @@ def run_outcomes(date_str: str, backfill: bool = False, report: bool = False):
         except Exception as e:
             log_etl_fail(conn, log_id, str(e))
             print(f"  FAILED: {e}")
+
+        # Per-HR Statcast events (separate try/except so a playByPlay
+        # failure doesn't roll back the box-score outcomes commit).
+        log_id = log_etl_start(conn, "hr_events", date_str)
+        try:
+            n_hr = fetch_hr_events_for_date(conn, date_str)
+            log_etl_complete(conn, log_id, rows=n_hr, detail=f"{n_hr} HR events")
+            print(f"  Recorded {n_hr} new HR events for {date_str}")
+        except Exception as e:
+            log_etl_fail(conn, log_id, str(e))
+            print(f"  HR events ETL FAILED: {e}")
 
     if report:
         print_performance_report(conn)
@@ -362,6 +533,7 @@ def run_outcomes_range(from_date, to_date, force=False):
 
     cur = s
     grand_total = 0
+    grand_hr_events = 0
     while cur <= e:
         d = cur.strftime("%Y-%m-%d")
         print(f"\n  [{d}]")
@@ -374,9 +546,21 @@ def run_outcomes_range(from_date, to_date, force=False):
         except Exception as ex:
             log_etl_fail(conn, log_id, str(ex))
             print(f"    FAILED: {ex}")
+        # Per-HR Statcast events (separate log entry so failures here
+        # don't poison the outcomes status for the same date).
+        log_id_hr = log_etl_start(conn, "hr_events", d)
+        try:
+            n_hr = fetch_hr_events_for_date(conn, d)
+            log_etl_complete(conn, log_id_hr, rows=n_hr, detail=f"{n_hr} HR events")
+            grand_hr_events += n_hr
+            print(f"    {n_hr} HR events recorded")
+        except Exception as ex:
+            log_etl_fail(conn, log_id_hr, str(ex))
+            print(f"    HR events FAILED: {ex}")
         cur += timedelta(days=1)
 
-    print(f"\n  Range complete: {grand_total} total player-game outcome rows")
+    print(f"\n  Range complete: {grand_total} player-game outcomes, "
+          f"{grand_hr_events} HR events")
     conn.close()
 
 
