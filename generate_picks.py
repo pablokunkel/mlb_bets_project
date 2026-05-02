@@ -38,9 +38,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from score_batters import (
     WEIGHT_CONFIGS,
     LEAGUE_AVG_PITCHER,
+    USE_CAREER_PRIOR,
+    CAREER_PRIOR_K,
     compute_composite,
     select_top_picks,
     compute_slate_context,
+    shrink_to_career,
 )
 from fetch_daily_data import (
     DOME_STADIUMS,
@@ -164,6 +167,113 @@ def load_season_batting_lookup(season: int) -> dict:
     except Exception as e:
         print(f"  [SEASON-BATTING] Could not load fallback ({e}) — continuing without it")
         return {}
+
+
+def load_career_lookup() -> dict:
+    """
+    Load career_batting from the local DB into {player_id: career_dict}.
+    Used by enrich_with_career_prior() when USE_CAREER_PRIOR is True.
+
+    Returns {} on any error so the live path silently degrades to
+    no-prior scoring rather than crashing the daily run.
+    """
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        if not db_path.exists():
+            return {}
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT player_id, career_pa, career_hr, career_hr_per_pa,
+                   career_avg, career_slg, career_obp, career_iso, career_woba,
+                   seasons_played
+            FROM career_batting
+            WHERE career_pa IS NOT NULL AND career_pa > 0
+            """,
+        ).fetchall()
+        conn.close()
+        return {r["player_id"]: dict(r) for r in rows if r["player_id"]}
+    except Exception as e:
+        print(f"  [CAREER-PRIOR] Could not load career_batting ({e}) — disabling shrinkage")
+        return {}
+
+
+def enrich_with_career_prior(batter: dict, career_lookup: dict, k: int = CAREER_PRIOR_K) -> dict:
+    """
+    Bayesian-shrink current-season power inputs toward the player's
+    career rate. Mirrors enrich_with_season_batting in shape but pulls
+    rather than fills — current values are reduced/increased toward
+    career mean rather than replaced when missing.
+
+    Only applies when:
+      - USE_CAREER_PRIOR is True (in score_batters.py)
+      - The batter has a row in career_batting
+      - The current sample has measurable PA (so the weighted average
+        is well-defined)
+
+    Stamps `_career_shrunk: True` and `_career_pa: <career PA>` on the
+    batter dict so downstream diagnostics can flag and audit shrunk rows.
+
+    Note: `barrel_pct` shrinkage uses the synthetic
+    `career_hr_per_pa × 200` proxy because Statcast barrel% isn't
+    captured in career_batting yet (would require a separate Savant
+    pull — flagged in sync_career_batting.py docstring as future work).
+    """
+    # Read flag from score_batters module dynamically. `from score_batters
+    # import USE_CAREER_PRIOR` would freeze the value at import time, so
+    # flipping the flag at runtime (e.g., backtest harness) wouldn't take
+    # effect. Inline import is cheap (Python caches modules).
+    import score_batters as _sb
+    if not _sb.USE_CAREER_PRIOR:
+        return batter
+
+    pid = batter.get("player_id")
+    if not pid or pid not in career_lookup:
+        return batter
+
+    career = career_lookup[pid]
+    current_pa = batter.get("pa") or batter.get("ab") or 0
+    if current_pa <= 0:
+        return batter
+
+    shrunk_count = 0
+
+    # Direct rate-stat shrinkage. career_batting carries iso + woba
+    # (the latter is the same 0.7*OBP + 0.3*SLG proxy as season_batting).
+    for cur_key, career_key in [
+        ("iso", "career_iso"),
+        ("woba", "career_woba"),
+    ]:
+        cur_val = batter.get(cur_key)
+        cv = career.get(career_key)
+        if cur_val is not None and cur_val > 0 and cv is not None and cv > 0:
+            shrunk = shrink_to_career(cur_val, current_pa, cv, k=k)
+            if shrunk is not None and shrunk != cur_val:
+                batter[cur_key] = round(shrunk, 4)
+                shrunk_count += 1
+
+    # Synthetic Statcast proxy: career_hr_per_pa × 200 ≈ barrel%
+    # (mirrors the formula in fetch_daily_data._splits_to_batters).
+    # Only apply when career sample is meaningful (≥ 1000 PA, ~2 full
+    # seasons) so the proxy isn't noisy for cup-of-coffee veterans.
+    cv_hr_per_pa = career.get("career_hr_per_pa")
+    if cv_hr_per_pa and career.get("career_pa", 0) >= 1000:
+        career_barrel_proxy = min(25.0, cv_hr_per_pa * 200)
+        cur_barrel = batter.get("barrel_pct")
+        if cur_barrel is not None and cur_barrel > 0:
+            shrunk = shrink_to_career(cur_barrel, current_pa, career_barrel_proxy, k=k)
+            if shrunk is not None and shrunk != cur_barrel:
+                batter["barrel_pct"] = round(shrunk, 1)
+                shrunk_count += 1
+
+    if shrunk_count:
+        batter["_career_shrunk"] = True
+        batter["_career_pa"] = career.get("career_pa")
+        batter["_career_shrunk_count"] = shrunk_count
+
+    return batter
 
 
 def enrich_with_season_batting(batter: dict, season_lookup: dict) -> dict:
@@ -722,6 +832,14 @@ def score_live_slate(
     if season_lookup:
         print(f"  [SEASON-BATTING] Loaded {len(season_lookup)} rows for season {season} fallback")
 
+    # Career-prior shrinkage data (only loaded when the feature flag is on).
+    # When off (default), this stays empty and enrich_with_career_prior
+    # short-circuits so the active code path is identical to before.
+    import score_batters as _sb
+    career_lookup = load_career_lookup() if _sb.USE_CAREER_PRIOR else {}
+    if career_lookup:
+        print(f"  [CAREER-PRIOR] Loaded {len(career_lookup)} career rows; k={_sb.CAREER_PRIOR_K}")
+
     # Pre-filter to batters who are actually playing today
     eligible_batters = []
     for b in tier_batters:
@@ -838,6 +956,12 @@ def score_live_slate(
         # power=13 even with elite real Statcast inputs.
         if season_lookup:
             b = enrich_with_season_batting(dict(b), season_lookup)
+        # Career-prior shrinkage runs AFTER season-batting fallback so the
+        # current values fed in are the best-available (real Statcast >
+        # season splits > synthetic estimate). No-op when USE_CAREER_PRIOR
+        # is False (default) — same as if this line weren't here.
+        if career_lookup:
+            b = enrich_with_career_prior(b, career_lookup)
 
         entry = {
             **b,
@@ -916,6 +1040,9 @@ def score_untiered_starters(
     untiered = []
     season = int(date_str[:4])
     season_lookup = load_season_batting_lookup(season) or {}
+    # Career-prior shrinkage data (no-op when USE_CAREER_PRIOR is False).
+    import score_batters as _sb
+    career_lookup = load_career_lookup() if _sb.USE_CAREER_PRIOR else {}
     pitcher_profiles = slate.get("pitcher_profiles", {})
 
     # Build {gpk: game} once.
@@ -946,6 +1073,8 @@ def score_untiered_starters(
                 }
                 if season_lookup:
                     stub = enrich_with_season_batting(stub, season_lookup)
+                if career_lookup:
+                    stub = enrich_with_career_prior(stub, career_lookup)
                 stubs.append((stub, game, i, side))
 
     if not stubs:

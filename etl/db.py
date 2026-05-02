@@ -192,6 +192,45 @@ def create_tables(conn: sqlite3.Connection):
     );
 
     -- ================================================================
+    -- Career batting stats (for Bayesian shrinkage prior). Refreshed
+    -- quarterly by sync_career_batting.py — distinct from season_batting
+    -- (one row per player per season) in that this is one row per
+    -- player covering their full MLB career. Used by score_power's
+    -- USE_CAREER_PRIOR path to pull current-season stats toward the
+    -- player's career rate when sample size is low (e.g., a slow-start
+    -- veteran like Marcell Ozuna in early May with only 100 ABs).
+    --
+    -- Statcast-era columns (barrel_pct / exit_velo / hr_fb_pct) are
+    -- only populated for players with 2015+ data. Pre-Statcast careers
+    -- have those NULL — shrinkage falls back to current-only for
+    -- those metrics.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS career_batting (
+        player_id           INTEGER PRIMARY KEY,
+        player_name         TEXT,
+        career_pa           INTEGER,
+        career_ab           INTEGER,
+        career_hr           INTEGER,
+        career_hits         INTEGER,
+        career_avg          REAL,
+        career_slg          REAL,
+        career_obp          REAL,
+        career_iso          REAL,            -- derived: SLG - AVG
+        career_woba         REAL,            -- est. (real wOBA needs full event log)
+        career_hr_per_pa    REAL,            -- HR / PA (the cleanest career rate)
+        career_barrel_pct   REAL,            -- 2015+ only (Statcast)
+        career_exit_velo    REAL,            -- 2015+ only
+        career_hr_fb_pct    REAL,            -- 2015+ only
+        seasons_played      INTEGER,         -- # of MLB seasons (used as shrinkage strength signal)
+        first_season        INTEGER,
+        last_season         INTEGER,
+        fetched_at          TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_career_batting_pa
+        ON career_batting(career_pa DESC);
+
+    -- ================================================================
     -- Season pitching stats (nightly ETL)
     -- ================================================================
     CREATE TABLE IF NOT EXISTS season_pitching (
