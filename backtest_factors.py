@@ -125,10 +125,25 @@ def rescore_row(row: pd.Series) -> dict:
         "woba_vs_hand": row.get("woba_vs_hand"),
         "bats": "R",  # not stored; platoon advantage flag captures the diff
     }
+    # Audit LOW: drop the `1.2` / `35` league-mean defaults so missing
+    # pitcher_hr_per_9 / pitcher_hh_pct skip-on-missing through the v1
+    # score_matchup fallback (which was fixed in HIGH #3 to handle
+    # None correctly). Pre-fix, a re-score against an old pick_inputs
+    # row with NULL pitcher fields silently substituted league mean,
+    # producing a different score than the live path would have today.
+    #
+    # Handedness note: bats / throws are still hardcoded R/R because
+    # pick_inputs doesn't store batter `bats` or pitcher `throws`
+    # columns. The platoon_advantage flag captures the live-run sign
+    # but doesn't let us reconstruct the absolute handedness pair —
+    # so park's handedness-aware lookup and the platoon bonus in v1
+    # matchup can't be perfectly re-scored. Future: add `bats` and
+    # `pitcher_throws` columns to pick_inputs so this rescore can be
+    # accurate on handedness too.
     pitcher = {
-        "hr_per_9": row.get("pitcher_hr_per_9", 1.2),
-        "hard_hit_pct_allowed": row.get("pitcher_hh_pct", 35),
-        "throws": "R",
+        "hr_per_9": row.get("pitcher_hr_per_9"),
+        "hard_hit_pct_allowed": row.get("pitcher_hh_pct"),
+        "throws": "R",   # see comment above
     }
     weather = {
         "temperature_f": row.get("temperature_f", 68),

@@ -282,21 +282,30 @@ def compute_slate_context(
         pitcher_vuln_raw[pname] = raw
     pitcher_pct = percentile_rank_dict(pitcher_vuln_raw)
 
-    # Vegas implied team totals: percentile within today's slate.
-    # If no totals are provided (no API key, or feed unavailable), this
-    # dict is empty and score_matchup falls back to neutral (50) for the
+    # Vegas implied team totals: percentile within today's slate AND the
+    # raw run-total dict. score_matchup feeds the percentile into the
+    # composite (so it's slate-relative), but the raw value is what
+    # diagnostic dashboards / future refit experiments want — e.g.,
+    # "did picks from teams with implied total >= 5.5 runs hit at a
+    # higher rate than teams below 4.5". Persisting the raw alongside
+    # the pct lets us answer that without re-querying the odds API.
+    #
+    # If no totals are provided (no API key, or feed unavailable), both
+    # dicts are empty and score_matchup falls back to neutral 50 for the
     # game-environment signal.
     team_total_pct = {}
+    team_total_raw = {}
     if implied_totals_by_team:
-        team_total_pct = percentile_rank_dict(
-            {t: float(v) for t, v in implied_totals_by_team.items() if v is not None}
-        )
+        clean = {t: float(v) for t, v in implied_totals_by_team.items() if v is not None}
+        team_total_pct = percentile_rank_dict(clean)
+        team_total_raw = clean
 
     return {
         "park_pct": park_pct,
         "weather_pct": weather_pct,
         "pitcher_pct": pitcher_pct,
         "team_total_pct": team_total_pct,
+        "team_total_raw": team_total_raw,   # NEW: raw run totals (audit MED)
         "active": True,
     }
 
@@ -304,6 +313,41 @@ def compute_slate_context(
 # ---------------------------------------------------------------------------
 # Factor scoring functions
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# League-average pitcher fallback
+# ---------------------------------------------------------------------------
+# Audit MED fix: was copy-pasted across 4 sites in generate_picks.py and
+# 1 in diagnostics/factor_diagnostics.py with no provenance flag — a
+# pitcher whose MLB-API call returned an empty stat block was scored
+# identically to a real league-average pitcher.
+#
+# This single dict is the source of truth. Each consumer uses
+# `dict(LEAGUE_AVG_PITCHER, name=pname)` to copy + override the name —
+# the dict() constructor returns a fresh copy so callers can mutate
+# without polluting other uses.
+#
+# `_source` field lets downstream consumers (refit_weights, dashboard
+# diagnostics, etc.) filter out league-mean rows. NOTE: the audit's
+# fix for HIGH #3 already made compute_slate_context skip-on-missing
+# at the input level — these defaults now only matter when the
+# pitcher dict is fed directly to the v1 fallback paths.
+#
+# Drift watch: 2026 league averages per Savant aggregates (refresh
+# annually). Real 2026 HR/9 is closer to 1.27, hard-hit% closer to 39%.
+# Current values match what was in the old inline copies for diff
+# minimization; bump after a refit cycle when we want to update.
+LEAGUE_AVG_PITCHER = {
+    "name": "league_avg",
+    "hr_per_9": 1.2,
+    "era": 4.0,
+    "hard_hit_pct_allowed": 35,
+    "k_per_9": 8.0,
+    "fb_pct_allowed": 35,
+    "throws": "R",
+    "_source": "league_avg_default",
+}
+
 
 def score_power(batter: dict) -> float:
     """
@@ -549,12 +593,39 @@ def score_lineup_position(batting_order) -> float:
         return float(SCORES[batting_order])
     if str(batting_order) in ("bench", "roster_only"):
         return 15.0
+    # Audit LOW: fallthrough handles unexpected `batting_order` values
+    # ("DH", 10+, etc.). In production these never reach here —
+    # generate_picks.score_live_slate emits only int 1-9, "bench",
+    # "roster_only", or None. Logging instead of silently returning 35
+    # would surface the assumption breaking. Kept as 35.0 for now to
+    # preserve daily-run resilience; any new caller should be updated
+    # to feed one of the documented inputs.
     return 35.0
 
 
 def score_temperature(temp_f: float) -> float:
     """
     Piecewise temperature -> 0-100 score.
+
+    Anchor curve sourced from the empirical HR-rate-vs-temperature
+    relationship in the historical_calibration table (see
+    `temp_humidity_heatmap` in export_site_data and the diagnostic
+    Performance tab → Temp × Humidity Heatmap). Hand-tuned so that:
+      - ≤40°F (frigid)   → ~25 (suppressed carry)
+      - 68°F (neutral)   → 50  (anchor for "average" night)
+      - 95°F (hot+humid) → 72  (peak carry per Statcast distance models)
+      - ≥100°F           → 78  (asymptote — beyond which player fatigue
+                                offsets the air-density gain)
+
+    Score is fed as one input into score_weather AND into
+    compute_slate_context's percentile-ranked weather_pct (which
+    already corrects for slate-specific temp distributions). Use the
+    slate-percentile path when slate_ctx is active — anchors only
+    matter on the v1 fallback.
+
+    Effective range on a typical April-October MLB slate: 50-65 (most
+    games are 60-85°F outdoors). The wider anchor table covers Marlins
+    Park summers and April Coors snow games at the tails.
     """
     anchors = [
         (40, 25),
@@ -725,6 +796,31 @@ def compute_composite(
         )
         matchup_version = "v1"
 
+    # Audit HIGH #5: stamp which optional signals were active for this pick.
+    # Cross-day stratification matters because availability varies — e.g.,
+    # a day without VEGAS_ODDS_API_KEY produces a 2/3-signal blend while a
+    # day with it produces 3/4. Backtest_factors / refit_weights training
+    # over a mixed window otherwise treats them as the same composite scale.
+    #
+    # NOTE: this duplicates the availability checks inside score_matchup
+    # / score_matchup_v2. If the signal-blend logic in those functions
+    # changes, update this list to match. Keeping it here (rather than
+    # making the score functions return a tuple) preserves the existing
+    # call signatures used by backtest_factors, factor_diagnostics, and
+    # the smoke tests.
+    matchup_signals_used = ["vuln"]
+    if matchup_version == "v2":
+        matchup_signals_used.append("sim")
+    if (slate_ctx and batter_team
+            and slate_ctx.get("team_total_pct")
+            and batter_team in slate_ctx["team_total_pct"]):
+        matchup_signals_used.append("total")
+    woba_for_check = batter.get("woba_vs_hand")
+    if woba_for_check is None:
+        woba_for_check = batter.get("woba")
+    if woba_for_check is not None and woba_for_check > 0:
+        matchup_signals_used.append("woba")
+
     park = score_park(batter, venue, park_factors, slate_ctx=slate_ctx)
     form = score_form(batter)
 
@@ -763,12 +859,25 @@ def compute_composite(
         except Exception:
             archetype_sim = None
 
-    vegas_total = None
+    # Vegas implied team total. Audit MED: the existing
+    # `inputs_snapshot["vegas_implied_total"]` field (and its
+    # corresponding `pick_inputs.vegas_implied_total` DB column) stores
+    # the slate-relative PERCENTILE (0–100), NOT a Vegas run total in
+    # actual runs. The column name is misleading and predates the
+    # slate-context refactor that converted it to a percentile.
+    #
+    # Renaming the column requires a migration so we keep the existing
+    # field/column as-is for now. Added a sibling `vegas_implied_total_raw`
+    # field below that does carry the run total (5.5, 4.2, etc.) — this
+    # is non-persisted today (load_picks_to_db only knows the existing
+    # column) but flows into picks_latest.json so diagnostics + future
+    # refit work can use it.
+    vegas_total_pct = None        # the percentile that feeds the score
+    vegas_total_raw = None        # the actual run total (or None)
     if slate_ctx and batter_team:
-        # Note: slate_ctx stores percentile, not raw — but the raw is in
-        # the pitcher dict if we ever emit it. For now persist the percentile,
-        # which is what's actually feeding the score.
-        vegas_total = slate_ctx.get("team_total_pct", {}).get(batter_team)
+        vegas_total_pct = slate_ctx.get("team_total_pct", {}).get(batter_team)
+        vegas_total_raw = slate_ctx.get("team_total_raw", {}).get(batter_team)
+    vegas_total = vegas_total_pct  # alias for backward-compat with snapshot
 
     inputs_snapshot = {
         # Power
@@ -789,9 +898,17 @@ def compute_composite(
         "pitcher_k_per_9":         pitcher.get("k_per_9"),
         "pitcher_fb_pct_allowed":  pitcher.get("fb_pct_allowed"),
         # Matchup — batter / game
+        # NOTE on woba_vs_hand: this can be a synthetic estimate when the
+        # batter dict came from MLB Stats API splits via _splits_to_batters
+        # (uses 0.7*OBP + 0.3*SLG, not real wOBA weights). Audit MED flag.
         "woba_vs_hand":            batter.get("woba_vs_hand", batter.get("woba")),
         "archetype_similarity":    archetype_sim,
-        "vegas_implied_total":     vegas_total,
+        # vegas_implied_total stores the SLATE-RELATIVE PERCENTILE (0-100),
+        # not a Vegas run total. Misleading column name preserved for
+        # backward compat with refit_weights training data. The raw run
+        # total is in vegas_implied_total_raw (NEW, JSON-only today).
+        "vegas_implied_total":     vegas_total_pct,
+        "vegas_implied_total_raw": vegas_total_raw,
         "platoon_advantage":       1 if batter_hand != pitcher.get("throws", "R") else 0,
         # Park
         "hr_park_factor":          pf_overall,
@@ -820,6 +937,14 @@ def compute_composite(
         "composite": round(composite, 1),
         "config": config_name,
         "matchup_version": matchup_version,
+        # Audit HIGH #5: list of which matchup signals were available for
+        # this pick. ["vuln"] = pure HR/9-style vulnerability only;
+        # adds "sim" (archetype) when v2; "total" when Vegas data live;
+        # "woba" when batter's wOBA vs hand is measurable. Backtest /
+        # refit can stratify training/eval on this to keep cross-day
+        # comparisons honest. Future: persist to pick_inputs as a TEXT
+        # column once we want refit_weights to filter on it directly.
+        "matchup_signals_used": matchup_signals_used,
         "inputs": inputs_snapshot,
     }
 

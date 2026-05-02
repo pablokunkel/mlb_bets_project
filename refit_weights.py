@@ -148,7 +148,34 @@ def fit_logistic(df: pd.DataFrame, features: list[str]) -> dict:
 
 
 def normalize_to_weights(coefs: dict, lineup_carve_out: float = 0.15) -> dict:
-    """Convert positive logreg coefs to weights summing to (1 - lineup_carve_out)."""
+    """Convert positive logreg coefs to weights summing to (1 - lineup_carve_out).
+
+    Audit LOW: the 0.15 lineup carve-out is hardcoded regardless of what
+    a free fit on `lineup_score` would say. This is intentional —
+    `detect_features()` does not include lineup_score in the logreg
+    feature set, so the carve-out is the model's way of asserting "this
+    factor IS worth ~15% of the budget" without trying to fit it
+    statistically. Rationale:
+
+    - lineup_score is a STEP function with only 9 distinct values
+      (1-9) plus "bench"/None, so logreg's log-odds ratio gives noisy
+      coefficients that swing 5x across refits.
+    - The 15% number is anchored on opportunity arithmetic: a #1 hitter
+      gets ~4.7 AB vs #9's ~3.2 AB (~32% more PAs). With HR rate ~3.5%
+      per PA, that's a ~1pp HR-rate gap — call it 15% of the
+      composite-impact budget. Sanity-checks against historical hit
+      rates by pick rank.
+    - `pos = {k: max(0, v) for ...}` zeroes negative coefficients,
+      meaning enriched features that show negative signal get 0%
+      weight rather than reverse-bet weight. Documented design choice;
+      worth revisiting if a feature with a clear empirical NEGATIVE
+      coefficient (e.g. inverted park factor) needs to be honored.
+
+    Future: feed lineup_score into `detect_features()` and let logreg
+    fit it; if the coefficient is meaningful, drop the carve-out. If
+    not, replace the magic 0.15 with whatever the empirical
+    "opportunity rate per PA" works out to for the season.
+    """
     pos = {k: max(0, v) for k, v in coefs.items()}
     z = sum(pos.values())
     if z == 0:

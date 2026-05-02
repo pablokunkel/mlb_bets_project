@@ -351,15 +351,25 @@ def recompute_victim_profiles(conn, season: int):
                 ORDER BY season DESC LIMIT 1
             """, (victim_pid,)).fetchone()
 
-            if row:
+            # Audit MED fix: was using `or LEAGUE_MEAN` for every column —
+            # silently filled None with league mean and weighted that fill
+            # into the victim profile, dragging archetype similarity toward
+            # generic-pitcher for batters whose victim history happens to
+            # include sparse-arsenal pitchers. Now: SKIP victim-pitchers
+            # with missing avg_fb_velo (the most discriminative dimension)
+            # so the weighted average reflects only measured arsenals.
+            #
+            # Edge case: if ALL arsenals are missing velo, the existing
+            # per-event fallback path (lines 386-397) takes over below.
+            if row and row["avg_fb_velo"] is not None and row["avg_fb_velo"] > 0:
                 arsenals.append({
-                    "avg_fb_velo": row["avg_fb_velo"] or 93.5,
-                    "fb_usage_pct": row["fb_usage_pct"] or 0.53,
-                    "breaking_pct": row["breaking_pct"] or 0.28,
-                    "offspeed_pct": row["offspeed_pct"] or 0.15,
-                    "avg_fb_spin": row["avg_fb_spin"] or 2250,
-                    "avg_extension": row["avg_extension"] or 6.2,
-                    "p_throws": row["p_throws"] or "R",
+                    "avg_fb_velo": row["avg_fb_velo"],
+                    "fb_usage_pct": row["fb_usage_pct"] if row["fb_usage_pct"] is not None else 0.53,
+                    "breaking_pct": row["breaking_pct"] if row["breaking_pct"] is not None else 0.28,
+                    "offspeed_pct": row["offspeed_pct"] if row["offspeed_pct"] is not None else 0.15,
+                    "avg_fb_spin": row["avg_fb_spin"] if row["avg_fb_spin"] is not None else 2250,
+                    "avg_extension": row["avg_extension"] if row["avg_extension"] is not None else 6.2,
+                    "p_throws": row["p_throws"] or "R",  # str — `or` is fine here
                     "weight": hrs_against,
                 })
 
