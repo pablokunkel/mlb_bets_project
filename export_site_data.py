@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-export_site_data.py — Export DB data to static JSON for the Netlify dashboard.
+export_site_data.py — Export DB data to static JSON for the dashboard at dingersonly.cc.
 
 Reads from the SQLite database and writes JSON files that the frontend
 can fetch() at runtime. Run this after generate_picks.py each day,
@@ -1759,7 +1759,7 @@ def export_hr_recap(conn, out_dir, days=60):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export DB data to static JSON for Netlify")
+    parser = argparse.ArgumentParser(description="Export DB data to static JSON for the dashboard")
     parser.add_argument("--out", default=None,
                         help="Output directory (default: <project>/mlb_hr_bet_site/data)")
     parser.add_argument("--days", type=int, default=60, help="Days of history (default: 60)")

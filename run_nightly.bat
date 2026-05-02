@@ -6,8 +6,8 @@ REM  Two phases:
 REM   1. Standard nightly ETL (Statcast HR events, season stats, park factors)
 REM   2. Pre-warm archetype + bulk Savant caches so noon's daily run is fast
 REM
-REM  No Netlify deploy here; the noon run picks up the warm cache, scores,
-REM  and deploys.
+REM  No deploy here; the noon run picks up the warm cache, scores,
+REM  and pushes to main (Cloudflare auto-deploys).
 REM
 REM  Logs to logs/nightly_YYYY-MM-DD.log. Step markers also echo to console.
 REM ============================================================
