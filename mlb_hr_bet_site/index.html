@@ -3857,6 +3857,45 @@
       </svg>${trajectoryLabel ? `<div class="diamond-caption">${trajectoryLabel}${location ? ' · zone ' + location : ''}</div>` : ''}`;
     }
 
+    // ---- Shared "This Home Run" section renderer ----
+    // Builds one <div class="modal-section"> with diamond SVG + stat
+    // cards + inning/pitcher/score/description for a single HR. Used by
+    // BOTH _liveOpenTopps (live feed) AND openPlayerModal (past-day Topps
+    // when invoked from an HR Recap row), so the rendering is identical
+    // for live and historical HRs.
+    //
+    // The hr dict shape matches the live worker's payload field-for-field
+    // (coordX, coordY, launchSpeed, launchAngle, totalDistance,
+    // trajectory, location, inning, halfInning, pitcherName, awayScore,
+    // homeScore, description) — export_site_data.export_hr_recap was
+    // intentionally aligned to this shape in PR #5a so the same renderer
+    // handles both sources.
+    function _renderHRDetailSection(hr, indexLabel) {
+      const lineRow = (label, value, sub) => `
+        <div class="card-line">
+          <div class="card-line-label">${label}</div>
+          <div class="card-line-value">${value ?? '—'}${sub ? `<span class="card-line-sub">${sub}</span>` : ''}</div>
+        </div>`;
+      const head = indexLabel ? `${indexLabel} · This Home Run` : 'This Home Run';
+      return `
+        <div class="modal-section">
+          <h4>${head}</h4>
+          <div class="diamond-wrap">
+            ${_liveDiamondSVG(hr.coordX, hr.coordY, hr.location, hr.trajectory)}
+            <div class="diamond-stats-row">
+              <div class="diamond-stat"><div class="v">${hr.launchSpeed != null ? Math.round(hr.launchSpeed) : '—'}</div><div class="l">Exit Velo${hr.launchSpeed != null ? ' · MPH' : ''}</div></div>
+              <div class="diamond-stat"><div class="v">${hr.launchAngle != null ? Math.round(hr.launchAngle) + '°' : '—'}</div><div class="l">Launch</div></div>
+              <div class="diamond-stat"><div class="v">${hr.totalDistance != null ? hr.totalDistance : '—'}</div><div class="l">Distance${hr.totalDistance != null ? ' · FT' : ''}</div></div>
+            </div>
+          </div>
+          ${lineRow('Inning', `${hr.inning || '—'} (${hr.halfInning || ''})`)}
+          ${lineRow('Pitcher', hr.pitcherName || '—')}
+          ${lineRow('Score after', (hr.awayScore != null && hr.homeScore != null) ? `${hr.awayScore} – ${hr.homeScore}` : '—')}
+          ${hr.description ? `<div class="card-line"><div class="card-line-label">Call</div><div class="card-line-value" style="font-style:italic;font-family:'Inter',sans-serif">${hr.description}</div></div>` : ''}
+        </div>
+      `;
+    }
+
     // ---- Topps card modal for a live HR ----
     // Reuses the existing playerModal element + classes (modal-head,
     // modal-section, card-line) so it inherits all the existing modal
@@ -3893,22 +3932,7 @@
             <div class="modal-sub">${sub}</div>
           </div>
         </div>
-
-        <div class="modal-section">
-          <h4>This Home Run</h4>
-          <div class="diamond-wrap">
-            ${_liveDiamondSVG(hr.coordX, hr.coordY, hr.location, hr.trajectory)}
-            <div class="diamond-stats-row">
-              <div class="diamond-stat"><div class="v">${hr.launchSpeed != null ? Math.round(hr.launchSpeed) : '—'}</div><div class="l">Exit Velo${hr.launchSpeed != null ? ' · MPH' : ''}</div></div>
-              <div class="diamond-stat"><div class="v">${hr.launchAngle != null ? Math.round(hr.launchAngle) + '°' : '—'}</div><div class="l">Launch</div></div>
-              <div class="diamond-stat"><div class="v">${hr.totalDistance != null ? hr.totalDistance : '—'}</div><div class="l">Distance${hr.totalDistance != null ? ' · FT' : ''}</div></div>
-            </div>
-          </div>
-          ${lineRow('Inning', `${hr.inning || '—'} (${hr.halfInning || ''})`)}
-          ${lineRow('Pitcher', hr.pitcherName || '—')}
-          ${lineRow('Score after', (hr.awayScore != null && hr.homeScore != null) ? `${hr.awayScore} – ${hr.homeScore}` : '—')}
-          ${hr.description ? `<div class="card-line"><div class="card-line-label">Call</div><div class="card-line-value" style="font-style:italic;font-family:'Inter',sans-serif">${hr.description}</div></div>` : ''}
-        </div>
+        ${_renderHRDetailSection(hr, null)}
       `;
 
       if (pick) {
@@ -4032,6 +4056,17 @@
             <th class="hide-mobile">RBI</th>
             <th>Our Rank</th><th>Our Comp</th><th>★</th>
           </tr></thead><tbody>`;
+      // PR #5b: stash this day's HR-events keyed by (date, batter_id) so
+      // bindPlayerClicks can pass them into openPlayerModal as the
+      // _pendingHRsForModal queue. `h.hrs` arrives from hr_recap.json
+      // (populated by PR #5a's export change); empty list when the
+      // backfill hasn't reached this date yet — modal still opens, just
+      // without the per-HR diamond SVG sections.
+      day.hitters.forEach(h => {
+        if (h.hrs && h.hrs.length > 0) {
+          _recapEventsByKey[`${day.date}:${h.batter_id}`] = h.hrs;
+        }
+      });
       onBoard.forEach(h => {
         const star = h.selected
           ? '<span style="color:var(--signal);font-weight:700;font-size:14px">★</span>'
@@ -4041,7 +4076,8 @@
         const hits = h.hits || 0;
         const hitsAb = ab > 0 ? `${hits}/${ab}` : '—';
         const rbi = h.rbi || 0;
-        html += `<tr data-pid="${h.batter_id}" class="clickable-row">
+        const hrKey = `${day.date}:${h.batter_id}`;
+        html += `<tr data-pid="${h.batter_id}" data-hr-events-key="${hrKey}" class="clickable-row">
           <td style="font-weight:600" class="player-link">${h.batter_name || ''}</td>
           <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${h.team || ''}</td>
           <td class="hide-mobile" style="font-style:italic;color:var(--ink-soft);font-size:12px">${h.opp_pitcher || '—'}</td>
@@ -4195,6 +4231,18 @@
     let _picksLatestCache = null;
     let _picksHistoryCache = null;
 
+    // PR #5b: per-recap-row HR-events stash. _renderRecapDay populates this
+    // map keyed by `${date}:${batter_id}` from each hitter's `hrs` array
+    // (added to hr_recap.json in PR #5a). bindPlayerClicks reads the row's
+    // data-hr-events-key, looks up the events here, and sets
+    // _pendingHRsForModal before calling openPlayerModal — which then
+    // renders one diamond-SVG section per HR via _renderHRDetailSection.
+    // The map approach (vs. a JSON data-attr) avoids HTML bloat for
+    // multi-HR games and keeps the row markup unchanged for non-recap
+    // .clickable-row elements.
+    const _recapEventsByKey = {};
+    let _pendingHRsForModal = null;   // one-shot: consumed on next openPlayerModal
+
     async function openPlayerModal(pid) {
       if (!pid) return;
       if (!_picksLatestCache) _picksLatestCache = await fetchJSON('picks_latest');
@@ -4244,6 +4292,23 @@
           </div>
         </div>
       `;
+
+      // PR #5b: when this open was triggered by a past-day HR Recap row,
+      // bindPlayerClicks set _pendingHRsForModal to that day's HRs hit by
+      // this batter (from hr_recap.json's `hrs` field, populated by PR #5a's
+      // export change). Render each as its own "This Home Run" section
+      // BEFORE the model card. Multi-HR games show "HR #1 · This Home Run",
+      // "HR #2 · ...". Empty/missing array (backfill not yet run for this
+      // date) → no extra sections, modal renders the existing model-card
+      // path unchanged.
+      if (_pendingHRsForModal && _pendingHRsForModal.length > 0) {
+        const hrs = _pendingHRsForModal;
+        _pendingHRsForModal = null;   // one-shot — consume now so next open is clean
+        hrs.forEach((hr, idx) => {
+          const label = hrs.length > 1 ? `HR #${idx + 1}` : null;
+          html += _renderHRDetailSection(hr, label);
+        });
+      }
 
       // Helper: render a vertical stat list. Each row = label/value pair,
       // optional sub-line for ranks etc.
@@ -4443,7 +4508,20 @@
 
     function bindPlayerClicks() {
       document.querySelectorAll('.clickable-row').forEach(row => {
-        row.onclick = () => openPlayerModal(row.dataset.pid);
+        row.onclick = () => {
+          // PR #5b: if this row was rendered by _renderRecapDay, the
+          // data-hr-events-key attribute identifies that day's HRs for
+          // this batter. Stash them in _pendingHRsForModal so
+          // openPlayerModal renders one "This Home Run" section per HR
+          // before the model card. Other clickable rows (Hitters
+          // leaderboard, Big Board, etc.) don't have this attr —
+          // _pendingHRsForModal stays null and the modal opens normally.
+          const hrKey = row.dataset.hrEventsKey;
+          if (hrKey && _recapEventsByKey[hrKey]) {
+            _pendingHRsForModal = _recapEventsByKey[hrKey];
+          }
+          openPlayerModal(row.dataset.pid);
+        };
       });
     }
 
