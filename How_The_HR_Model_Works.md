@@ -1,6 +1,8 @@
 # How the MLB HR Model Picks Its Daily Card
 
-A plain-English walkthrough of how the model decides who's most likely to hit a home run on any given day. Last updated 2026-04-30.
+A plain-English walkthrough of how the model decides who's most likely to hit a home run on any given day. Last updated 2026-05-02.
+
+> For the deploy / release process, see `DEPLOY.md`. For component map and DB tables, see `ARCHITECTURE.md`.
 
 > **Tuning approach:** we fix score curves before refitting weights. The diagnostic dashboard surfaces "this input has signal we're not capturing" before "this factor is over- or under-weighted." Curve fixes change what each input *means*; weight refits then re-balance the now-correct inputs against each other. Doing them in the other order (weight refit on broken curves) just baked the brokenness in.
 
@@ -34,6 +36,20 @@ All of this is pulled by the morning ETL once and cached so the noon scoring run
 
 ---
 
+## Step 1.5: Live tier data and the `season_batting` fallback
+
+The "live tiers" used to bucket batters into T1/T2/T3 are built from MLB Stats API splits with synthesized Statcast estimates: `barrel_pct ≈ hr_per_pa × 200`, `exit_velo ≈ 82 + slg × 15`, `hr_fb_pct ≈ hr_per_pa × 100 × 1.8`. These are noisy day-to-day — a hitter who suddenly went 0-for-8 across two games can see his synthetic barrel estimate halve overnight even though his real Statcast contact quality is unchanged.
+
+To stabilize, `generate_picks.enrich_with_season_batting()` backfills any zero/missing power input on a tier batter from the canonical `season_batting` table (refreshed nightly). Marks `_power_source = "season_batting_fallback"` for diagnostics.
+
+**Caveat:** the `season_batting` table itself is currently populated by the same synthetic-estimate path via `etl_nightly.sync_season_batting`, so the "fallback" can sometimes be one synthetic value replacing another. Real Statcast values from FanGraphs / Savant aren't yet stored alongside synthetic ones. Tracked as a known issue (see "Known issues" below).
+
+**Earlier bug, now fixed:** prior to 2026-05-01, `fetch_daily_data._splits_to_batters` also applied a within-tier renormalization that compressed `barrel_pct`, `exit_velo`, `hr_fb_pct`, and `iso` into tier-relative ranges. That step was removed because it was destroying real Statcast signal — a Tier 1 hitter with a 92 mph exit velo (mid-pack for T1) was being normalized to ~50 instead of being recognized as a real-world above-league-average reading. With the renormalization gone, scores reflect actual contact quality, not within-tier rank.
+
+**Untiered confirmed starters (added 2026-05-02):** `build_live_tiers` qualifies on `games >= 5 AND hr >= 1`. Real confirmed starters who don't meet that bar (slow starts, returning IL, rookies) are scooped up by a 4th `score_untiered_starters` pass and tagged `tier=4` ("T4-Untiered"), so the dashboard sees every batter actually starting tonight. Originating bug: 2026-05-02 SEA/KC autopsy showed 5 of 9 SEA starters silently dropped at the tier-filter step.
+
+---
+
 ## Step 2: Tiers (just labels, not gates)
 
 Players are bucketed into three tiers based on their rolling 40-game HR-per-PA rate:
@@ -64,7 +80,7 @@ Six inputs from season-to-date stats and Statcast:
 - **xwOBA on contact.** Expected wOBA computed from Statcast launch parameters on every batted-ball event. Filters out luck on outcomes; rewards quality of contact.
 - **Pull-FB percentage.** Of fly balls hit, the share pulled to the batter's natural HR side. Some hitters elevate to all fields but only clear the fence on pull; this isolates that.
 
-Each input is scaled to 0-100 (within-slate percentile rank) and the available ones are averaged. If pull_fb_pct or xwoba_contact aren't available for a given batter, those inputs are skipped from the average rather than pulling the score toward neutral.
+Each input is scaled to 0-100 (within-slate percentile rank) and the available ones are averaged. **Every input in this factor uses an `is not None and > 0` skip-on-missing check** — a missing or zero reading is dropped from the average rather than dragging it toward zero. Prior to 2026-05-01, missing barrel% and HR/FB% were silently scored as 0, which dragged elite hitters with sparse Statcast data (e.g., Buxton on a return-from-IL day) to power scores in the teens despite their actual contact quality. The fix made the skip-on-missing behavior uniform across all six inputs.
 
 ### Factor 2 — Matchup Score (weight: 0.264 — the heaviest factor)
 
@@ -175,6 +191,7 @@ After scoring, we have a "full board" of every scored batter sorted by composite
 1. **Take the highest composite score available.**
 2. **Max 2 picks per game (game_pk).** If a single game's lineup has 4 batters in the top 8 by raw composite, only the top 2 of those make the card. The rest stay on the visible board but don't get a star. This prevents one rained-out game from torching half the card.
 3. **Must be a confirmed starter.** `batting_order` integer between 1 and 9. Anyone with batting_order = NULL, "bench", or 10+ is excluded. (This was a real bug fix — before the filter was tightened, the model occasionally picked Seiya Suzuki at bench position 11.)
+4. **Pick-input row hygiene** (added 2026-05-01): `load_picks_to_db.py` excludes from `pick_inputs` any row where all four power inputs (barrel%, exit velo, HR/FB%, ISO) are missing or zero. These rows would otherwise poison the per-factor decomposition charts and the weight refit's training data with all-zero feature vectors.
 
 We loop down the sorted board, applying these filters, until we have 8 picks. The card gets sorted by composite (best first) for display.
 
@@ -200,6 +217,24 @@ After picks ship, the model isn't done — we run a battery of retro diagnostics
 - **Pick Composition.** Distribution of selected picks by park factor, batting order, dome status. Surfaces systematic biases that aren't visible per-pick.
 
 The diagnostics are how we know what to tune next, and they live in `export_site_data.py`'s `_factor_decomp_*`, `_input_calibration`, `_temp_humidity_heatmap`, `_archetype_dampening_diagnostic`, `_dome_vs_outdoor`, `_wind_direction_diagnostic`, and `_pick_composition` functions.
+
+### Continuous backtesting (Performance tab → Backtest panel)
+
+Added 2026-05-01 as a nightly check that the model's per-factor signal is still real. `backtest_factors.py` reads every batter from `pick_inputs` for the last 7d / 30d / season, **rescores each row using today's scoring functions** (so a function change shows up immediately rather than only on next monthly refit), bins each factor's score into quintiles, and computes:
+
+- **Lift:** (HR rate of top quintile) − (HR rate of bottom quintile). Positive = factor differentiates HR hitters from misses.
+- **AUC:** how well the factor's score ranks HR hitters above non-HR hitters. 0.50 is random; 0.55+ is real signal.
+- **Monotonicity:** does HR rate climb monotonically across quintiles? Non-monotonic signal often means the score curve has the wrong shape rather than the input being dead.
+
+Output: `mlb_hr_bet_site/data/factor_accuracy.json`, rendered in the Performance tab's Backtest panel. Run nightly via `run_outcomes.bat` step 2.
+
+### Live HR feed and the Topps modal (added 2026-05-02)
+
+Separate from the picks pipeline, a Cloudflare Worker (`dingersonly-live-hr` at `api.dingersonly.cc`) polls the MLB Stats API every minute for in-progress games and serves an aggregated "every HR today" feed. The dashboard's HR Recap tab polls this every 30 seconds while visible and renders a "Live Today" panel above the day-after recap.
+
+Each live HR card is clickable and opens a Topps-style modal with: a baseball-diamond SVG showing where the ball landed (Statcast `coordX`/`coordY` mapped to a 250×250 viewBox, with a quadratic-bezier trajectory arc from home plate to the dot), exit velo / launch angle / distance stat cards, the broadcast description, and — when the batter is on today's board — their full model card (Composite + 6 factor scores + per-factor ranks + season-stats).
+
+This is the user-facing closing of the loop: today's picks → live HRs → click any HR → see whether the model rated that batter highly.
 
 A few diagnostic refinements as of 2026-04-30:
 
