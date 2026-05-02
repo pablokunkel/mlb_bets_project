@@ -481,29 +481,22 @@ def build_live_tiers(
         3: qualified[t1_size + t2_size:t1_size + t2_size + t3_size],
     }
 
-    # ── Step 6: within-tier power normalization ───────────────────────
-    for tier_num, tier_batters in tiers.items():
-        if len(tier_batters) < 2:
-            continue
-        for metric in ["barrel_pct", "exit_velo", "hr_fb_pct", "iso"]:
-            values = [b[metric] for b in tier_batters if metric in b]
-            if not values:
-                continue
-            vmin, vmax = min(values), max(values)
-            if vmax == vmin:
-                continue
-            for b in tier_batters:
-                if metric in b:
-                    raw = b[metric]
-                    normed = (raw - vmin) / (vmax - vmin)
-                    if metric == "barrel_pct":
-                        b[metric] = round(normed * 25, 1)
-                    elif metric == "exit_velo":
-                        b[metric] = round(80 + normed * 20, 1)
-                    elif metric == "hr_fb_pct":
-                        b[metric] = round(normed * 30, 1)
-                    elif metric == "iso":
-                        b[metric] = round(0.100 + normed * 0.250, 3)
+    # ── Step 6: REMOVED — within-tier power normalization ─────────────
+    # Previously this re-ranked barrel_pct/exit_velo/hr_fb_pct/iso within
+    # each tier to fit fixed display ranges. That destroyed the actual
+    # signal: a top hitter with the lowest barrel% in T1 was renormalized
+    # down to ~0, making score_power compute ~13 for legit elite power
+    # bats (Buxton 5/1: real barrel 11.9 → renormed to 2.3 → power 13.1).
+    # Removed 2026-05-01. Real barrel/EV/HR-FB enrichment now happens in
+    # generate_picks.score_live_slate via FanGraphs + season_batting fallback.
+    # The synthetic estimates in _splits_to_batters remain as the floor
+    # when neither real source has the player. score_power skips zeros.
+
+    # Mark synthetic estimates so downstream consumers can tell them apart
+    # from real Statcast values.
+    for tier_batters in tiers.values():
+        for b in tier_batters:
+            b["_power_source"] = "estimate_from_hr_per_pa"
 
     # Summary
     untiered = n - (t1_size + t2_size + t3_size)

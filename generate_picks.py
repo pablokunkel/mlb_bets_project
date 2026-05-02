@@ -125,6 +125,68 @@ EXCLUDED_PLAYERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Season Statcast fallback — load season_batting from DB once per run
+# ---------------------------------------------------------------------------
+
+def load_season_batting_lookup(season: int) -> dict:
+    """
+    Load season_batting from the local DB into a dict keyed by player_id.
+    Used as a fallback for Statcast-y metrics (barrel_pct, exit_velo,
+    hr_fb_pct, iso) when the live tier batter dict has zero/missing values.
+
+    The live tier dict comes from MLB Stats API splits and synthesizes
+    these metrics from hr_per_pa — those estimates can swing wildly day
+    to day. season_batting is refreshed nightly from the same API but
+    stored as a stable point-in-time snapshot, plus future updates will
+    populate it from FanGraphs for real Statcast values.
+
+    Returns {} on any error so callers can degrade gracefully.
+    """
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        if not db_path.exists():
+            return {}
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT player_id, barrel_pct, exit_velo, hr_fb_pct, iso, woba
+            FROM season_batting
+            WHERE season = ?
+            """,
+            (season,),
+        ).fetchall()
+        conn.close()
+        return {r["player_id"]: dict(r) for r in rows if r["player_id"]}
+    except Exception as e:
+        print(f"  [SEASON-BATTING] Could not load fallback ({e}) — continuing without it")
+        return {}
+
+
+def enrich_with_season_batting(batter: dict, season_lookup: dict) -> dict:
+    """
+    Replace zero/missing power metrics on *batter* with values from
+    season_batting. Real, non-zero values on *batter* are kept as-is.
+    """
+    pid = batter.get("player_id")
+    if not pid or pid not in season_lookup:
+        return batter
+    sb = season_lookup[pid]
+    enriched = False
+    for metric in ("barrel_pct", "exit_velo", "hr_fb_pct", "iso", "woba"):
+        cur = batter.get(metric)
+        sb_val = sb.get(metric)
+        if (cur is None or cur == 0) and sb_val is not None and sb_val > 0:
+            batter[metric] = sb_val
+            enriched = True
+    if enriched:
+        # Mark provenance so downstream diagnostics can flag this row
+        batter["_power_source"] = "season_batting_fallback"
+    return batter
+
+
 # Map team abbreviations (from MLB Stats API) to full names (from schedule)
 TEAM_ABBREV_TO_FULL = {
     "ARI": "Arizona Diamondbacks", "ATL": "Atlanta Braves",
@@ -628,6 +690,11 @@ def score_live_slate(
     all_scored = []
     season = int(date_str[:4])
 
+    # Load season_batting fallback once per scoring pass.
+    season_lookup = load_season_batting_lookup(season)
+    if season_lookup:
+        print(f"  [SEASON-BATTING] Loaded {len(season_lookup)} rows for season {season} fallback")
+
     # Pre-filter to batters who are actually playing today
     eligible_batters = []
     for b in tier_batters:
@@ -723,6 +790,8 @@ def score_live_slate(
         })
 
         # Use game-log form data (real recent performance!)
+        # No game log → leave the 14d signals as None so score_form skips
+        # them rather than scoring a missing value as "0 HRs in 14 days".
         log = game_logs.get(player_id, {})
         if log:
             recent_hr = log.get("recent_hr", 0)
@@ -730,9 +799,18 @@ def score_live_slate(
             season_slg_approx = b.get("iso", 0.150) + 0.250
             ev_proxy = (log.get("recent_slg", season_slg_approx) - season_slg_approx) * 30
         else:
-            recent_hr = b["hr"] / 25
-            recent_barrel_est = b.get("barrel_pct", 8)
-            ev_proxy = 0
+            recent_hr = None
+            recent_barrel_est = None
+            ev_proxy = None
+
+        # Enrich the live tier dict with season_batting fallback BEFORE
+        # building the scoring entry — overwrites zero/missing barrel%,
+        # exit_velo, hr_fb_pct, iso, woba with real season-level values.
+        # Live tier estimates are noisy (synthesized from hr_per_pa + slg)
+        # and a player with a low day-of estimate would otherwise score
+        # power=13 even with elite real Statcast inputs.
+        if season_lookup:
+            b = enrich_with_season_batting(dict(b), season_lookup)
 
         entry = {
             **b,

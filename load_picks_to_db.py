@@ -179,7 +179,17 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
         # Persist raw factor inputs if generate_picks emitted them.
         inputs = row.get("inputs") or field("inputs", {}) or {}
         pid = row.get("player_id") or 0
-        if inputs and pid:
+        # Skip bench-pick artifacts: pid==0 OR all four power inputs missing.
+        # These rows poison the per-factor decomposition and refit weights
+        # by bringing the average barrel%/EV/HR-FB/ISO down to ~0.
+        power_fields = (
+            inputs.get("barrel_pct"),
+            inputs.get("exit_velo"),
+            inputs.get("hr_fb_pct"),
+            inputs.get("iso"),
+        )
+        all_power_missing = all(v is None or v == 0 for v in power_fields)
+        if inputs and pid and not all_power_missing:
             try:
                 bo = inputs.get("batting_order")
                 bo_int = bo if isinstance(bo, int) else None

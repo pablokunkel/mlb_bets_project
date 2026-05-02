@@ -263,25 +263,32 @@ def score_power(batter: dict) -> float:
     """
     Factor 1: Power Profile (barrel%, exit velo, HR/FB, ISO as xHR proxy).
     Returns 0-100.
+
+    Critical: every metric uses `is not None and > 0` — a missing or zero
+    value is SKIPPED, not scored as 0. Previously `barrel_pct` and
+    `hr_fb_pct` accepted 0, so a player whose live tier estimate
+    happened to land at zero (or who was renormalized down to zero in
+    fetch_daily_data._splits_to_batters) had their power score dragged
+    to ~13 even with elite real Statcast inputs (Buxton 5/1, refit notes).
     """
     scores = []
 
-    barrel = batter.get("barrel_pct", 0)
-    if barrel is not None:
+    barrel = batter.get("barrel_pct")
+    if barrel is not None and barrel > 0:
         scores.append(min_max_scale(barrel, 0, 25))
 
-    ev = batter.get("exit_velo", 0)
-    if ev and ev > 0:
+    ev = batter.get("exit_velo")
+    if ev is not None and ev > 0:
         scores.append(min_max_scale(ev, 80, 100))
 
-    hr_fb = batter.get("hr_fb_pct", 0)
-    if hr_fb is not None:
+    hr_fb = batter.get("hr_fb_pct")
+    if hr_fb is not None and hr_fb > 0:
         if hr_fb < 1:
             hr_fb *= 100
         scores.append(min_max_scale(hr_fb, 0, 30))
 
-    iso = batter.get("iso", 0)
-    if iso and iso > 0:
+    iso = batter.get("iso")
+    if iso is not None and iso > 0:
         scores.append(min_max_scale(iso, 0.100, 0.350))
 
     # xwOBA on contact: .280 (poor contact) -> .500 (elite). One of the
@@ -434,18 +441,28 @@ def score_form(batter: dict) -> float:
     """
     Factor 4: Recent form (last 14 days).
     Returns 0-100.
+
+    None vs 0 distinction:
+      - None  → no game-log data available; signal is SKIPPED (not scored 0)
+      - 0     → real measurement: player did hit 0 HRs / had no EV trend.
+                Scored honestly (low form).
+    Previously every metric defaulted to 0 and was always scored, so a
+    player without 14d game logs got a low form score even if they had
+    a fine season. Now we only score what we actually measured.
     """
     scores = []
 
-    recent_hr = batter.get("recent_hr_14d", 0)
-    scores.append(min_max_scale(recent_hr, 0, 5))
+    recent_hr = batter.get("recent_hr_14d")
+    if recent_hr is not None:
+        scores.append(min_max_scale(recent_hr, 0, 5))
 
-    recent_barrel = batter.get("recent_barrel_pct_14d", 0)
-    if recent_barrel is not None:
+    recent_barrel = batter.get("recent_barrel_pct_14d")
+    if recent_barrel is not None and recent_barrel > 0:
         scores.append(min_max_scale(recent_barrel, 0, 25))
 
-    ev_trend = batter.get("ev_trend_14d", 0)
-    scores.append(min_max_scale(ev_trend, -5, 5))
+    ev_trend = batter.get("ev_trend_14d")
+    if ev_trend is not None:
+        scores.append(min_max_scale(ev_trend, -5, 5))
 
     return float(np.mean(scores)) if scores else 50.0
 
