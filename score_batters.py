@@ -725,6 +725,31 @@ def compute_composite(
         )
         matchup_version = "v1"
 
+    # Audit HIGH #5: stamp which optional signals were active for this pick.
+    # Cross-day stratification matters because availability varies — e.g.,
+    # a day without VEGAS_ODDS_API_KEY produces a 2/3-signal blend while a
+    # day with it produces 3/4. Backtest_factors / refit_weights training
+    # over a mixed window otherwise treats them as the same composite scale.
+    #
+    # NOTE: this duplicates the availability checks inside score_matchup
+    # / score_matchup_v2. If the signal-blend logic in those functions
+    # changes, update this list to match. Keeping it here (rather than
+    # making the score functions return a tuple) preserves the existing
+    # call signatures used by backtest_factors, factor_diagnostics, and
+    # the smoke tests.
+    matchup_signals_used = ["vuln"]
+    if matchup_version == "v2":
+        matchup_signals_used.append("sim")
+    if (slate_ctx and batter_team
+            and slate_ctx.get("team_total_pct")
+            and batter_team in slate_ctx["team_total_pct"]):
+        matchup_signals_used.append("total")
+    woba_for_check = batter.get("woba_vs_hand")
+    if woba_for_check is None:
+        woba_for_check = batter.get("woba")
+    if woba_for_check is not None and woba_for_check > 0:
+        matchup_signals_used.append("woba")
+
     park = score_park(batter, venue, park_factors, slate_ctx=slate_ctx)
     form = score_form(batter)
 
@@ -820,6 +845,14 @@ def compute_composite(
         "composite": round(composite, 1),
         "config": config_name,
         "matchup_version": matchup_version,
+        # Audit HIGH #5: list of which matchup signals were available for
+        # this pick. ["vuln"] = pure HR/9-style vulnerability only;
+        # adds "sim" (archetype) when v2; "total" when Vegas data live;
+        # "woba" when batter's wOBA vs hand is measurable. Backtest /
+        # refit can stratify training/eval on this to keep cross-day
+        # comparisons honest. Future: persist to pick_inputs as a TEXT
+        # column once we want refit_weights to filter on it directly.
+        "matchup_signals_used": matchup_signals_used,
         "inputs": inputs_snapshot,
     }
 
