@@ -58,7 +58,7 @@ TEAM_ABBREV_TO_FULL = {
     "LAA": "Los Angeles Angels", "LAD": "Los Angeles Dodgers",
     "MIA": "Miami Marlins", "MIL": "Milwaukee Brewers",
     "MIN": "Minnesota Twins", "NYM": "New York Mets",
-    "NYY": "New York Yankees", "OAK": "Oakland Athletics",
+    "NYY": "New York Yankees", "OAK": "Athletics",  # API renamed post-Coliseum; match generate_picks.py
     "PHI": "Philadelphia Phillies", "PIT": "Pittsburgh Pirates",
     "SD": "San Diego Padres", "SF": "San Francisco Giants",
     "SEA": "Seattle Mariners", "STL": "St. Louis Cardinals",
