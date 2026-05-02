@@ -1,8 +1,0 @@
-[build]
-  publish = "mlb_hr_bet_site"
-  command = "echo 'Static site — no build needed'"
-
-[[headers]]
-  for = "/data/*"
-  [headers.values]
-    Cache-Control = "public, max-age=300"

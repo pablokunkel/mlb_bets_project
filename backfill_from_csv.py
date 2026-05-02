@@ -14,7 +14,7 @@ each day's slate (the full board, not just the 8 picks). This script:
 
 After running this, run:
     python export_site_data.py --out mlb_hr_bet_site/data --days 60
-to refresh the Netlify JSON.
+to refresh the dashboard JSON.
 
 Usage:
     python backfill_from_csv.py                  # default CSV + DB paths

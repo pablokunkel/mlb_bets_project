@@ -39,6 +39,6 @@ echo.
 echo  Next steps:
 echo    1. Run generate_picks.py to generate today's picks
 echo    2. Run export_site_data.py to build dashboard data
-echo    3. Set up Netlify (see below)
+echo    3. Commit + push to main (Cloudflare Worker dingersonlybot auto-deploys)
 echo.
 pause
