@@ -1615,6 +1615,19 @@
            newspaper styling (serif headlines, italic deks, ledger stat strip). -->
       <div class="stat-row" id="perfStats"></div>
       <div class="chart-container">
+        <h3>Backtest: Current Model vs History</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Re-scores every batter in <code>pick_inputs</code> using TODAY's
+          <code>score_*</code> functions, then bins them into quintiles by
+          factor score and reports the actual HR rate per bin. A factor with
+          <strong>lift &gt; 1.3×</strong>, <strong>monotonic ✓</strong>, and
+          <strong>AUC &gt; 0.55</strong> is doing real work. A factor near
+          <strong>1.0× / non-monotonic / 0.50</strong> is dead weight that
+          shouldn't be carrying composite weight.
+        </div>
+        <div id="backtestAccuracy"><div class="loading">Loading factor accuracy…</div></div>
+      </div>
+      <div class="chart-container">
         <h3>Factor Score Trends (Selected Picks)</h3>
         <canvas id="factorChart" height="220"></canvas>
       </div>
@@ -2182,16 +2195,98 @@
       bindMobileTables();
     }
 
+    // ── Render: Backtest accuracy table (current model on history) ──
+    function renderBacktest(backtest) {
+      const target = document.getElementById('backtestAccuracy');
+      if (!target) return;
+      if (!backtest || !backtest.windows || !backtest.windows.length) {
+        target.innerHTML = '<div class="empty">No backtest data yet. Run <code>python backtest_factors.py</code> or wait for tonight\'s outcomes ETL.</div>';
+        return;
+      }
+      const factorOrder = ['power', 'matchup', 'park', 'form', 'weather', 'lineup'];
+      const liftColor = (lift) => {
+        if (lift == null) return 'var(--text-muted)';
+        if (lift >= 1.5) return 'var(--green)';
+        if (lift >= 1.2) return 'var(--orange)';
+        return '#ef4444';
+      };
+      const aucColor = (auc) => {
+        if (auc == null) return 'var(--text-muted)';
+        if (auc >= 0.58) return 'var(--green)';
+        if (auc >= 0.54) return 'var(--orange)';
+        return '#ef4444';
+      };
+      let html = '';
+      backtest.windows.forEach(win => {
+        const sub = `n=${win.n} · ${win.date_min} → ${win.date_max} · base HR rate ${(win.overall_hr_rate*100).toFixed(2)}%`;
+        html += `
+          <div style="margin-bottom:18px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:6px">
+              <strong style="font-size:13px">${win.label}</strong>
+              <span style="font-size:11px;color:var(--text-muted)">${sub}</span>
+            </div>
+            <div style="overflow-x:auto">
+            <table class="backtest-table" style="width:100%;font-size:11px;border-collapse:collapse">
+              <thead><tr style="text-align:left;color:var(--text-muted)">
+                <th style="padding:4px 8px">Factor</th>
+                <th style="padding:4px 8px;text-align:right">Lift</th>
+                <th style="padding:4px 8px;text-align:right">AUC</th>
+                <th style="padding:4px 8px;text-align:center">Mono</th>
+                <th style="padding:4px 8px">Q1 (low)</th>
+                <th style="padding:4px 8px">Q2</th>
+                <th style="padding:4px 8px">Q3</th>
+                <th style="padding:4px 8px">Q4</th>
+                <th style="padding:4px 8px">Q5 (high)</th>
+              </tr></thead>
+              <tbody>
+        `;
+        factorOrder.forEach(f => {
+          const r = win.factors[f];
+          if (!r || !r.bins || !r.bins.length) {
+            html += `<tr><td style="padding:4px 8px;color:var(--text-muted)" colspan="9">${f}: insufficient data</td></tr>`;
+            return;
+          }
+          const lift = r.lift != null ? r.lift.toFixed(2) + '×' : '—';
+          const auc = r.auc != null ? r.auc.toFixed(3) : '—';
+          const mono = r.monotonic ? '<span style="color:var(--green)">✓</span>' : '<span style="color:#ef4444">✗</span>';
+          let bins = '';
+          for (let i = 0; i < 5; i++) {
+            const b = r.bins[i];
+            if (!b) { bins += '<td style="padding:4px 8px;color:var(--text-muted)">—</td>'; continue; }
+            const rate = (b.hr_rate * 100).toFixed(1);
+            bins += `<td style="padding:4px 8px"><span style="color:var(--text-muted);font-size:10px">${b.score_lo}-${b.score_hi}</span><br>n=${b.n} · ${rate}%</td>`;
+          }
+          html += `
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:6px 8px;font-weight:600;text-transform:uppercase;font-size:11px">${f}</td>
+              <td style="padding:6px 8px;text-align:right;font-weight:700;color:${liftColor(r.lift)}">${lift}</td>
+              <td style="padding:6px 8px;text-align:right;color:${aucColor(r.auc)}">${auc}</td>
+              <td style="padding:6px 8px;text-align:center">${mono}</td>
+              ${bins}
+            </tr>
+          `;
+        });
+        html += `</tbody></table></div></div>`;
+      });
+      const ts = backtest.generated_at ? new Date(backtest.generated_at).toLocaleString() : '';
+      html += `<div style="font-size:10px;color:var(--text-muted);margin-top:6px">Generated ${ts}</div>`;
+      target.innerHTML = html;
+    }
+
     // ── Render: Performance ──
     async function renderPerformance() {
       const perf = await fetchJSON('performance');
       const trends = await fetchJSON('factor_trends');
+      const backtest = await fetchJSON('factor_accuracy');
 
       if (!perf) {
         document.getElementById('perfStats').innerHTML = '<div class="empty">No performance data yet. Run outcomes ETL first.</div>';
         return;
       }
       // (Masthead JS removed 2026-05-01 — masthead element no longer in DOM.)
+
+      // ─── Backtest table — current model re-scored on history ─────────
+      renderBacktest(backtest);
 
       const o = perf.overall;
       document.getElementById('perfStats').innerHTML = `

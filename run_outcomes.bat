@@ -3,8 +3,9 @@ REM ============================================================
 REM  Outcomes ETL — runs at 1:00 AM
 REM
 REM   1. Pull yesterday's box scores -> outcomes table
-REM   2. Re-export site data with fresh hit/miss results
-REM   3. Re-deploy to Netlify so the dashboard reflects last night
+REM   2. Re-score history with current model -> factor_accuracy.json
+REM   3. Re-export site data with fresh hit/miss results
+REM   4. Push refreshed JSON to GitHub (Cloudflare Pages auto-deploys)
 REM
 REM  Logs to logs/outcomes_YYYY-MM-DD.log. Independent of the
 REM  noon picks run — failure here doesn't block tomorrow's picks.
@@ -22,25 +23,34 @@ echo  OUTCOMES ETL — %date% %time%            >> "%LOGFILE%" 2>&1
 echo ======================================== >> "%LOGFILE%" 2>&1
 
 REM Step 1: Yesterday's outcomes
-echo  [1/3] Fetching yesterday's outcomes... >> "%LOGFILE%" 2>&1
+echo  [1/4] Fetching yesterday's outcomes... >> "%LOGFILE%" 2>&1
 python -m etl.etl_outcomes >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo  ERROR: Outcomes ETL failed! >> "%LOGFILE%" 2>&1
     exit /b 1
 )
 
-REM Step 2: Re-export site data so hit rates / streak update
-echo  [2/3] Re-exporting site data... >> "%LOGFILE%" 2>&1
+REM Step 2: Re-score history with current model and write factor_accuracy.json.
+REM Soft-failure: if backtest crashes, dashboard keeps showing the previous
+REM accuracy snapshot rather than blocking the deploy.
+echo  [2/4] Backtesting current model on history... >> "%LOGFILE%" 2>&1
+python backtest_factors.py >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo  WARN: backtest_factors failed -- skipping accuracy refresh >> "%LOGFILE%" 2>&1
+)
+
+REM Step 3: Re-export site data so hit rates / streak update
+echo  [3/4] Re-exporting site data... >> "%LOGFILE%" 2>&1
 python export_site_data.py >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo  ERROR: Data export failed! >> "%LOGFILE%" 2>&1
     exit /b 1
 )
 
-REM Step 3: Push refreshed JSON to GitHub (Cloudflare Pages auto-deploys)
-echo  [3/3] Pushing to GitHub... >> "%LOGFILE%" 2>&1
+REM Step 4: Push refreshed JSON to GitHub (Cloudflare Pages auto-deploys)
+echo  [4/4] Pushing to GitHub... >> "%LOGFILE%" 2>&1
 git add mlb_hr_bet_site/data/*.json >> "%LOGFILE%" 2>&1
-git commit -m "Outcomes refresh" --allow-empty >> "%LOGFILE%" 2>&1
+git commit -m "Outcomes + accuracy refresh" --allow-empty >> "%LOGFILE%" 2>&1
 git push origin main >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo  ERROR: Git push failed! >> "%LOGFILE%" 2>&1
