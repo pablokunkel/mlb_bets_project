@@ -282,21 +282,30 @@ def compute_slate_context(
         pitcher_vuln_raw[pname] = raw
     pitcher_pct = percentile_rank_dict(pitcher_vuln_raw)
 
-    # Vegas implied team totals: percentile within today's slate.
-    # If no totals are provided (no API key, or feed unavailable), this
-    # dict is empty and score_matchup falls back to neutral (50) for the
+    # Vegas implied team totals: percentile within today's slate AND the
+    # raw run-total dict. score_matchup feeds the percentile into the
+    # composite (so it's slate-relative), but the raw value is what
+    # diagnostic dashboards / future refit experiments want — e.g.,
+    # "did picks from teams with implied total >= 5.5 runs hit at a
+    # higher rate than teams below 4.5". Persisting the raw alongside
+    # the pct lets us answer that without re-querying the odds API.
+    #
+    # If no totals are provided (no API key, or feed unavailable), both
+    # dicts are empty and score_matchup falls back to neutral 50 for the
     # game-environment signal.
     team_total_pct = {}
+    team_total_raw = {}
     if implied_totals_by_team:
-        team_total_pct = percentile_rank_dict(
-            {t: float(v) for t, v in implied_totals_by_team.items() if v is not None}
-        )
+        clean = {t: float(v) for t, v in implied_totals_by_team.items() if v is not None}
+        team_total_pct = percentile_rank_dict(clean)
+        team_total_raw = clean
 
     return {
         "park_pct": park_pct,
         "weather_pct": weather_pct,
         "pitcher_pct": pitcher_pct,
         "team_total_pct": team_total_pct,
+        "team_total_raw": team_total_raw,   # NEW: raw run totals (audit MED)
         "active": True,
     }
 
@@ -823,12 +832,25 @@ def compute_composite(
         except Exception:
             archetype_sim = None
 
-    vegas_total = None
+    # Vegas implied team total. Audit MED: the existing
+    # `inputs_snapshot["vegas_implied_total"]` field (and its
+    # corresponding `pick_inputs.vegas_implied_total` DB column) stores
+    # the slate-relative PERCENTILE (0–100), NOT a Vegas run total in
+    # actual runs. The column name is misleading and predates the
+    # slate-context refactor that converted it to a percentile.
+    #
+    # Renaming the column requires a migration so we keep the existing
+    # field/column as-is for now. Added a sibling `vegas_implied_total_raw`
+    # field below that does carry the run total (5.5, 4.2, etc.) — this
+    # is non-persisted today (load_picks_to_db only knows the existing
+    # column) but flows into picks_latest.json so diagnostics + future
+    # refit work can use it.
+    vegas_total_pct = None        # the percentile that feeds the score
+    vegas_total_raw = None        # the actual run total (or None)
     if slate_ctx and batter_team:
-        # Note: slate_ctx stores percentile, not raw — but the raw is in
-        # the pitcher dict if we ever emit it. For now persist the percentile,
-        # which is what's actually feeding the score.
-        vegas_total = slate_ctx.get("team_total_pct", {}).get(batter_team)
+        vegas_total_pct = slate_ctx.get("team_total_pct", {}).get(batter_team)
+        vegas_total_raw = slate_ctx.get("team_total_raw", {}).get(batter_team)
+    vegas_total = vegas_total_pct  # alias for backward-compat with snapshot
 
     inputs_snapshot = {
         # Power
@@ -849,9 +871,17 @@ def compute_composite(
         "pitcher_k_per_9":         pitcher.get("k_per_9"),
         "pitcher_fb_pct_allowed":  pitcher.get("fb_pct_allowed"),
         # Matchup — batter / game
+        # NOTE on woba_vs_hand: this can be a synthetic estimate when the
+        # batter dict came from MLB Stats API splits via _splits_to_batters
+        # (uses 0.7*OBP + 0.3*SLG, not real wOBA weights). Audit MED flag.
         "woba_vs_hand":            batter.get("woba_vs_hand", batter.get("woba")),
         "archetype_similarity":    archetype_sim,
-        "vegas_implied_total":     vegas_total,
+        # vegas_implied_total stores the SLATE-RELATIVE PERCENTILE (0-100),
+        # not a Vegas run total. Misleading column name preserved for
+        # backward compat with refit_weights training data. The raw run
+        # total is in vegas_implied_total_raw (NEW, JSON-only today).
+        "vegas_implied_total":     vegas_total_pct,
+        "vegas_implied_total_raw": vegas_total_raw,
         "platoon_advantage":       1 if batter_hand != pitcher.get("throws", "R") else 0,
         # Park
         "hr_park_factor":          pf_overall,
