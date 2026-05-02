@@ -57,6 +57,72 @@
     .panel { display: none; }
     .panel.active { display: block; }
 
+    /* Live indicator dot on the HR Recap tab */
+    .live-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--red); margin-left: 6px; vertical-align: middle;
+      box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.7);
+      animation: livePulse 1.6s infinite;
+    }
+    .live-dot.stale { background: var(--text-muted); animation: none; box-shadow: none; }
+    @keyframes livePulse {
+      0%   { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.6); }
+      70%  { box-shadow: 0 0 0 8px rgba(248, 81, 73, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0); }
+    }
+
+    /* HR Recap panel */
+    .recap-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 8px 0 12px;
+    }
+    .recap-header h3 { font-size: 16px; font-weight: 600; }
+    .recap-status {
+      margin-left: 10px; font-size: 12px; color: var(--text-muted);
+      font-weight: 400;
+    }
+    .recap-refresh {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 12px; font-size: 12px; cursor: pointer;
+    }
+    .recap-refresh:hover { background: var(--surface-2); }
+    .recap-refresh:disabled { opacity: 0.5; cursor: wait; }
+
+    .hr-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+      display: grid; grid-template-columns: auto 1fr auto; gap: 14px;
+      align-items: center;
+    }
+    .hr-card.new { animation: hrFlash 1.6s ease-out; }
+    @keyframes hrFlash {
+      0%   { background: rgba(63, 185, 80, 0.18); }
+      100% { background: var(--surface); }
+    }
+    .hr-inning {
+      background: var(--surface-2); border-radius: 8px; padding: 8px 10px;
+      text-align: center; min-width: 56px;
+      font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+    }
+    .hr-inning .num { font-size: 18px; color: var(--text); font-weight: 700; display: block; }
+    .hr-body .player { font-size: 16px; font-weight: 600; color: var(--text); }
+    .hr-body .meta {
+      font-size: 12px; color: var(--text-muted); margin-top: 4px;
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .hr-body .meta .pill {
+      background: var(--surface-2); padding: 2px 8px; border-radius: 12px;
+      font-size: 11px;
+    }
+    .hr-body .desc { font-size: 12px; color: var(--text); margin-top: 6px; opacity: 0.85; }
+    .hr-side { text-align: right; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+    .hr-side .score { font-size: 13px; color: var(--text); font-weight: 600; }
+    .hr-empty {
+      background: var(--surface); border: 1px dashed var(--border);
+      border-radius: 10px; padding: 24px; text-align: center; color: var(--text-muted);
+    }
+
     /* Stat cards */
     .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
     .stat-card {
@@ -191,6 +257,7 @@
 
     <div class="tabs">
       <div class="tab active" data-panel="today">Today's Picks</div>
+      <div class="tab" data-panel="recap">HR Recap <span class="live-dot" id="recapLiveDot" title="Live"></span></div>
       <div class="tab" data-panel="history">History</div>
       <div class="tab" data-panel="stats">Performance</div>
     </div>
@@ -207,6 +274,16 @@
         <span class="l-lineup">Lineup</span>
       </div>
       <div id="todayTable"><div class="loading">Loading picks...</div></div>
+    </div>
+
+    <!-- HR RECAP (live) -->
+    <div class="panel" id="panel-recap">
+      <div class="stat-row" id="recapStats"></div>
+      <div class="recap-header">
+        <h3>Today's Home Runs <span class="recap-status" id="recapStatus">loading…</span></h3>
+        <button class="recap-refresh" id="recapRefresh" type="button">Refresh</button>
+      </div>
+      <div id="recapList"><div class="loading">Loading live HR feed…</div></div>
     </div>
 
     <!-- HISTORY -->
@@ -493,10 +570,181 @@
       }
     }
 
+    // ── HR Recap (live feed) ──
+    // Talks to the dingersonly-live-hr Cloudflare Worker bound at /api/*.
+    // The Worker pulls the MLB Stats API every minute and caches the result
+    // in KV; we poll every 30s and only repaint when something changed.
+    // The live-HR Worker lives on its own subdomain because dingersonly.cc
+    // itself is served by a Worker-with-Static-Assets, and CF won't let
+    // another Worker take routes on a hostname owned by an assets worker.
+    // The Worker sets permissive CORS so the cross-origin fetch is fine.
+    const LIVE_HR_ENDPOINT = 'https://api.dingersonly.cc/api/live-hrs';
+    const RECAP_POLL_MS = 30 * 1000;
+    // Dot stales when the BROWSER stops being able to reach the feed.
+    // (We don't tie it to data.updatedAt, because on a slow inning the
+    // Worker correctly skips KV writes — that's expected, not staleness.)
+    const RECAP_STALE_MS = 2 * 60 * 1000;
+
+    const recapState = {
+      contentUpdatedAt: null, // when feed content last changed
+      lastFetchOkAt: null,    // when the browser last got 200 from /api/live-hrs
+      seenIds: new Set(),
+      timer: null,
+    };
+
+    function fmtTime(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      } catch { return ''; }
+    }
+
+    function ordInning(n, half) {
+      if (!n) return '';
+      const arrow = half === 'top' ? '▲' : half === 'bottom' ? '▼' : '';
+      return `${arrow} ${n}`;
+    }
+
+    function renderRecapEmpty(payload) {
+      const games = payload?.gamesTotal || 0;
+      const live = payload?.gamesLiveOrFinal || 0;
+      let msg;
+      if (games === 0) {
+        msg = 'No MLB games scheduled today.';
+      } else if (live === 0) {
+        msg = `${games} game${games > 1 ? 's' : ''} on the slate — none have started yet.`;
+      } else {
+        msg = `${live} game${live > 1 ? 's' : ''} live, no home runs yet today.`;
+      }
+      return `<div class="hr-empty">${msg}</div>`;
+    }
+
+    function renderHRCard(hr, isNew) {
+      const team = hr.battingTeamAbbr || hr.battingTeam || '';
+      const meta = [];
+      if (hr.pitcherName) meta.push(`<span class="pill">vs ${hr.pitcherName}</span>`);
+      if (hr.launchSpeed) meta.push(`<span class="pill">${Math.round(hr.launchSpeed)} mph</span>`);
+      if (hr.totalDistance) meta.push(`<span class="pill">${hr.totalDistance} ft</span>`);
+      if (hr.launchAngle) meta.push(`<span class="pill">${Math.round(hr.launchAngle)}°</span>`);
+      const score = (hr.awayScore != null && hr.homeScore != null)
+        ? `<div class="score">${hr.awayScore} - ${hr.homeScore}</div>` : '';
+      return `<div class="hr-card${isNew ? ' new' : ''}" data-id="${hr.id}">
+        <div class="hr-inning">
+          <span class="num">${hr.inning || '-'}</span>
+          ${hr.halfInning ? hr.halfInning : ''}
+        </div>
+        <div class="hr-body">
+          <div class="player">${hr.batterName} <span style="color:var(--text-muted);font-weight:500">(${team})</span></div>
+          <div class="meta">${meta.join('')}</div>
+          ${hr.description ? `<div class="desc">${hr.description}</div>` : ''}
+        </div>
+        <div class="hr-side">
+          ${score}
+          <div>${fmtTime(hr.time)}</div>
+          <div style="opacity:0.7">${hr.venue || ''}</div>
+        </div>
+      </div>`;
+    }
+
+    function updateLiveDot() {
+      const dot = document.getElementById('recapLiveDot');
+      if (!dot) return;
+      const fresh = recapState.lastFetchOkAt &&
+        (Date.now() - recapState.lastFetchOkAt) < RECAP_STALE_MS;
+      dot.classList.toggle('stale', !fresh);
+      const parts = [];
+      if (recapState.contentUpdatedAt) {
+        parts.push(`Last HR / state change: ${fmtTime(recapState.contentUpdatedAt)}`);
+      }
+      if (recapState.lastFetchOkAt) {
+        parts.push(`Last poll: ${fmtTime(new Date(recapState.lastFetchOkAt).toISOString())}`);
+      }
+      dot.title = parts.join('\n') || 'Live';
+    }
+
+    async function fetchRecap() {
+      try {
+        const resp = await fetch(LIVE_HR_ENDPOINT + '?t=' + Date.now());
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        recapState.lastFetchOkAt = Date.now();
+        return data;
+      } catch { return null; }
+    }
+
+    async function renderRecap() {
+      const data = await fetchRecap();
+      const statusEl = document.getElementById('recapStatus');
+      const listEl = document.getElementById('recapList');
+
+      if (!data) {
+        statusEl.textContent = 'feed unavailable';
+        listEl.innerHTML = `<div class="hr-empty">Live feed is unavailable right now. We'll try again in 30s.</div>`;
+        updateLiveDot();
+        return;
+      }
+
+      recapState.contentUpdatedAt = data.updatedAt;
+
+      // Stat cards
+      const hrs = data.hrs || [];
+      const games = data.games || [];
+      const liveGames = games.filter(g => g.abstract === 'Live').length;
+      const lastHRTime = hrs.length ? hrs[0].time : null;
+      document.getElementById('recapStats').innerHTML = `
+        <div class="stat-card"><div class="label">HRs Today</div><div class="value green">${hrs.length}</div></div>
+        <div class="stat-card"><div class="label">Live Games</div><div class="value accent">${liveGames}</div></div>
+        <div class="stat-card"><div class="label">Total Games</div><div class="value">${games.length}</div></div>
+        <div class="stat-card"><div class="label">Last HR</div><div class="value" style="font-size:16px">${fmtTime(lastHRTime) || '—'}</div></div>
+      `;
+
+      statusEl.textContent = data.updatedAt ? `data as of ${fmtTime(data.updatedAt)}` : '';
+
+      if (hrs.length === 0) {
+        listEl.innerHTML = renderRecapEmpty(data);
+        // Reset seen so the first HR of the day gets the flash animation.
+        recapState.seenIds = new Set();
+      } else {
+        const html = hrs.map(hr => {
+          const isNew = !recapState.seenIds.has(hr.id);
+          return renderHRCard(hr, isNew);
+        }).join('');
+        listEl.innerHTML = html;
+        // After repaint, mark everything seen.
+        hrs.forEach(hr => recapState.seenIds.add(hr.id));
+      }
+
+      updateLiveDot();
+    }
+
+    function startRecapPolling() {
+      if (recapState.timer) return;
+      renderRecap();
+      recapState.timer = setInterval(renderRecap, RECAP_POLL_MS);
+    }
+
+    document.getElementById('recapRefresh')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      await renderRecap();
+      btn.disabled = false;
+    });
+
+    // Pause polling when the tab is hidden, resume on focus — saves requests.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (recapState.timer) { clearInterval(recapState.timer); recapState.timer = null; }
+      } else {
+        startRecapPolling();
+      }
+    });
+
     // ── Init ──
     renderToday();
     renderHistory();
     renderPerformance();
+    startRecapPolling();
   </script>
 </body>
 </html>

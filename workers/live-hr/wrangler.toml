@@ -1,0 +1,40 @@
+name = "dingersonly-live-hr"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+# Run every minute. (Cloudflare's smallest cron granularity.)
+# We early-exit inside the handler when no games are scheduled, so
+# off-season / off-day invocations are essentially free.
+[triggers]
+crons = ["* * * * *"]
+
+# KV namespace where we cache the assembled HR feed.
+# Replace `id` with the value printed by:
+#   wrangler kv namespace create LIVE_HR_KV
+# and `preview_id` with:
+#   wrangler kv namespace create LIVE_HR_KV --preview
+[[kv_namespaces]]
+binding = "LIVE_HR_KV"
+id = "1db524405e214f768012670165b73399"
+preview_id = "ef2a9d414d3b4d74af21bb18fe8a0cda"
+
+# Bind the Worker to api.dingersonly.cc.
+# We can't use a path-based route on dingersonly.cc itself because the
+# dingersonlybot Worker is serving the apex with Static Assets, and CF
+# disallows another Worker route on a hostname owned by an assets worker.
+# A custom domain on the subdomain sidesteps that cleanly.
+#
+# Easiest setup: do this in the dashboard
+#   Workers > dingersonly-live-hr > Settings > Domains & Routes > Add Custom Domain
+#   Domain: api.dingersonly.cc
+# CF auto-provisions the DNS record + cert.
+#
+# Or via wrangler — uncomment after `wrangler deploy` succeeds at least once:
+# [[routes]]
+# pattern = "api.dingersonly.cc"
+# custom_domain = true
+
+[vars]
+# America/New_York is what MLB schedules against. We use this to decide
+# what "today" means when the cron fires near midnight UTC.
+MLB_TIMEZONE = "America/New_York"
