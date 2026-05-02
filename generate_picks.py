@@ -857,6 +857,157 @@ def score_live_slate(
     return all_scored
 
 
+def score_untiered_starters(
+    slate: dict,
+    date_str: str,
+    config_name: str,
+    pf,
+    slate_ctx: dict | None,
+    already_scored_pids: set,
+) -> list:
+    """Score confirmed starters who didn't qualify for any tier.
+
+    The 3 tier passes in score_live_slate iterate `tier_batters` per tier,
+    and `build_live_tiers` qualifies on `games >= 5 AND hr >= 1`. Real
+    confirmed starters who don't meet that bar (low-HR contact guys,
+    rookies, returning IL players, slow starts with <5 games) silently
+    never enter the scored pool. This pass scoops them up so today's
+    `daily_picks` reflects the actual 9 starters per game, not just the
+    qualifying subset.
+
+    Stats default to None and skip-on-missing through compute_composite;
+    enrich_with_season_batting fills barrel/EV/iso/woba from the
+    `season_batting` DB table when present (so a known batter who just
+    happens to be off the tier table still gets real stats).
+
+    Originating bug: 2026-05-02 SEA/KC autopsy showed 5 of 9 SEA starters
+    (Crawford, J. Rodriguez, Arozarena, Joe, Rivas) absent from
+    `daily_picks` for 2026-05-01 — they had been silently dropped at the
+    tier-filter step before scoring even began. Tagged tier=4
+    ("T4-Untiered") so the dashboard can distinguish from T1/T2/T3 picks.
+    """
+    untiered = []
+    season = int(date_str[:4])
+    season_lookup = load_season_batting_lookup(season) or {}
+    pitcher_profiles = slate.get("pitcher_profiles", {})
+
+    # Build {gpk: game} once.
+    game_by_gpk = {g["game_pk"]: g for g in slate["games"]}
+
+    # Gather stub batters first so we can batch-fetch game logs for them
+    # (mirrors score_live_slate's batch optimization — saves N HTTPs).
+    stubs: list[tuple[dict, dict, int, str]] = []
+    for gpk, lu in slate.get("lineups", {}).items():
+        game = game_by_gpk.get(gpk)
+        if not game:
+            continue
+        for side in ["home", "away"]:
+            for i, p in enumerate(lu.get(side, []), 1):
+                if i > 9:
+                    break  # bench; only score confirmed starters
+                pid = p.get("player_id")
+                pname = p.get("name", "")
+                if not pid or pid in already_scored_pids:
+                    continue
+                if pname in EXCLUDED_PLAYERS:
+                    continue
+                team = game["home_team"] if side == "home" else game["away_team"]
+                stub = {
+                    "name": pname,
+                    "team": team,
+                    "player_id": pid,
+                }
+                if season_lookup:
+                    stub = enrich_with_season_batting(stub, season_lookup)
+                stubs.append((stub, game, i, side))
+
+    if not stubs:
+        return untiered
+
+    print(f"  [UNTIERED] {len(stubs)} confirmed starters not in any tier — "
+          f"scoring with season_batting fallback")
+
+    # Batch fetch game logs (recent form data)
+    player_id_list = [(s[0]["name"], s[0]["player_id"]) for s in stubs]
+    try:
+        game_logs = fetch_form_data_batch(player_id_list, season)
+    except Exception as e:
+        print(f"  [UNTIERED] form data batch failed: {e}")
+        game_logs = {}
+
+    # Reuse the slate-level bulk xwOBA pull
+    bulk_xwoba = slate.get("bulk_batter_xwoba", {})
+    batter_adv = {pid: {"xwoba_contact": v} for pid, v in bulk_xwoba.items()}
+
+    for stub, game, batting_order, side in stubs:
+        gpk = game["game_pk"]
+        ht = game["home_team"]
+        at = game["away_team"]
+        venue = game["venue"]
+        pid = stub["player_id"]
+
+        # Opposing pitcher
+        opp_pitcher_name = (
+            game.get("away_pitcher_name", "TBD") if side == "home"
+            else game.get("home_pitcher_name", "TBD")
+        )
+        opp = slate["pitchers"].get(opp_pitcher_name, {
+            "hr_per_9": 1.2, "hard_hit_pct_allowed": 35, "throws": "R"
+        })
+        weather = slate["weather"].get(gpk, {
+            "temperature_f": 75, "wind_mph": 5, "wind_direction_deg": 0, "dome": False
+        })
+
+        log = game_logs.get(pid, {})
+        if log:
+            recent_hr = log.get("recent_hr", 0)
+            recent_barrel_est = min(25, log.get("recent_iso", 0.120) * 100)
+            season_slg_approx = stub.get("iso", 0.150) + 0.250
+            ev_proxy = (log.get("recent_slg", season_slg_approx) - season_slg_approx) * 30
+        else:
+            recent_hr = None
+            recent_barrel_est = None
+            ev_proxy = None
+
+        entry = {
+            **stub,
+            "recent_hr_14d": recent_hr,
+            "recent_barrel_pct_14d": recent_barrel_est,
+            "ev_trend_14d": ev_proxy,
+        }
+        adv = batter_adv.get(pid, {})
+        if adv.get("xwoba_contact") is not None:
+            entry["xwoba_contact"] = adv["xwoba_contact"]
+
+        pp = pitcher_profiles.get(opp_pitcher_name)
+
+        result = compute_composite(
+            entry, opp, venue, weather, pf, config_name,
+            victim_profile=None,  # No archetype profile for untiered;
+                                  # would require an extra DB query that
+                                  # isn't worth it for the bottom of the board.
+            pitcher_profile=pp,
+            batting_order=batting_order,
+            slate_ctx=slate_ctx,
+            game_pk=gpk,
+        )
+        result["player_id"] = pid
+        result["game_pk"] = gpk
+        result["opp_pitcher"] = opp_pitcher_name
+        result["tier"] = 4
+        result["game_venue"] = venue
+        result["home_team"] = ht
+        result["away_team"] = at
+        result["confirmed_starter"] = True
+        result["has_game_log"] = bool(log)
+        result["hot_streak"] = log.get("hot_streak", False) if log else False
+        result["has_archetype"] = False
+        untiered.append(result)
+
+    untiered.sort(key=lambda x: x["composite"], reverse=True)
+    return untiered
+
+
 # ---------------------------------------------------------------------------
 # OFFLINE MODE — simulated slate from hardcoded data
 # ---------------------------------------------------------------------------
@@ -1029,6 +1180,27 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
             "top_scorer": scored[0]["name"] if scored else "N/A",
             "top_composite": scored[0]["composite"] if scored else 0,
         }
+
+    # T4 (untiered): scoop up confirmed starters who didn't qualify for any
+    # of T1/T2/T3. Without this, real #1–9 hitters with <5 games or 0 HRs
+    # YTD never enter daily_picks even though they're literally batting
+    # tonight. See score_untiered_starters() docstring for the SEA/KC
+    # autopsy that surfaced this. Skip in offline mode (no real lineups).
+    if live_slate:
+        already_scored_pids = {s.get("player_id") for s in full_board if s.get("player_id")}
+        untiered = score_untiered_starters(
+            live_slate, date_str, config, pf, slate_ctx, already_scored_pids
+        )
+        for s in untiered:
+            s["tier_label"] = "T4-Untiered"
+        full_board.extend(untiered)
+        if untiered:
+            tier_details[4] = {
+                "config": config,
+                "pool_size": len(untiered),
+                "top_scorer": untiered[0]["name"],
+                "top_composite": untiered[0]["composite"],
+            }
 
     # Sort the entire pool by composite and pick top N
     full_board.sort(key=lambda x: x["composite"], reverse=True)

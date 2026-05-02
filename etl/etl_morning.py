@@ -228,13 +228,22 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
                 if not pid:
                     continue
 
+                # bdfed returns ~13–15 entries per side: the 9 starters first,
+                # then bench/reserves. Cap real batting orders at 9 so DB
+                # consumers can distinguish a #3 hitter from the 12th-roster
+                # bench bat. Pre-fix, positions 10–15 were written as
+                # batting_order=10..15, which (a) showed up as garbage in any
+                # `SELECT batting_order FROM daily_lineup` query and (b) was
+                # the most likely root cause of "listed bench when actually
+                # batted 3rd" reports during the 2026-05-02 SEA/KC autopsy.
+                bo = i + 1 if i < 9 else None
                 conn.execute("""
                     INSERT OR REPLACE INTO daily_lineup
                     (game_pk, date, side, batting_order, player_id,
                      player_name, position, team)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    gpk, date_str, side, i + 1,
+                    gpk, date_str, side, bo,
                     pid,
                     player.get("boxscoreName", ""),
                     player.get("primaryPosition", ""),
