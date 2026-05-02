@@ -178,8 +178,16 @@ def factor_quintile_table(df: pd.DataFrame, factor_col: str) -> dict:
     if len(sub) < 25:
         return {"bins": [], "lift": None, "monotonic": None, "auc": None, "n_total": len(sub)}
 
-    # Quintile bin labels Q1..Q5 (Q5 = top scores)
-    sub["bin"] = pd.qcut(sub[factor_col], q=5, labels=[1, 2, 3, 4, 5], duplicates="drop")
+    # Quintile binning. Pass labels=False so qcut returns integer indices
+    # 0..n-1; this avoids the "labels must be one fewer than bin edges"
+    # error when duplicates="drop" collapses bins (happens for discrete
+    # factors like lineup_score where many batters share the same value).
+    try:
+        sub["bin"] = pd.qcut(sub[factor_col], q=5, labels=False, duplicates="drop")
+    except ValueError:
+        # Last-resort: factor has ≤1 unique value, can't bin at all
+        return {"bins": [], "lift": None, "monotonic": None, "auc": None, "n_total": len(sub)}
+
     bins = []
     for b in sorted(sub["bin"].dropna().unique()):
         chunk = sub[sub["bin"] == b]
@@ -188,7 +196,7 @@ def factor_quintile_table(df: pd.DataFrame, factor_col: str) -> dict:
         n = int(len(chunk))
         hr_rate = float(chunk["hit_hr"].mean())
         bins.append({
-            "bin": int(b),
+            "bin": int(b) + 1,  # display 1-indexed (Q1..Q5)
             "score_lo": round(lo, 1),
             "score_hi": round(hi, 1),
             "n": n,
