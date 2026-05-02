@@ -271,6 +271,65 @@ def create_tables(conn: sqlite3.Connection):
         ON outcomes(date);
 
     -- ================================================================
+    -- Per-HR Statcast events (overnight ETL, after games finish).
+    -- Distinct from `outcomes`, which aggregates to (date, batter, game)
+    -- with a single hr_count column. This table stores ONE ROW PER HR
+    -- with full Statcast detail — coordinates, launch metrics, trajectory,
+    -- pitcher attribution. Powers the diamond SVG + per-HR stats in the
+    -- dashboard's Topps card modal.
+    --
+    -- Populated by etl_outcomes.fetch_hr_events_for_date() which mirrors
+    -- the live worker's extractHRs() in workers/live-hr/src/index.js.
+    -- The live worker writes today's HRs to KV (36h TTL); this table is
+    -- the persistent counterpart for past days. Backfill via
+    -- backfill_hr_events.py.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS hr_events (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        date                TEXT NOT NULL,
+        game_pk             INTEGER NOT NULL,
+        at_bat_index        INTEGER,    -- play.about.atBatIndex; stable per-game
+        batter_id           INTEGER NOT NULL,
+        batter_name         TEXT,
+        batting_team        TEXT,
+        pitcher_id          INTEGER,
+        pitcher_name        TEXT,
+        pitching_team       TEXT,
+        inning              INTEGER,
+        half_inning         TEXT,        -- 'top' or 'bottom'
+        play_time           TEXT,        -- ISO 8601 (about.endTime)
+        -- Statcast hitData (any can be NULL when Statcast didn't track)
+        launch_speed        REAL,
+        launch_angle        REAL,
+        total_distance      INTEGER,
+        coord_x             REAL,        -- spray-chart X, ~0–250
+        coord_y             REAL,        -- spray-chart Y, ~0–250 (low = deep OF)
+        trajectory          TEXT,        -- 'fly_ball' / 'line_drive' / 'popup'
+        location            TEXT,        -- '7'/'8'/'9'/'78'/'89' zone code
+        hardness            TEXT,        -- 'hard' / 'medium' / 'soft'
+        -- Game state at the moment of the HR
+        home_score_after    INTEGER,
+        away_score_after    INTEGER,
+        description         TEXT,        -- result.description (broadcast call)
+        venue               TEXT,
+        fetched_at          TEXT DEFAULT (datetime('now')),
+        UNIQUE(game_pk, at_bat_index)
+    );
+
+    -- Note: index names use `idx_hrevt_*` (not `idx_hr_events_*`) to
+    -- avoid collision with the existing `batter_hr_events` table's
+    -- indexes (idx_hr_events_batter / idx_hr_events_pitcher /
+    -- idx_hr_events_date) defined above. SQLite's CREATE INDEX IF NOT
+    -- EXISTS no-ops on the conflict, so reusing those names would
+    -- silently leave this table un-indexed.
+    CREATE INDEX IF NOT EXISTS idx_hrevt_date
+        ON hr_events(date);
+    CREATE INDEX IF NOT EXISTS idx_hrevt_batter
+        ON hr_events(batter_id);
+    CREATE INDEX IF NOT EXISTS idx_hrevt_game
+        ON hr_events(game_pk);
+
+    -- ================================================================
     -- Raw factor inputs per (date, batter) — written by load_picks_to_db
     -- after generate_picks emits them. Lets the dashboard's per-factor
     -- decomposition charts compare HR hitters vs misses on each underlying

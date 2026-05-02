@@ -21,6 +21,7 @@ Output files:
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta
@@ -1709,7 +1710,16 @@ def export_hr_leaderboard(conn, out_dir, days=14, top_n=40):
 
 
 def export_hr_recap(conn, out_dir, days=60):
-    """Export per-day HR recap: every batter who hit a HR, joined with our model's composite/rank."""
+    """Export per-day HR recap: every batter who hit a HR, joined with our
+    model's composite/rank AND each HR's Statcast detail (coordX/Y, launch
+    speed, etc.) for the diamond SVG in the Topps card modal.
+
+    Per-HR Statcast comes from the `hr_events` table, populated by
+    etl_outcomes.fetch_hr_events_for_date and backfill_hr_events.py
+    (PR #5a). Backward-compatible: when a date hasn't been backfilled
+    yet, each hitter's `hrs` field is an empty list and the front-end
+    gracefully degrades to "no spray data" in the diamond SVG.
+    """
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     rows = conn.execute("""
@@ -1728,6 +1738,56 @@ def export_hr_recap(conn, out_dir, days=60):
         ORDER BY o.date DESC, o.hr_count DESC, p.rank_in_board ASC
     """, (cutoff,)).fetchall()
 
+    # Per-HR Statcast events keyed by (date, batter_id). Build the index
+    # once. A 2-HR batter has 2 entries in this list; the front-end
+    # renders a stacked diamond SVG per entry.
+    #
+    # Defensive: the table may not exist on a fresh checkout that hasn't
+    # run create_tables yet. Catch and degrade to empty events so the
+    # rest of the export still runs.
+    events_by_key: dict[tuple[str, int], list[dict]] = {}
+    try:
+        hr_event_rows = conn.execute("""
+            SELECT date, batter_id,
+                   game_pk, at_bat_index, inning, half_inning, play_time,
+                   pitcher_name, pitching_team,
+                   launch_speed, launch_angle, total_distance,
+                   coord_x, coord_y, trajectory, location,
+                   home_score_after, away_score_after,
+                   description, venue
+            FROM hr_events
+            WHERE date >= ?
+            ORDER BY date DESC, play_time ASC
+        """, (cutoff,)).fetchall()
+        for ev in hr_event_rows:
+            key = (ev["date"], ev["batter_id"])
+            events_by_key.setdefault(key, []).append({
+                "game_pk":      ev["game_pk"],
+                "at_bat_index": ev["at_bat_index"],
+                "inning":       ev["inning"],
+                "halfInning":   ev["half_inning"],
+                "time":         ev["play_time"],
+                "pitcherName":  ev["pitcher_name"],
+                "pitchingTeam": ev["pitching_team"],
+                "launchSpeed":  ev["launch_speed"],
+                "launchAngle":  ev["launch_angle"],
+                "totalDistance": ev["total_distance"],
+                "coordX":       ev["coord_x"],
+                "coordY":       ev["coord_y"],
+                "trajectory":   ev["trajectory"],
+                "location":     ev["location"],
+                "homeScore":    ev["home_score_after"],
+                "awayScore":    ev["away_score_after"],
+                "description":  ev["description"],
+                "venue":        ev["venue"],
+            })
+    except sqlite3.OperationalError as e:
+        # Table doesn't exist yet (pre-PR #5a checkout). Run create_tables
+        # to bring the schema up to date, then continue with empty events.
+        print(f"  [hr_recap] hr_events not yet available ({e}) — exporting "
+              "without per-HR Statcast. Run create_tables + "
+              "backfill_hr_events.py to populate.")
+
     by_date = {}
     for r in rows:
         d = r["date"]
@@ -1737,6 +1797,12 @@ def export_hr_recap(conn, out_dir, days=60):
             }}
         entry = dict(r)
         del entry["date"]
+        # Attach per-HR Statcast list. Empty list when:
+        #  - backfill hasn't reached this date yet
+        #  - or the day's playByPlay didn't tag this batter's HR with hitData
+        # The front-end reads `entry["hrs"]` and shows the diamond SVG
+        # per HR, falling through to "no spray data" when coordX/Y are null.
+        entry["hrs"] = events_by_key.get((d, r["batter_id"]), [])
         by_date[d]["hitters"].append(entry)
         s = by_date[d]["summary"]
         s["total_hr_hitters"] += 1
@@ -1754,7 +1820,12 @@ def export_hr_recap(conn, out_dir, days=60):
         "recap": recap,
         "exported_at": datetime.now().isoformat(),
     })
-    print(f"  Exported hr_recap.json ({len(recap)} days, {sum(len(d['hitters']) for d in recap)} HR hitters)")
+    n_with_events = sum(
+        1 for day in recap for h in day["hitters"] if h.get("hrs")
+    )
+    print(f"  Exported hr_recap.json ({len(recap)} days, "
+          f"{sum(len(d['hitters']) for d in recap)} HR hitters, "
+          f"{n_with_events} with Statcast events)")
 
 
 
