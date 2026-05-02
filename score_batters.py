@@ -305,6 +305,41 @@ def compute_slate_context(
 # Factor scoring functions
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# League-average pitcher fallback
+# ---------------------------------------------------------------------------
+# Audit MED fix: was copy-pasted across 4 sites in generate_picks.py and
+# 1 in diagnostics/factor_diagnostics.py with no provenance flag — a
+# pitcher whose MLB-API call returned an empty stat block was scored
+# identically to a real league-average pitcher.
+#
+# This single dict is the source of truth. Each consumer uses
+# `dict(LEAGUE_AVG_PITCHER, name=pname)` to copy + override the name —
+# the dict() constructor returns a fresh copy so callers can mutate
+# without polluting other uses.
+#
+# `_source` field lets downstream consumers (refit_weights, dashboard
+# diagnostics, etc.) filter out league-mean rows. NOTE: the audit's
+# fix for HIGH #3 already made compute_slate_context skip-on-missing
+# at the input level — these defaults now only matter when the
+# pitcher dict is fed directly to the v1 fallback paths.
+#
+# Drift watch: 2026 league averages per Savant aggregates (refresh
+# annually). Real 2026 HR/9 is closer to 1.27, hard-hit% closer to 39%.
+# Current values match what was in the old inline copies for diff
+# minimization; bump after a refit cycle when we want to update.
+LEAGUE_AVG_PITCHER = {
+    "name": "league_avg",
+    "hr_per_9": 1.2,
+    "era": 4.0,
+    "hard_hit_pct_allowed": 35,
+    "k_per_9": 8.0,
+    "fb_pct_allowed": 35,
+    "throws": "R",
+    "_source": "league_avg_default",
+}
+
+
 def score_power(batter: dict) -> float:
     """
     Factor 1: Power Profile (barrel%, exit velo, HR/FB, ISO as xHR proxy).

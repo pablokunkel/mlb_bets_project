@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from score_batters import (
     WEIGHT_CONFIGS,
+    LEAGUE_AVG_PITCHER,
     compute_composite,
     select_top_picks,
     compute_slate_context,
@@ -501,10 +502,10 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
                 pitcher_lookup[pname] = pitcher_offline[pname]
                 offline_count += 1
             else:
-                pitcher_lookup[pname] = {
-                    "name": pname, "hr_per_9": 1.2,
-                    "hard_hit_pct_allowed": 35, "throws": "R",
-                }
+                # Audit MED: was inline league-mean dict; now refs the
+                # shared constant so provenance flag (`_source`) flows
+                # through and refit_weights / diagnostics can filter.
+                pitcher_lookup[pname] = dict(LEAGUE_AVG_PITCHER, name=pname)
                 unknown_count += 1
 
     total_pitchers = mlb_api_count + offline_count + unknown_count
@@ -781,9 +782,9 @@ def score_live_slate(
         else:
             opp_pitcher_name = game.get("home_pitcher_name", "TBD")
 
-        opp = slate["pitchers"].get(opp_pitcher_name, {
-            "hr_per_9": 1.2, "hard_hit_pct_allowed": 35, "throws": "R"
-        })
+        opp = slate["pitchers"].get(opp_pitcher_name) or dict(
+            LEAGUE_AVG_PITCHER, name=opp_pitcher_name or "league_avg"
+        )
 
         weather = slate["weather"].get(gpk, {
             "temperature_f": 75, "wind_mph": 5, "wind_direction_deg": 0, "dome": False
@@ -951,9 +952,9 @@ def score_untiered_starters(
             game.get("away_pitcher_name", "TBD") if side == "home"
             else game.get("home_pitcher_name", "TBD")
         )
-        opp = slate["pitchers"].get(opp_pitcher_name, {
-            "hr_per_9": 1.2, "hard_hit_pct_allowed": 35, "throws": "R"
-        })
+        opp = slate["pitchers"].get(opp_pitcher_name) or dict(
+            LEAGUE_AVG_PITCHER, name=opp_pitcher_name or "league_avg"
+        )
         weather = slate["weather"].get(gpk, {
             "temperature_f": 75, "wind_mph": 5, "wind_direction_deg": 0, "dome": False
         })
@@ -1054,9 +1055,8 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
         away = available[5:10]
 
         for lineup, opp_name in [(away, hp_name), (home, ap_name)]:
-            opp = pitcher_lookup.get(
-                opp_name,
-                {"hr_per_9": 1.2, "hard_hit_pct_allowed": 35, "throws": "R"},
+            opp = pitcher_lookup.get(opp_name) or dict(
+                LEAGUE_AVG_PITCHER, name=opp_name or "league_avg"
             )
             for i, b in enumerate(lineup, 1):
                 # Simulate batting order: sorted roughly by quality + noise
