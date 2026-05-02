@@ -19,6 +19,8 @@ python diagnostics/<script>.py [args]
 | `simulate_power_anchors.py` | A/B simulator for tightening `score_power` anchors. Read-only against `pick_inputs`. | **Yes** — reusable for any anchor-tightening A/B test. |
 | `debug_buxton.py` | One-off Buxton triage from 2026-05-01 (when missing-barrel% bug was hammering elite hitters). Useful as a template for future single-batter investigations. | Template |
 | `check_woba_today.py` | One-off wOBA bin distribution check from 2026-05-01. | One-off |
+| `hr_tracker.py` | CLI: pull every HR on a given date from MLB Stats API; optional cross-reference against picks JSON. Run as `python diagnostics/hr_tracker.py --date YYYY-MM-DD [--picks]`. **Note:** somewhat redundant with the live HR worker (`api.dingersonly.cc/api/live-hrs`) for today, and will be more redundant once PR #5's ETL extension stores per-HR Statcast in the DB. Kept as a terminal-friendly tool. | **Yes** |
+| `top25_stats.py` | CLI: read today's `picks_latest.json`, take top N by composite, look up each batter's season stats from `season_batting`. Useful for terminal-based quick checks of the day's slate. | **Yes** |
 
 ## Why these aren't at the project root
 
