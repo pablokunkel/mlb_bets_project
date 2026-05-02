@@ -4064,7 +4064,17 @@
       // without the per-HR diamond SVG sections.
       day.hitters.forEach(h => {
         if (h.hrs && h.hrs.length > 0) {
-          _recapEventsByKey[`${day.date}:${h.batter_id}`] = h.hrs;
+          // Augment each HR event with batter_name + team so openPlayerModal
+          // can fall back to them when the batter isn't in our picks_latest
+          // or picks_history (e.g., off-board hitters who homered against
+          // us — Perdomo 2026-05-01 was the canonical case). Without this,
+          // the modal's name field showed the literal string "Player".
+          const enriched = h.hrs.map(hr => ({
+            ...hr,
+            batterName: h.batter_name,
+            battingTeam: h.team,
+          }));
+          _recapEventsByKey[`${day.date}:${h.batter_id}`] = enriched;
         }
       });
       onBoard.forEach(h => {
@@ -4268,8 +4278,18 @@
       });
       recent.sort((a, b) => b.date.localeCompare(a.date));
 
-      const name = today?.batter_name || today?.name || (recent[0]?.name) || 'Player';
-      const team = today?.team || recent[0]?.team || '';
+      // Name fallback chain (in priority order):
+      //   1. today's pick row     — batter is on our board today
+      //   2. most-recent history  — we've picked them before
+      //   3. pending HR event     — past-day HR Recap row, even if batter
+      //                              is NOT in our picks/history (e.g.,
+      //                              off-board HR hitters like Perdomo)
+      //   4. literal "Player"     — true unknown
+      const _pendingHrSample = (_pendingHRsForModal && _pendingHRsForModal[0]) || null;
+      const name = today?.batter_name || today?.name || (recent[0]?.name)
+                || _pendingHrSample?.batterName || 'Player';
+      const team = today?.team || recent[0]?.team
+                || _pendingHrSample?.battingTeam || '';
       const headshot = headshotUrl(pid);
 
       // Long-format Topps card popup. Stacked vertical sections with
@@ -4361,14 +4381,25 @@
 
       // Model track — how this player performs *for our card*, distinct
       // from their season stats. "Model Hits" preserved per the brief.
-      html += `
-        <div class="modal-section">
-          <h4>Model Track Record</h4>
-          ${lineRow('Days Picked',  mt.days_picked || 0)}
-          ${lineRow('Model Hits',   `<span style="color:var(--grass-deep);font-weight:600">${mt.model_hits || 0}</span>`, 'HR on a day we picked')}
-          ${lineRow('Hit Rate',     mt.hit_rate != null ? `<strong>${mt.hit_rate}%</strong>` : '—')}
-        </div>
-      `;
+      //
+      // Suppress the section entirely when we've never picked this batter
+      // (totalPicks == 0 AND mt is empty/zeroed). The previous version
+      // showed all-zero placeholders ("0 / 0 / —") for off-board hitters
+      // which read as "we tracked this player and got nothing" rather
+      // than "we never picked this player". For Perdomo-class off-board
+      // HR hitters, the section is now silently dropped from the modal.
+      const hasModelTrack = totalPicks > 0
+                         || (mt.days_picked != null && mt.days_picked > 0);
+      if (hasModelTrack) {
+        html += `
+          <div class="modal-section">
+            <h4>Model Track Record</h4>
+            ${lineRow('Days Picked',  mt.days_picked || 0)}
+            ${lineRow('Model Hits',   `<span style="color:var(--grass-deep);font-weight:600">${mt.model_hits || 0}</span>`, 'HR on a day we picked')}
+            ${lineRow('Hit Rate',     mt.hit_rate != null ? `<strong>${mt.hit_rate}%</strong>` : '—')}
+          </div>
+        `;
+      }
 
       if (recent.length > 0) {
         html += `
