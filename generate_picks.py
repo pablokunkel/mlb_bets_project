@@ -189,6 +189,16 @@ def enrich_with_season_batting(batter: dict, season_lookup: dict) -> dict:
 
 
 # Map team abbreviations (from MLB Stats API) to full names (from schedule)
+#
+# IMPORTANT: this map's full-name VALUES must match what the MLB Stats
+# API returns in `team.name`, because score_live_slate uses them as keys
+# in `team_to_game` and reverses via TEAM_FULL_TO_ABBREV. A mismatch
+# silently drops every batter on that team — they fail the
+# `team_to_game.get(batter_team)` lookup. The 2026-05-02 audit caught
+# this for the Athletics: API renamed from "Oakland Athletics" to just
+# "Athletics" after the Sacramento move, but our map still pointed at
+# the old name. Result: A's batters never made the scored pool —
+# 1 selection in 23 days, 0/29 teams on today's full board.
 TEAM_ABBREV_TO_FULL = {
     "ARI": "Arizona Diamondbacks", "ATL": "Atlanta Braves",
     "BAL": "Baltimore Orioles", "BOS": "Boston Red Sox",
@@ -199,15 +209,18 @@ TEAM_ABBREV_TO_FULL = {
     "LAA": "Los Angeles Angels", "LAD": "Los Angeles Dodgers",
     "MIA": "Miami Marlins", "MIL": "Milwaukee Brewers",
     "MIN": "Minnesota Twins", "NYM": "New York Mets",
-    "NYY": "New York Yankees", "OAK": "Oakland Athletics",
+    "NYY": "New York Yankees", "OAK": "Athletics",
     "PHI": "Philadelphia Phillies", "PIT": "Pittsburgh Pirates",
     "SD": "San Diego Padres", "SF": "San Francisco Giants",
     "SEA": "Seattle Mariners", "STL": "St. Louis Cardinals",
     "TB": "Tampa Bay Rays", "TEX": "Texas Rangers",
     "TOR": "Toronto Blue Jays", "WSH": "Washington Nationals",
 }
-# Reverse lookup: full name → abbreviation
+# Reverse lookup: full name → abbreviation. Aliases below preserve
+# resolution for historical strings ("Oakland Athletics" still appears
+# in older daily_picks rows, raw_data*.csv, and a few test fixtures).
 TEAM_FULL_TO_ABBREV = {v: k for k, v in TEAM_ABBREV_TO_FULL.items()}
+TEAM_FULL_TO_ABBREV["Oakland Athletics"] = "OAK"  # backward-compat alias
 
 VENUES = [
     ("NYY", "Yankee Stadium"), ("BOS", "Fenway Park"), ("TOR", "Rogers Centre"),
