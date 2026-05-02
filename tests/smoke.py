@@ -231,6 +231,68 @@ def pin_compute_slate_context_two_signal_pitcher() -> Result:
     )
 
 
+def pin_shrink_to_career_basic() -> Result:
+    """Bayesian shrinkage formula: (n*current + k*career) / (n + k)."""
+    from score_batters import shrink_to_career
+    # Ozuna case: 0.027 HR/PA in 112 PA, 0.044 career, k=200
+    expected = (112 * 0.027 + 200 * 0.044) / (112 + 200)
+    got = shrink_to_career(0.027, 112, 0.044, k=200)
+    if abs(got - expected) < 1e-6:
+        return Result(
+            f"shrink_to_career(Ozuna case) -> {got:.4f}", Result.PASS
+        )
+    return Result(
+        "shrink_to_career(Ozuna case)",
+        Result.HALT,
+        f"got {got:.6f}; expected {expected:.6f}",
+    )
+
+
+def pin_shrink_to_career_no_career_pass_through() -> Result:
+    """When career value is missing, return current unchanged."""
+    from score_batters import shrink_to_career
+    val = shrink_to_career(0.10, 100, None)
+    if val == 0.10:
+        return Result("shrink_to_career(no career) passes through", Result.PASS)
+    return Result(
+        "shrink_to_career(no career) passes through",
+        Result.HALT,
+        f"got {val}; expected 0.10",
+    )
+
+
+def pin_shrink_to_career_huge_sample_barely_shrinks() -> Result:
+    """With current_n >> k, the prior's influence should be small."""
+    from score_batters import shrink_to_career
+    # n=5000, k=200: prior weight ~3.8% → minimal shrinkage
+    val = shrink_to_career(0.10, 5000, 0.05, k=200)
+    # Expected ≈ 0.0981 — current dominates
+    if 0.097 < val < 0.099:
+        return Result(
+            f"shrink_to_career(big sample) -> {val:.4f} (~0.098)", Result.PASS
+        )
+    return Result(
+        "shrink_to_career(big sample)",
+        Result.HALT,
+        f"got {val:.4f}; expected ~0.098 (current dominates)",
+    )
+
+
+def pin_use_career_prior_default_off() -> Result:
+    """Production must default to no shrinkage until backtest validates."""
+    from score_batters import USE_CAREER_PRIOR
+    if USE_CAREER_PRIOR is False:
+        return Result(
+            "USE_CAREER_PRIOR default = False (production-safe)", Result.PASS
+        )
+    return Result(
+        "USE_CAREER_PRIOR default = False",
+        Result.HALT,
+        f"got {USE_CAREER_PRIOR}; flipping the flag without backtest "
+        "could degrade picks. Default must be False.",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -240,6 +302,10 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_compute_slate_context_empty,
     pin_compute_slate_context_skip_missing_pitcher,
     pin_compute_slate_context_two_signal_pitcher,
+    pin_shrink_to_career_basic,
+    pin_shrink_to_career_no_career_pass_through,
+    pin_shrink_to_career_huge_sample_barely_shrinks,
+    pin_use_career_prior_default_off,
 ]
 
 

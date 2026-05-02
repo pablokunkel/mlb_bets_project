@@ -315,6 +315,60 @@ def compute_slate_context(
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Career-rate Bayesian shrinkage (prototype, off by default)
+# ---------------------------------------------------------------------------
+# When True, generate_picks pulls each batter's per-PA rate stats
+# toward their career rate (loaded from the `career_batting` table).
+# Strength of the prior is governed by `CAREER_PRIOR_K` — how many
+# pseudo-PAs the prior is "worth" in the weighted average:
+#
+#     shrunk = (current_pa * current_value + K * career_value) / (current_pa + K)
+#
+# Effect: a slow-start veteran (Ozuna 3 HR / 112 PA in early May) gets
+# his power inputs pulled toward his career rate (299 HR / 6833 PA),
+# preventing him from scoring as bottom-of-board purely because of
+# small-sample bad luck. By August + 500 PA the prior's influence
+# fades to ~30% of the weight; by season's end it's ~25%.
+#
+# Off by default for now — first run should be a backtest comparison
+# (USE_CAREER_PRIOR=False vs True over the last 30 days) to validate
+# that shrinkage actually improves AUC / lift before we flip it on
+# for production. Set to True via env var or by editing this constant.
+USE_CAREER_PRIOR = False
+CAREER_PRIOR_K = 200   # ~ "career is worth 200 plate appearances of evidence"
+
+
+def shrink_to_career(
+    current_value: float | None,
+    current_n: int | None,
+    career_value: float | None,
+    k: int = CAREER_PRIOR_K,
+) -> float | None:
+    """Bayesian shrinkage of a per-PA rate toward the player's career rate.
+
+    Used when USE_CAREER_PRIOR is True. Returns the original
+    `current_value` unchanged when:
+      - current is None (no current data; nothing to shrink toward)
+      - career is None or zero (no prior; can't shrink)
+      - current_n is None or <= 0 (can't compute a weight)
+
+    The shrinkage strength is inversely proportional to current_n:
+    early in the season (low PA) the career rate dominates; late in
+    the season (high PA) the current rate dominates. K=200 means the
+    prior is worth ~200 plate appearances of evidence — by mid-season
+    a starter has 200+ PA and the prior's weight drops below 50%.
+    """
+    if current_value is None:
+        return current_value
+    if career_value is None or career_value <= 0:
+        return current_value
+    if current_n is None or current_n <= 0:
+        # Edge case: no current sample — return career rate verbatim
+        return career_value
+    return (current_n * current_value + k * career_value) / (current_n + k)
+
+
+# ---------------------------------------------------------------------------
 # League-average pitcher fallback
 # ---------------------------------------------------------------------------
 # Audit MED fix: was copy-pasted across 4 sites in generate_picks.py and
