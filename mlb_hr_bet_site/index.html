@@ -1521,6 +1521,163 @@
         background: var(--surface-2);
       }
     }
+
+    /* ===== Live HR feed (Live Today panel + cards + diamond SVG) =====
+       Polls api.dingersonly.cc every 30s. Inherits the statbook tokens
+       (--paper, --rule, --signal, --green, --ink) so it sits naturally
+       above the day-after recap. */
+    #liveHRSection {
+      margin: 0 0 24px;
+      padding: 18px 20px;
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+    }
+    .live-hr-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 14px; padding-bottom: 10px;
+      border-bottom: 2px solid var(--ink);
+    }
+    .live-hr-title {
+      font-size: 18px; font-weight: 700; letter-spacing: -0.01em;
+      display: flex; align-items: center; gap: 10px;
+      color: var(--ink); font-family: 'Inter', sans-serif;
+      margin: 0;
+    }
+    .live-hr-status {
+      font-size: 11px; font-weight: 400; color: var(--ink-muted);
+      font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;
+    }
+    .live-hr-refresh {
+      background: var(--paper); color: var(--ink);
+      border: 1px solid var(--rule); border-radius: 4px;
+      padding: 5px 12px; font-size: 11px; cursor: pointer;
+      font-family: 'Inter', sans-serif; letter-spacing: 0.04em;
+      text-transform: uppercase; font-weight: 500;
+    }
+    .live-hr-refresh:hover { background: var(--surface-2); border-color: var(--ink); }
+    .live-dot {
+      display: inline-block; width: 9px; height: 9px;
+      border-radius: 50%; background: var(--signal);
+      box-shadow: 0 0 0 0 rgba(185, 71, 45, 0.5);
+      animation: livePulse 1.6s infinite;
+    }
+    .live-dot.stale { background: var(--ink-muted); animation: none; box-shadow: none; }
+    @keyframes livePulse {
+      0%   { box-shadow: 0 0 0 0 rgba(185, 71, 45, 0.5); }
+      70%  { box-shadow: 0 0 0 9px rgba(185, 71, 45, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(185, 71, 45, 0); }
+    }
+    .live-hr-card {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-left: 4px solid var(--rule);
+      border-radius: 4px;
+      padding: 12px 16px; margin-bottom: 8px;
+      display: grid; grid-template-columns: auto 1fr auto;
+      gap: 14px; align-items: center;
+      cursor: pointer;
+      transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .live-hr-card:hover {
+      border-color: var(--ink);
+      transform: translateX(2px);
+      box-shadow: 0 2px 8px -2px rgba(80, 55, 25, 0.2);
+    }
+    .live-hr-card.cashed {
+      border-left-color: #c8a04a;       /* gold for our picks */
+      background: linear-gradient(90deg, rgba(200, 160, 74, 0.10), var(--paper) 35%);
+    }
+    .live-hr-card.new { animation: hrFlash 1.6s ease-out; }
+    @keyframes hrFlash {
+      0%   { background: rgba(63, 106, 58, 0.18); }
+      100% { background: var(--paper); }
+    }
+    .live-hr-card .hr-inning {
+      background: var(--surface-2); border-radius: 4px;
+      padding: 6px 8px; text-align: center; min-width: 50px;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .live-hr-card .hr-inning .num {
+      font-size: 16px; color: var(--ink); font-weight: 700;
+      display: block; line-height: 1.1;
+    }
+    .live-hr-card .player {
+      font-size: 15px; font-weight: 600; color: var(--ink);
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .live-hr-card .player .team {
+      font-size: 11px; color: var(--ink-muted); font-weight: 500;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .live-hr-card .star {
+      color: #c8a04a; font-size: 14px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    }
+    .live-hr-card .medal {
+      font-size: 13px;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.2));
+    }
+    .live-hr-card .meta {
+      font-size: 11px; color: var(--ink-muted); margin-top: 4px;
+      display: flex; flex-wrap: wrap; gap: 6px;
+    }
+    .live-hr-card .pill {
+      background: var(--surface-2);
+      padding: 2px 7px; border-radius: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; color: var(--ink-soft);
+    }
+    .live-hr-card .pick-rank {
+      background: rgba(200, 160, 74, 0.22); color: var(--ink);
+    }
+    .live-hr-card .desc {
+      font-size: 11px; margin-top: 5px;
+      color: var(--ink-muted); font-style: italic;
+    }
+    .live-hr-card .side {
+      text-align: right; font-size: 11px;
+      color: var(--ink-muted); white-space: nowrap;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .live-hr-card .side .score {
+      font-size: 13px; color: var(--ink); font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .live-hr-empty {
+      text-align: center; padding: 22px; color: var(--ink-muted);
+      font-size: 13px; font-style: italic;
+    }
+
+    /* Diamond SVG inside the live-HR Topps modal */
+    .diamond-wrap {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 8px; padding: 10px 0;
+    }
+    .diamond-svg { width: 220px; height: 220px; display: block; }
+    .diamond-caption {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; color: var(--ink-muted);
+      letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    .diamond-stats-row {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 8px; width: 100%; margin-top: 6px;
+    }
+    .diamond-stat {
+      text-align: center; padding: 8px 6px;
+      background: var(--surface-2); border-radius: 4px;
+    }
+    .diamond-stat .v {
+      font-family: 'JetBrains Mono', monospace; font-size: 14px;
+      color: var(--ink); font-weight: 600;
+    }
+    .diamond-stat .l {
+      font-size: 9px; color: var(--ink-muted);
+      text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px;
+    }
   </style>
 </head>
 <body>
@@ -1574,6 +1731,22 @@
     <!-- HR RECAP -->
     <div class="panel" id="panel-hrrecap">
       <div class="stat-row" id="hrRecapStats"></div>
+
+      <!-- Live HR feed (api.dingersonly.cc), shown atop the day-after recap.
+           Hidden when there are no MLB games scheduled today. Polls every
+           30s while this tab is visible. Click any row -> Topps modal. -->
+      <div id="liveHRSection" style="display:none;">
+        <div class="live-hr-header">
+          <h3 class="live-hr-title">
+            <span class="live-dot" id="liveHRDot" title="Live"></span>
+            Live Today
+            <span class="live-hr-status" id="liveHRStatus"></span>
+          </h3>
+          <button id="liveHRRefresh" type="button" class="live-hr-refresh">Refresh</button>
+        </div>
+        <div class="stat-row" id="liveHRStats" style="margin-bottom:12px;"></div>
+        <div id="liveHRList"></div>
+      </div>
       <!-- Date selector — paginate ◀ ▶ between days OR jump via date input.
            Only one day's HRs visible at a time (statbook page metaphor). -->
       <div class="recap-controls">
@@ -3396,6 +3569,357 @@
     });
     document.getElementById('boardLimit').addEventListener('change', renderBoard);
 
+    // ============================================================
+    // Live HR feed (api.dingersonly.cc) — shipped 2026-05-02
+    // ============================================================
+    // Polls /api/live-hrs every 30s while the HR Recap tab is visible,
+    // renders a "Live Today" panel above the day-after recap. Each row
+    // is clickable -> reuses the existing playerModal element to show a
+    // Topps card with diamond SVG + (when batter is on our board)
+    // today's full model card.
+    const LIVE_HR_ENDPOINT = 'https://api.dingersonly.cc/api/live-hrs';
+    const LIVE_POLL_MS  = 30 * 1000;
+    const LIVE_STALE_MS = 2 * 60 * 1000;
+
+    const _liveState = {
+      feedCache: null,
+      picksMap: null,            // batter_id -> pick row (today's board)
+      lastFetchOkAt: null,
+      seenIds: new Set(),
+      timer: null,
+    };
+
+    // Build {batter_id -> pick} once. Reuses the existing _picksLatestCache
+    // global that openPlayerModal() also uses, so we don't double-fetch.
+    async function _liveBuildPicksMap() {
+      if (_liveState.picksMap) return;
+      if (!_picksLatestCache) {
+        try { _picksLatestCache = await fetchJSON('picks_latest'); }
+        catch { _picksLatestCache = {}; }
+      }
+      const map = {};
+      const allRows = [
+        ...(_picksLatestCache?.picks || []),
+        ...(_picksLatestCache?.full_board || []),
+      ];
+      for (const row of allRows) {
+        const id = row.batter_id || row.player_id;
+        if (id != null && !map[id]) map[id] = row;
+      }
+      _liveState.picksMap = map;
+    }
+
+    function _liveFmtClock(iso) {
+      if (!iso) return '';
+      try {
+        return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      } catch { return ''; }
+    }
+
+    // Top exit-velo + top distance medals across today's HRs.
+    function _liveMedals(hrs) {
+      let topVelo = null, topDist = null;
+      for (const h of hrs) {
+        if (h.launchSpeed != null && (!topVelo || h.launchSpeed > topVelo.launchSpeed)) topVelo = h;
+        if (h.totalDistance != null && (!topDist || h.totalDistance > topDist.totalDistance)) topDist = h;
+      }
+      return { topVeloId: topVelo?.id || null, topDistId: topDist?.id || null };
+    }
+
+    function _liveUpdateDot() {
+      const dot = document.getElementById('liveHRDot');
+      if (!dot) return;
+      const fresh = _liveState.lastFetchOkAt && (Date.now() - _liveState.lastFetchOkAt) < LIVE_STALE_MS;
+      dot.classList.toggle('stale', !fresh);
+    }
+
+    function _liveRenderCard(hr, isNew, pickMeta, medals) {
+      const team = hr.battingTeamAbbr || hr.battingTeam || '';
+      const isCashed = !!(pickMeta && pickMeta.selected);
+      const isMedalVelo = medals.topVeloId === hr.id;
+      const isMedalDist = medals.topDistId === hr.id;
+
+      const star = isCashed ? '<span class="star" title="On our board">★</span>' : '';
+      const medalsHtml = [
+        isMedalVelo ? '<span class="medal" title="Top exit velo today">💥</span>' : '',
+        isMedalDist ? '<span class="medal" title="Longest HR today">🏆</span>' : '',
+      ].filter(Boolean).join('');
+
+      const pills = [];
+      if (hr.pitcherName)        pills.push(`<span class="pill">vs ${hr.pitcherName}</span>`);
+      if (hr.launchSpeed != null) pills.push(`<span class="pill">${Math.round(hr.launchSpeed)} mph</span>`);
+      if (hr.totalDistance != null) pills.push(`<span class="pill">${hr.totalDistance} ft</span>`);
+      if (hr.launchAngle != null) pills.push(`<span class="pill">${Math.round(hr.launchAngle)}°</span>`);
+      if (pickMeta && pickMeta.rank_in_board) {
+        pills.push(`<span class="pill pick-rank">Pick #${pickMeta.rank_in_board}</span>`);
+      }
+
+      const score = (hr.awayScore != null && hr.homeScore != null)
+        ? `<div class="score">${hr.awayScore}-${hr.homeScore}</div>` : '';
+
+      const cls = ['live-hr-card', isCashed ? 'cashed' : '', isNew ? 'new' : ''].filter(Boolean).join(' ');
+
+      return `<div class="${cls}" data-hr-id="${hr.id}">
+        <div class="hr-inning">
+          <span class="num">${hr.inning || '—'}</span>
+          ${(hr.halfInning || '').slice(0, 3)}
+        </div>
+        <div>
+          <div class="player">
+            ${star}${medalsHtml}
+            <span>${hr.batterName || 'Unknown'}</span>
+            <span class="team">${team}</span>
+          </div>
+          <div class="meta">${pills.join('')}</div>
+          ${hr.description ? `<div class="desc">${hr.description}</div>` : ''}
+        </div>
+        <div class="side">
+          ${score}
+          <div>${_liveFmtClock(hr.time)}</div>
+          <div>${hr.venue || ''}</div>
+        </div>
+      </div>`;
+    }
+
+    async function renderLiveHRSection() {
+      const section = document.getElementById('liveHRSection');
+      const list    = document.getElementById('liveHRList');
+      const stats   = document.getElementById('liveHRStats');
+      const status  = document.getElementById('liveHRStatus');
+      if (!section || !list) return;
+
+      try { await _liveBuildPicksMap(); } catch {}
+
+      let data = null;
+      try {
+        const resp = await fetch(LIVE_HR_ENDPOINT + '?t=' + Date.now());
+        if (!resp.ok) throw new Error('http ' + resp.status);
+        data = await resp.json();
+        _liveState.lastFetchOkAt = Date.now();
+        _liveState.feedCache = data;
+      } catch {
+        data = _liveState.feedCache;
+      }
+
+      if (!data) {
+        section.style.display = 'block';
+        list.innerHTML = '<div class="live-hr-empty">Live feed unavailable — retrying.</div>';
+        if (status) status.textContent = 'feed offline';
+        _liveUpdateDot();
+        return;
+      }
+
+      // Off-day: hide entirely.
+      if ((data.gamesTotal || 0) === 0) {
+        section.style.display = 'none';
+        return;
+      }
+
+      section.style.display = 'block';
+      if (status) status.textContent = data.updatedAt ? `as of ${_liveFmtClock(data.updatedAt)}` : '';
+
+      const hrs = data.hrs || [];
+      const games = data.games || [];
+      const liveGames = games.filter(g => g.abstract === 'Live').length;
+
+      // Cashed count = our top-8 picks who have homered today.
+      const ourPickIds = new Set(
+        Object.values(_liveState.picksMap || {})
+          .filter(p => p && p.selected)
+          .map(p => p.batter_id || p.player_id)
+      );
+      let cashedCount = 0;
+      for (const h of hrs) if (ourPickIds.has(h.batterId)) cashedCount += 1;
+      const ourPicksTotal = ourPickIds.size || 8;
+
+      const lastHRTime = hrs.length ? hrs[0].time : null;
+      stats.innerHTML = `
+        <div class="stat-card"><div class="label">HRs Today</div><div class="value accent">${hrs.length}</div></div>
+        <div class="stat-card"><div class="label">Live Games</div><div class="value">${liveGames}</div></div>
+        <div class="stat-card"><div class="label">Total Games</div><div class="value">${games.length}</div></div>
+        <div class="stat-card"><div class="label">Cashed</div><div class="value green">${cashedCount}/${ourPicksTotal}</div></div>
+        <div class="stat-card"><div class="label">Last HR</div><div class="value" style="font-size:14px">${_liveFmtClock(lastHRTime) || '—'}</div></div>
+      `;
+
+      if (hrs.length === 0) {
+        const msg = liveGames > 0
+          ? `${liveGames} game${liveGames > 1 ? 's' : ''} live — no home runs yet.`
+          : `${games.length} game${games.length > 1 ? 's' : ''} on the slate; first pitch hasn't happened yet.`;
+        list.innerHTML = `<div class="live-hr-empty">${msg}</div>`;
+        _liveState.seenIds = new Set();
+      } else {
+        const medals = _liveMedals(hrs);
+        list.innerHTML = hrs.map(hr => {
+          const isNew = !_liveState.seenIds.has(hr.id);
+          const pickMeta = (_liveState.picksMap || {})[hr.batterId] || null;
+          return _liveRenderCard(hr, isNew, pickMeta, medals);
+        }).join('');
+        hrs.forEach(hr => _liveState.seenIds.add(hr.id));
+
+        list.querySelectorAll('.live-hr-card').forEach(el => {
+          el.addEventListener('click', () => _liveOpenTopps(el.dataset.hrId));
+        });
+      }
+
+      _liveUpdateDot();
+    }
+
+    function startLiveHRPolling() {
+      if (_liveState.timer) return;
+      renderLiveHRSection();
+      _liveState.timer = setInterval(renderLiveHRSection, LIVE_POLL_MS);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (_liveState.timer) { clearInterval(_liveState.timer); _liveState.timer = null; }
+      } else if (document.getElementById('liveHRSection')) {
+        startLiveHRPolling();
+      }
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('liveHRRefresh')?.addEventListener('click', renderLiveHRSection);
+    });
+
+    // ---- Diamond SVG ----
+    // MLB Statcast spray-chart coords: home plate ~(125, 200), X grows
+    // toward right field (0–250), Y *decreases* away from home plate
+    // (low Y = deep outfield, range 0–250).
+    function _liveDiamondSVG(coordX, coordY, location, trajectory) {
+      const zoneFallback = {
+        '7':  [60, 80],   '78': [95, 60],
+        '8':  [125, 50],  '89': [155, 60],  '9':  [190, 80],
+        '5':  [80, 165],  '56': [102, 150], '6':  [115, 145],
+        '4':  [148, 150], '3':  [170, 165],
+      };
+      let x = coordX, y = coordY;
+      if (x == null || y == null) {
+        const fb = zoneFallback[String(location || '').trim()];
+        if (fb) { x = fb[0]; y = fb[1]; }
+      }
+      const havePlot = (x != null && y != null);
+      const midX = havePlot ? (125 + x) / 2 : 125;
+      const midY = havePlot ? (200 + y) / 2 - 35 : 200;
+
+      const trajectoryLabel = (trajectory || '').replace(/_/g, ' ');
+
+      return `<svg viewBox="0 0 250 250" class="diamond-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+        <path d="M 30 200 L 30 95 Q 125 0 220 95 L 220 200 Z" fill="rgba(63,106,58,0.10)" stroke="var(--rule)" stroke-width="1"/>
+        <path d="M 30 95 Q 125 0 220 95" fill="none" stroke="var(--ink-muted)" stroke-width="1.2" stroke-dasharray="2,3" opacity="0.55"/>
+        <line x1="125" y1="200" x2="30"  y2="95" stroke="var(--rule)" stroke-width="1" opacity="0.5"/>
+        <line x1="125" y1="200" x2="220" y2="95" stroke="var(--rule)" stroke-width="1" opacity="0.5"/>
+        <polygon points="125,200 165,165 125,130 85,165" fill="var(--surface-2)" stroke="var(--ink)" stroke-width="1.4"/>
+        <circle cx="125" cy="172" r="5" fill="var(--ink)" opacity="0.35"/>
+        <rect x="161" y="161" width="8" height="8" transform="rotate(45 165 165)" fill="var(--paper)" stroke="var(--ink)" stroke-width="1"/>
+        <rect x="121" y="126" width="8" height="8" transform="rotate(45 125 130)" fill="var(--paper)" stroke="var(--ink)" stroke-width="1"/>
+        <rect x="81"  y="161" width="8" height="8" transform="rotate(45 85 165)"  fill="var(--paper)" stroke="var(--ink)" stroke-width="1"/>
+        <polygon points="120,202 130,202 130,210 125,215 120,210" fill="var(--ink)"/>
+        ${havePlot ? `
+          <path d="M 125 200 Q ${midX} ${midY} ${x} ${y}" fill="none" stroke="var(--signal)" stroke-width="1.6" stroke-dasharray="3,2" opacity="0.85"/>
+          <circle cx="${x}" cy="${y}" r="6" fill="var(--signal)" stroke="var(--ink)" stroke-width="1.2"/>
+          <circle cx="${x}" cy="${y}" r="11" fill="none" stroke="var(--signal)" stroke-width="1" opacity="0.35"/>
+        ` : `
+          <text x="125" y="125" text-anchor="middle" fill="var(--ink-muted)" font-family="JetBrains Mono, monospace" font-size="9">no spray data</text>
+        `}
+      </svg>${trajectoryLabel ? `<div class="diamond-caption">${trajectoryLabel}${location ? ' · zone ' + location : ''}</div>` : ''}`;
+    }
+
+    // ---- Topps card modal for a live HR ----
+    // Reuses the existing playerModal element + classes (modal-head,
+    // modal-section, card-line) so it inherits all the existing modal
+    // styling. closePlayerModal() works for it too.
+    async function _liveOpenTopps(hrId) {
+      if (!hrId) return;
+      const hr = (_liveState.feedCache?.hrs || []).find(h => h.id === hrId);
+      if (!hr) return;
+      await _liveBuildPicksMap();
+
+      const pick = (_liveState.picksMap || {})[hr.batterId] || null;
+      const headshot = headshotUrl(hr.batterId);
+      const team = hr.battingTeamAbbr || hr.battingTeam || '';
+      const sub = [
+        team,
+        hr.pitcherName ? `vs. ${hr.pitcherName}` : '',
+        hr.venue || '',
+        _liveFmtClock(hr.time),
+      ].filter(Boolean).join(' · ');
+
+      const fmtN    = (v, d=0) => (v == null) ? '—' : (typeof v === 'number' ? v.toFixed(d) : v);
+      const fmtRank = r => r ? `#${r}` : '—';
+      const lineRow = (label, value, subText) => `
+        <div class="card-line">
+          <div class="card-line-label">${label}</div>
+          <div class="card-line-value">${value ?? '—'}${subText ? `<span class="card-line-sub">${subText}</span>` : ''}</div>
+        </div>`;
+
+      let html = `
+        <div class="modal-head">
+          <img class="modal-headshot" src="${headshot}" alt="${hr.batterName}" onerror="this.style.display='none'"/>
+          <div>
+            <div class="modal-name">${hr.batterName || 'Unknown'}</div>
+            <div class="modal-sub">${sub}</div>
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <h4>This Home Run</h4>
+          <div class="diamond-wrap">
+            ${_liveDiamondSVG(hr.coordX, hr.coordY, hr.location, hr.trajectory)}
+            <div class="diamond-stats-row">
+              <div class="diamond-stat"><div class="v">${hr.launchSpeed != null ? Math.round(hr.launchSpeed) : '—'}</div><div class="l">Exit Velo${hr.launchSpeed != null ? ' · MPH' : ''}</div></div>
+              <div class="diamond-stat"><div class="v">${hr.launchAngle != null ? Math.round(hr.launchAngle) + '°' : '—'}</div><div class="l">Launch</div></div>
+              <div class="diamond-stat"><div class="v">${hr.totalDistance != null ? hr.totalDistance : '—'}</div><div class="l">Distance${hr.totalDistance != null ? ' · FT' : ''}</div></div>
+            </div>
+          </div>
+          ${lineRow('Inning', `${hr.inning || '—'} (${hr.halfInning || ''})`)}
+          ${lineRow('Pitcher', hr.pitcherName || '—')}
+          ${lineRow('Score after', (hr.awayScore != null && hr.homeScore != null) ? `${hr.awayScore} – ${hr.homeScore}` : '—')}
+          ${hr.description ? `<div class="card-line"><div class="card-line-label">Call</div><div class="card-line-value" style="font-style:italic;font-family:'Inter',sans-serif">${hr.description}</div></div>` : ''}
+        </div>
+      `;
+
+      if (pick) {
+        const boardSize = _picksLatestCache?.board_size || (_picksLatestCache?.full_board?.length) || 280;
+        const isSelected = !!pick.selected;
+        html += `
+          <div class="modal-section">
+            <h4>${isSelected ? '★ ' : ''}Today's Model Card</h4>
+            ${lineRow('Composite', `<strong style="color:var(--signal);font-size:18px">${(pick.composite || 0).toFixed(1)}</strong>`,
+                      pick.rank_in_board ? `Board rank ${fmtRank(pick.rank_in_board)} of ${boardSize}` : '')}
+            ${lineRow('Power',    fmtN(pick.power_score, 1),   fmtRank(pick.rank_power))}
+            ${lineRow('Matchup',  fmtN(pick.matchup_score, 1), fmtRank(pick.rank_matchup))}
+            ${lineRow('Form',     fmtN(pick.form_score, 1),    fmtRank(pick.rank_form))}
+            ${lineRow('Park',     fmtN(pick.park_score, 1),    fmtRank(pick.rank_park))}
+            ${lineRow('Weather',  fmtN(pick.weather_score, 1), fmtRank(pick.rank_weather))}
+          </div>
+        `;
+        const ss = pick.season_stats || {};
+        if (Object.values(ss).some(v => v != null)) {
+          html += `
+            <div class="modal-section">
+              <h4>Season to Date</h4>
+              ${lineRow('Home Runs', ss.hr ?? '—')}
+              ${lineRow('Slugging',  fmtN(ss.slg, 3))}
+              ${lineRow('ISO',       fmtN(ss.iso, 3))}
+              ${lineRow('wOBA',      fmtN(ss.woba, 3))}
+              ${lineRow('Barrel %',  ss.barrel_pct != null ? fmtN(ss.barrel_pct, 1) + '%' : '—')}
+              ${lineRow('Exit Velo', ss.exit_velo  != null ? fmtN(ss.exit_velo, 1) + ' mph' : '—')}
+              ${lineRow('HR/FB %',   ss.hr_fb_pct  != null ? fmtN(ss.hr_fb_pct, 1) + '%' : '—')}
+            </div>`;
+        }
+      } else {
+        html += `
+          <div class="modal-section">
+            <p style="color:var(--ink-muted);font-size:12px;margin:0;">${hr.batterName || 'This batter'} is not on today's board.</p>
+          </div>
+        `;
+      }
+
+      document.getElementById('modalBody').innerHTML = html;
+      document.getElementById('playerModal').classList.add('open');
+    }
+
     // ── Render: HR Recap (Phase 3 statbook) ──
     // One day at a time, statbook ledger for that day's HR hitters.
     // Date selector at top — dropdown of all days + ◀ ▶ pagination.
@@ -3403,6 +3927,9 @@
     let _recapCurrentDate = null;
 
     async function renderHRRecap() {
+      // Kick off live HR polling (api.dingersonly.cc). It's a no-op if
+      // already running, and the section auto-hides on off-days.
+      startLiveHRPolling();
       if (!_recapCache) {
         _recapCache = await fetchJSON('hr_recap');
       }
