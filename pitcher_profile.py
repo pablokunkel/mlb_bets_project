@@ -557,32 +557,41 @@ def score_pitcher_vulnerability(
     ):
         return slate_ctx["pitcher_pct"][pname]
 
+    # 2026-05-02 fix (audit HIGH #3 sibling): was using `.get(k, league_mean)`
+    # for every input, then averaging. Silently injected league mean for
+    # missing data with no provenance flag distinguishing measured-1.2
+    # from missing-1.2. Now: skip-on-missing per component. Score is the
+    # average of however-many components were measured; falls back to 50
+    # only when nothing was measured.
     scores = []
 
-    # HR/9: 0-4.5 → 0-100 (higher = more vulnerable). Raised cap from 3.0
-    # so 4+ HR/9 outliers can rank above merely-bad pitchers.
-    hr9 = pitcher_stats.get("hr_per_9", 1.2)
-    scores.append(max(0, min(100, (hr9 / 4.5) * 100)))
+    hr9 = pitcher_stats.get("hr_per_9")
+    if hr9 is not None and hr9 > 0:
+        # HR/9: 0–4.5 → 0–100 (higher = more vulnerable). Cap raised from
+        # 3.0 to 4.5 so 4+ HR/9 outliers can rank above merely-bad pitchers.
+        scores.append(max(0, min(100, (hr9 / 4.5) * 100)))
 
-    # ERA: 2.0-6.0 → 0-100
-    era = pitcher_stats.get("era", 4.0)
-    scores.append(max(0, min(100, (era - 2.0) / 4.0 * 100)))
+    era = pitcher_stats.get("era")
+    if era is not None and era > 0:
+        # ERA: 2.0–6.0 → 0–100
+        scores.append(max(0, min(100, (era - 2.0) / 4.0 * 100)))
 
-    # Hard-hit% allowed: 25-50% → 0-100
-    hh = pitcher_stats.get("hard_hit_pct_allowed", 35)
-    scores.append(max(0, min(100, (hh - 25) / 25 * 100)))
+    hh = pitcher_stats.get("hard_hit_pct_allowed")
+    if hh is not None and hh > 0:
+        # Hard-hit% allowed: 25–50% → 0–100
+        scores.append(max(0, min(100, (hh - 25) / 25 * 100)))
 
-    # K/9 (inverse — high K pitchers are less vulnerable)
-    k9 = pitcher_stats.get("k_per_9", 8.0)
-    # K/9 range ~4-14, higher K = less vulnerable
-    k_penalty = max(0, min(100, (14 - k9) / 10 * 100))
-    scores.append(k_penalty)
+    k9 = pitcher_stats.get("k_per_9")
+    if k9 is not None and k9 > 0:
+        # K/9 inverse: range ~4–14, higher K = less vulnerable
+        scores.append(max(0, min(100, (14 - k9) / 10 * 100)))
 
-    # IP as a season sample size indicator (don't trust stats on < 10 IP)
-    ip = pitcher_stats.get("ip", 50)
-    if ip < 10:
-        # Low sample — pull toward neutral
-        return 50.0
+    # IP as a season sample size indicator (don't trust stats on < 10 IP).
+    # Only fires when IP is measured + low; missing IP no longer collapses
+    # to the league-mean 50 default (was `or 50` previously).
+    ip = pitcher_stats.get("ip")
+    if ip is not None and ip < 10:
+        return 50.0   # low sample — pull toward neutral
 
     return round(sum(scores) / len(scores), 1) if scores else 50.0
 

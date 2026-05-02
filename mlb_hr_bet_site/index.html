@@ -3716,11 +3716,43 @@
       }
 
       section.style.display = 'block';
-      if (status) status.textContent = data.updatedAt ? `as of ${_liveFmtClock(data.updatedAt)}` : '';
 
       const hrs = data.hrs || [];
       const games = data.games || [];
       const liveGames = games.filter(g => g.abstract === 'Live').length;
+
+      // State-dependent status text. The previous version always showed
+      // `as of {data.updatedAt}`, which on a slow morning (no HRs yet)
+      // looks like the feed is stale ("as of 12:01am") because the worker
+      // dedupes KV writes when nothing has changed. Now we show:
+      //   - HRs present:  "as of HH:MM"  (the timestamp IS meaningful — KV
+      //                                   writes are gated on content change)
+      //   - Live games, no HRs: "X game(s) live"
+      //   - Pre-game:    "first pitch HH:MM"
+      //   - Otherwise:   "polling"
+      if (status) {
+        if (hrs.length > 0 && data.updatedAt) {
+          status.textContent = `as of ${_liveFmtClock(data.updatedAt)}`;
+        } else if (liveGames > 0) {
+          status.textContent = `${liveGames} game${liveGames > 1 ? 's' : ''} live`;
+        } else if (games.length > 0) {
+          const firstPitch = games.map(g => g.gameDate).filter(Boolean).sort()[0];
+          if (firstPitch) {
+            try {
+              const fp = new Date(firstPitch);
+              if (fp > new Date()) {
+                status.textContent = `first pitch ${_liveFmtClock(firstPitch)}`;
+              } else {
+                status.textContent = 'polling';
+              }
+            } catch { status.textContent = 'polling'; }
+          } else {
+            status.textContent = 'polling';
+          }
+        } else {
+          status.textContent = '';
+        }
+      }
 
       // Cashed count = our top-8 picks who have homered today.
       const ourPickIds = new Set(

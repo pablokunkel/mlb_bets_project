@@ -192,9 +192,18 @@ def compute_slate_context(
                 venue_pf[venue] = (lhb + rhb) / 2.0
     park_pct = percentile_rank_dict(venue_pf)
 
-    # Weather: base quality per game (temp + wind speed proxy).
+    # Weather: base quality per game (temp + wind speed + humidity proxy).
     # Direction/handedness is per-batter, so we percentile the base
     # "is this a HR-conducive ballpark conditions day?" only.
+    #
+    # 2026-05-02 fix: was using `or 70`/`or 0`/`or 50` league-mean fill on
+    # missing components. Two problems with the old version: (a) `or 0`
+    # on wind triggered on real calm-day readings (0 mph is a valid value),
+    # (b) silent fill made it impossible to tell a Missing-data game from
+    # a real-league-average game. Now we require all 3 components — Open-
+    # Meteo returns all three for non-dome venues, so missing values here
+    # almost always mean the fetch hit the etl_morning fallback path
+    # (temp=68, wind=5, dome=0) and that path correctly populates them.
     game_weather_q = {}
     for gpk, w in (weather_by_gpk or {}).items():
         if not w:
@@ -202,9 +211,13 @@ def compute_slate_context(
         if w.get("dome", False):
             game_weather_q[gpk] = 50.0
             continue
-        temp = w.get("temperature_f", 70) or 70
-        wind = w.get("wind_mph", 0) or 0
-        humidity = w.get("humidity_pct", 50) or 50
+        temp = w.get("temperature_f")
+        wind = w.get("wind_mph")
+        humidity = w.get("humidity_pct")
+        if temp is None or wind is None or humidity is None:
+            # Skip — game falls through to neutral in score_weather.
+            # Don't pollute the percentile rank with a partial signal.
+            continue
         game_weather_q[gpk] = temp + wind * 0.5 + humidity * 0.05
     weather_pct = percentile_rank_dict(game_weather_q)
 
@@ -212,27 +225,60 @@ def compute_slate_context(
     # Now includes fly-ball% allowed: FB pitchers give up more HRs at the
     # same HR/9 (deeper carry on fly balls means more leave the yard).
     # League-average FB% allowed ~35; elite GB pitchers ~25; FB pitchers ~45.
+    #
+    # 2026-05-02 fix (audit HIGH #3): was using `or 1.2`/`or 4.0`/`or 35`
+    # league-mean fill. That made a pitcher with a partial MLB-API response
+    # (everything fetched but fb_pct_allowed missing) score as if that
+    # signal had been measured at league mean. Worse, the `or X` after
+    # `.get(..., X)` re-applied the default whenever the value was 0
+    # (truthy-tested), so a real GB pitcher with low FB% got bumped up to
+    # league avg. There was no provenance flag distinguishing measured 1.2
+    # HR/9 from a missing-data fallback. Now: skip-on-missing per input;
+    # build raw from only what's measured; pitchers with <2 signals are
+    # skipped from pitcher_pct entirely so score_matchup falls through to
+    # the v1 path (which is also fixed below).
     pitcher_vuln_raw = {}
     for pname, p in (pitcher_stats_by_name or {}).items():
         if not p:
             continue
-        hr9 = p.get("hr_per_9", 1.2) or 1.2
-        era = p.get("era", 4.0) or 4.0
-        hh = p.get("hard_hit_pct_allowed", 35) or 35
-        k9 = p.get("k_per_9", 8.0) or 8.0
-        ip = p.get("ip", 50) or 50
-        fb_pct_allowed = p.get("fb_pct_allowed", 35) or 35
 
-        raw = (
-            hr9 * 30.0
-            + era * 5.0
-            + hh * 0.6
-            - k9 * 2.0
-            + (fb_pct_allowed - 35) * 0.8   # +0.8 raw points per pp above league avg
-        )
-        if ip < 10:
-            league_avg_raw = 1.2 * 30 + 4.0 * 5 + 35 * 0.6 - 8 * 2
-            raw = (raw + league_avg_raw * 2) / 3.0
+        components = []
+        hr9 = p.get("hr_per_9")
+        if hr9 is not None and hr9 > 0:
+            components.append(hr9 * 30.0)
+        era = p.get("era")
+        if era is not None and era > 0:
+            components.append(era * 5.0)
+        hh = p.get("hard_hit_pct_allowed")
+        if hh is not None and hh > 0:
+            components.append(hh * 0.6)
+        k9 = p.get("k_per_9")
+        if k9 is not None and k9 > 0:
+            components.append(-k9 * 2.0)
+        fb_pct_allowed = p.get("fb_pct_allowed")
+        if fb_pct_allowed is not None:
+            # FB% is centered at 35 (league avg). Real 0% is impossible
+            # for a starter, so None-only check is sufficient here.
+            components.append((fb_pct_allowed - 35) * 0.8)
+
+        if len(components) < 2:
+            continue   # not enough signal — let v1 fallback handle this pitcher
+
+        raw = sum(components)
+
+        # Low-IP pull-toward-neutral when IP is genuinely measured + low.
+        # Use a league baseline computed from the SAME components measured
+        # (apples-to-apples) rather than the original all-component baseline.
+        ip = p.get("ip")
+        if ip is not None and 0 < ip < 10:
+            league = 0.0
+            if hr9 is not None and hr9 > 0:               league += 1.2 * 30.0
+            if era is not None and era > 0:               league += 4.0 * 5.0
+            if hh is not None and hh > 0:                 league += 35 * 0.6
+            if k9 is not None and k9 > 0:                 league += -8.0 * 2.0
+            # fb_pct contribution at league mean = 0 (centered at 35), no add
+            raw = (raw + league * 2) / 3.0
+
         pitcher_vuln_raw[pname] = raw
     pitcher_pct = percentile_rank_dict(pitcher_vuln_raw)
 
@@ -332,23 +378,39 @@ def score_matchup(
     if slate_ctx and slate_ctx.get("active") and pname in slate_ctx.get("pitcher_pct", {}):
         scores.append(slate_ctx["pitcher_pct"][pname])
     else:
-        # Fallback: HR/9 cap raised from 3.0 to 4.5 so 4+ HR/9 outliers can rank.
-        hr9 = pitcher.get("hr_per_9", 1.2)
-        if hr9 is not None:
+        # v1 fallback. 2026-05-02 fix (audit HIGH #3 + MED): was using
+        # `pitcher.get("hr_per_9", 1.2)` and `pitcher.get("hard_hit_pct_allowed", 35)`
+        # which silently injected league means whenever the key was missing.
+        # The `if hr9 is not None` guard never tripped because the .get
+        # default already coerced None to 1.2. Now: drop the .get default
+        # so the guard works, and require >0 to also guard against the
+        # truthy-test bug (real 0 should also skip, since 0 HR/9 means
+        # the pitcher hasn't pitched yet).
+        hr9 = pitcher.get("hr_per_9")
+        if hr9 is not None and hr9 > 0:
             scores.append(min_max_scale(hr9, 0, 4.5))
 
-        hh = pitcher.get("hard_hit_pct_allowed", 35)
-        if hh is not None:
+        hh = pitcher.get("hard_hit_pct_allowed")
+        if hh is not None and hh > 0:
             scores.append(min_max_scale(hh, 25, 50))
 
-    woba = batter.get("woba_vs_hand", batter.get("woba", 0.320))
-    if woba:
-        # Tightened anchors twice. Iteration 2 (2026-05-01): woba was still
-        # SIGNAL_NOT_CAPTURED — empirical HR rate climbs 4.5x across quintiles
-        # but the (0.280, 0.420) range only shifted matchup score 2 points.
-        # Pulled to (0.290, 0.395) — a 105pt woba range maps to 100 score,
-        # steepening the gradient where the actual HR signal lives. Top
-        # batters (0.395+) cap at 100; bottom batters (<0.290) cap at 0.
+    # 2026-05-02 fix (audit HIGH #4): was using
+    # `batter.get("woba_vs_hand", batter.get("woba", 0.320))` which silently
+    # filled missing-everywhere woba with 0.320 (league mean) and the
+    # `if woba:` guard never triggered for that case. Result: a batter
+    # with no measured woba would score min_max_scale(0.320, 0.290, 0.395)
+    # ≈ 28.6 — i.e., scored as a below-average matchup at league-mean
+    # contact, which is the wrong default. Now: skip-on-missing.
+    #
+    # Anchor history: 2026-05-01 tightened to (0.290, 0.395) from
+    # (0.280, 0.420) because woba was SIGNAL_NOT_CAPTURED — empirical HR
+    # rate climbed 4.5x across quintiles but the wider range only shifted
+    # matchup score 2 points. The 105pt woba range now maps to 100 score,
+    # steepening the gradient where the actual HR signal lives.
+    woba = batter.get("woba_vs_hand")
+    if woba is None:
+        woba = batter.get("woba")
+    if woba is not None and woba > 0:
         scores.append(min_max_scale(woba, 0.290, 0.395))
 
     # Vegas implied team total — game environment signal. Bundles park,
