@@ -293,6 +293,98 @@ def pin_use_career_prior_default_off() -> Result:
     )
 
 
+def pin_compute_season_hr_floor_tiers() -> Result:
+    """Floor tier table: 5/8/12/18/25 HR thresholds → 50/60/70/78/85 floors."""
+    from score_batters import compute_season_hr_floor
+    cases = [
+        (None,  0.0),
+        (0,     0.0),
+        (3,     0.0),
+        (5,    50.0),
+        (8,    60.0),
+        (12,   70.0),
+        (18,   78.0),
+        (25,   85.0),
+        (40,   85.0),  # cap at top tier
+    ]
+    failures = []
+    for hr, want in cases:
+        got = compute_season_hr_floor(hr)
+        if got != want:
+            failures.append(f"hr={hr}: got {got}, want {want}")
+    if not failures:
+        return Result("compute_season_hr_floor(tiers) honored", Result.PASS)
+    return Result(
+        "compute_season_hr_floor(tiers)", Result.HALT,
+        "; ".join(failures),
+    )
+
+
+def pin_use_season_hr_floor_default_off() -> Result:
+    """Production must default to no floor until backtest validates."""
+    from score_batters import USE_SEASON_HR_FLOOR
+    if USE_SEASON_HR_FLOOR is False:
+        return Result(
+            "USE_SEASON_HR_FLOOR default = False (production-safe)", Result.PASS
+        )
+    return Result(
+        "USE_SEASON_HR_FLOOR default = False",
+        Result.HALT,
+        f"got {USE_SEASON_HR_FLOOR}; flipping the flag without backtest "
+        "could over-promote slow-power-streak veterans. Default must be False.",
+    )
+
+
+def pin_score_power_floor_lifts_low_score() -> Result:
+    """With flag on, an 8-HR batter with weak inputs gets lifted to 60."""
+    import score_batters as sb
+    sb.USE_SEASON_HR_FLOOR = True
+    try:
+        # Weak inputs that average to ~30
+        baldwin = {
+            "barrel_pct": 6.0, "exit_velo": 88.0,
+            "hr_fb_pct": 8.0, "iso": 0.180, "hr": 8,
+        }
+        val = sb.score_power(baldwin)
+    finally:
+        sb.USE_SEASON_HR_FLOOR = False
+    if val == 60.0:
+        return Result(
+            "score_power(8 HR + weak inputs) -> 60.0 (Drake Baldwin scenario)",
+            Result.PASS,
+        )
+    return Result(
+        "score_power(8 HR + weak inputs) -> 60.0",
+        Result.HALT,
+        f"got {val}; expected 60.0 (8-HR tier floor)",
+    )
+
+
+def pin_score_power_floor_does_not_pull_down() -> Result:
+    """An already-elite power score should NOT be reduced by the floor."""
+    import score_batters as sb
+    sb.USE_SEASON_HR_FLOOR = True
+    try:
+        # Elite inputs that average to ~72 (Buxton-class)
+        elite = {
+            "barrel_pct": 18.0, "exit_velo": 94.0,
+            "hr_fb_pct": 22.0, "iso": 0.280, "hr": 10,
+        }
+        val = sb.score_power(elite)
+    finally:
+        sb.USE_SEASON_HR_FLOOR = False
+    if val > 70.0:  # well above the 60-floor for 10 HR
+        return Result(
+            f"score_power(elite + 10 HR) -> {val:.1f} (floor no-op)",
+            Result.PASS,
+        )
+    return Result(
+        "score_power(elite) > 70 with floor on",
+        Result.HALT,
+        f"got {val}; floor pulled down an already-elite score (BUG)",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -306,6 +398,10 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_shrink_to_career_no_career_pass_through,
     pin_shrink_to_career_huge_sample_barely_shrinks,
     pin_use_career_prior_default_off,
+    pin_compute_season_hr_floor_tiers,
+    pin_use_season_hr_floor_default_off,
+    pin_score_power_floor_lifts_low_score,
+    pin_score_power_floor_does_not_pull_down,
 ]
 
 
