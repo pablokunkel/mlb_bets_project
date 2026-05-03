@@ -197,12 +197,20 @@ def upsert_career_row(conn, row: dict) -> None:
 def find_target_player_ids(conn, force: bool = False) -> list[int]:
     """All player_ids in season_batting + daily_picks, optionally filtered to
     those we don't have a recent career_batting row for.
+
+    2026-05-03 fix: previous filter `WHERE player_id IS NOT NULL` accepted
+    `player_id = 0` (a sentinel that occasionally leaks in from upstream
+    rows whose MLB lookup failed). Fetching `/people/0?...` returns 404
+    and counts as a fail in the run summary. Tighten to `> 0` so 0 and
+    any negative sentinel never reach the API.
     """
     season_ids = {r[0] for r in conn.execute(
-        "SELECT DISTINCT player_id FROM season_batting WHERE player_id IS NOT NULL"
+        "SELECT DISTINCT player_id FROM season_batting "
+        "WHERE player_id IS NOT NULL AND player_id > 0"
     ).fetchall()}
     pick_ids = {r[0] for r in conn.execute(
-        "SELECT DISTINCT batter_id FROM daily_picks WHERE batter_id IS NOT NULL"
+        "SELECT DISTINCT batter_id FROM daily_picks "
+        "WHERE batter_id IS NOT NULL AND batter_id > 0"
     ).fetchall()}
     all_ids = season_ids | pick_ids
 

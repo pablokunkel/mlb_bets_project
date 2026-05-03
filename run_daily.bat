@@ -2,11 +2,20 @@
 REM ============================================================
 REM  Daily HR Bet Pipeline -- runs at 12:00 PM
 REM
-REM   1. Morning ETL    -> daily_slate, daily_lineup, weather
-REM   2. Generate picks -> results/picks_<DATE>.json
-REM   3. Load to DB     -> daily_picks rows for the date
-REM   4. Export site    -> mlb_hr_bet_site/data/*.json
-REM   5. Git push       -> Cloudflare Pages auto-deploys from main
+REM   1. Morning ETL          -> daily_slate, daily_lineup, weather
+REM   2. Generate picks       -> results/picks_<DATE>.json
+REM   3. Load picks to DB     -> daily_picks rows for the date
+REM   4. Refresh yesterday    -> outcomes + hr_events (self-heal)
+REM   5. Export site          -> mlb_hr_bet_site/data/*.json
+REM   6. Git push             -> Cloudflare Pages auto-deploys from main
+REM
+REM  Step 4 is a self-healing safety net: if last night's 1 AM
+REM  run_outcomes.bat failed to push (or hadn't run yet because we
+REM  reboot mid-deploy etc.), the live HR worker has already advanced
+REM  to today's date so the dashboard's HR Recap goes blank for
+REM  yesterday. Refreshing here means hr_recap.json picks up
+REM  yesterday's HRs by noon at the latest. INSERT OR REPLACE makes
+REM  it a no-op when 1 AM already succeeded.
 REM
 REM  Migrated from Netlify to Cloudflare Pages 2026-05-01.
 REM  Repo: https://github.com/pablokunkel/mlb_bets_project
@@ -43,8 +52,8 @@ echo ========================================
 ) >> "%LOGFILE%" 2>&1
 
 echo.
-echo  [1/5] Morning ETL...                          ^(~30s^)
-echo  [1/5] Morning ETL... >> "%LOGFILE%" 2>&1
+echo  [1/6] Morning ETL...                          ^(~30s^)
+echo  [1/6] Morning ETL... >> "%LOGFILE%" 2>&1
 python -m etl.etl_morning >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo       ERROR -- see %LOGFILE%
@@ -54,8 +63,8 @@ if errorlevel 1 (
 echo       OK
 
 echo.
-echo  [2/5] Generating picks...                     ^(5-10 min on cold cache^)
-echo  [2/5] Generating picks... >> "%LOGFILE%" 2>&1
+echo  [2/6] Generating picks...                     ^(5-10 min on cold cache^)
+echo  [2/6] Generating picks... >> "%LOGFILE%" 2>&1
 python generate_picks.py >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo       ERROR -- see %LOGFILE%
@@ -65,8 +74,8 @@ if errorlevel 1 (
 echo       OK
 
 echo.
-echo  [3/5] Loading picks to DB...                  ^(~5s^)
-echo  [3/5] Loading picks to DB... >> "%LOGFILE%" 2>&1
+echo  [3/6] Loading picks to DB...                  ^(~5s^)
+echo  [3/6] Loading picks to DB... >> "%LOGFILE%" 2>&1
 python load_picks_to_db.py >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo       ERROR -- see %LOGFILE%
@@ -76,8 +85,25 @@ if errorlevel 1 (
 echo       OK
 
 echo.
-echo  [4/5] Exporting site data...                  ^(~10s^)
-echo  [4/5] Exporting site data... >> "%LOGFILE%" 2>&1
+echo  [4/6] Refresh yesterday's outcomes + HR events... ^(~30s, soft-fail^)
+echo  [4/6] Refresh yesterday's outcomes + HR events... >> "%LOGFILE%" 2>&1
+REM Self-heal step: if run_outcomes.bat (1 AM) failed or didn't push
+REM yet, the dashboard's HR Recap goes blank for yesterday at the same
+REM time the live tracker advances to today (worker rolls at midnight).
+REM `python -m etl.etl_outcomes` defaults to yesterday and is idempotent
+REM (INSERT OR REPLACE), so re-running here is a no-op when 1 AM
+REM already succeeded. Soft-fail: warn but don't block today's deploy.
+python -m etl.etl_outcomes >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo       WARN -- yesterday refresh failed; see %LOGFILE%
+    echo  WARN: etl_outcomes failed -- hr_recap may be stale for yesterday >> "%LOGFILE%" 2>&1
+) else (
+    echo       OK
+)
+
+echo.
+echo  [5/6] Exporting site data...                  ^(~10s^)
+echo  [5/6] Exporting site data... >> "%LOGFILE%" 2>&1
 python export_site_data.py >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo       ERROR -- see %LOGFILE%
@@ -87,8 +113,8 @@ if errorlevel 1 (
 echo       OK
 
 echo.
-echo  [5/5] Pushing to GitHub (Cloudflare auto-deploys)... ^(~10s^)
-echo  [5/5] Pushing to GitHub... >> "%LOGFILE%" 2>&1
+echo  [6/6] Pushing to GitHub (Cloudflare auto-deploys)... ^(~10s^)
+echo  [6/6] Pushing to GitHub... >> "%LOGFILE%" 2>&1
 git add mlb_hr_bet_site/data/*.json mlb_hr_bet_site/index.html >> "%LOGFILE%" 2>&1
 git commit -m "Daily update %TODAY%" --allow-empty >> "%LOGFILE%" 2>&1
 
