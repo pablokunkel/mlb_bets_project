@@ -53,7 +53,11 @@ function todayInTZ(tz) {
 // ---------------------------------------------------------------------------
 
 async function fetchSchedule(date) {
-  const url = `${MLB_API}/schedule?sportId=1&date=${date}`;
+  // hydrate=team adds team.abbreviation to each game's teams.{home,away}.team
+  // block. Without it the API returns only id/link/name, which made
+  // battingTeamAbbr come through as "" on every HR card. Cheap addition
+  // (~15 games × small payload bump).
+  const url = `${MLB_API}/schedule?sportId=1&date=${date}&hydrate=team`;
   const resp = await fetch(url, {
     headers: { "User-Agent": "dingersonly-live-hr/0.1" },
     cf: { cacheTtl: 30, cacheEverything: true },
@@ -79,11 +83,29 @@ async function fetchSchedule(date) {
   return games;
 }
 
+// Field whitelist for the playByPlay fetch. The full payload returns
+// pitch-by-pitch metadata, broadcast captions, replay flags, etc. that
+// blow it up to ~1MB per game. We only need ~15 fields for HR extraction;
+// trimming to those drops payload to ~50-100KB and JSON.parse from
+// ~10ms to ~1-2ms per game. The `?fields=` server-side filter is the
+// single biggest CPU win for the Worker's free-tier 10ms budget.
+const PBP_FIELDS = [
+  "allPlays", "result", "eventType", "description",
+  "homeScore", "awayScore",
+  "about", "inning", "halfInning", "startTime", "endTime", "atBatIndex",
+  "matchup", "batter", "pitcher", "id", "fullName",
+  "playEvents", "hitData",
+  "launchSpeed", "launchAngle", "totalDistance",
+  "coordinates", "coordX", "coordY",
+  "trajectory", "location", "hardness",
+].join(",");
+
 async function fetchPlayByPlay(gamePk) {
-  const url = `${MLB_API}/game/${gamePk}/playByPlay`;
+  const url = `${MLB_API}/game/${gamePk}/playByPlay?fields=${PBP_FIELDS}`;
   const resp = await fetch(url, {
     headers: { "User-Agent": "dingersonly-live-hr/0.1" },
-    // No CDN cache here — we want fresh play data.
+    // No CDN cache — we want fresh play data, but the upstream MLB API
+    // sets reasonable cache headers anyway (60s).
   });
   if (!resp.ok) return null;
   return await resp.json();
@@ -181,6 +203,33 @@ function fingerprint(games, hrs) {
   return `g=${games.length};lf=${games.filter((x) => x.abstract === "Live" || x.abstract === "Final").length};hr=${hrs.length};gs=${g};hs=${h}`;
 }
 
+// Round-robin tick size. With CF Workers free tier capping CPU at 10ms
+// per invocation, parsing all 12+ live-game playByPlay payloads in one
+// tick blew the budget (errors ~5-10% of cron invocations during
+// game-time hours, 142 errors / 24h on 2026-05-02). We now process up
+// to N_PER_TICK games per minute, round-robin across the full slate.
+//
+// With 12 live games and N_PER_TICK=3, full refresh cycle = 4 minutes.
+// User-visible lag for a new HR: 0-4 min (avg ~2 min). Acceptable for
+// a "Live Today" feed; well under the 36h KV TTL anyway.
+//
+// Combined with the ?fields= filter on fetchPlayByPlay, each tick's
+// JSON.parse cost should drop to ~3-6ms total — comfortably inside 10ms.
+const N_PER_TICK = 3;
+const STATE_KEY = (date) => `${KV_PREFIX}:state:${date}`;
+
+/**
+ * Smart round-robin refresh:
+ *   - Tracks per-game state in KV (cursor + doneFinal set)
+ *   - Processes only N_PER_TICK games each invocation
+ *   - Skips Final games we've already fetched once (their content
+ *     never changes, so re-fetching is pure waste)
+ *   - Merges new HRs with existing KV-stored HRs from games we
+ *     DIDN'T process this tick
+ *
+ * State stored in KV:
+ *   { cursor: int, doneFinal: { gamePk: true, ... } }
+ */
 async function refresh(env) {
   const tz = env.MLB_TIMEZONE || "America/New_York";
   const date = todayInTZ(tz);
@@ -193,62 +242,45 @@ async function refresh(env) {
     return { date, error: err.message };
   }
 
-  // Short-circuit: no games today means nothing to fetch and (after the
-  // first tick of the day) nothing to write either. The fingerprint check
-  // below handles the "after the first tick" part automatically.
-  const liveOrFinal = games.filter(
-    (g) => g.abstract === "Live" || g.abstract === "Final"
-  );
+  // Sort by gamePk for deterministic round-robin ordering.
+  const liveOrFinal = games
+    .filter((g) => g.abstract === "Live" || g.abstract === "Final")
+    .sort((a, b) => a.gamePk - b.gamePk);
 
-  let allHRs = [];
-  if (liveOrFinal.length > 0) {
-    // Pull play-by-play in parallel, but cap concurrency so we don't hammer
-    // the API. 6 in flight is plenty for ~15 games.
-    const concurrency = 6;
-    let i = 0;
-    async function worker() {
-      while (i < liveOrFinal.length) {
-        const idx = i++;
-        const g = liveOrFinal[idx];
-        try {
-          const pbp = await fetchPlayByPlay(g.gamePk);
-          if (pbp) allHRs.push(...extractHRs(pbp, g));
-        } catch (err) {
-          console.log(`pbp ${g.gamePk} failed: ${err.message}`);
-        }
-      }
-    }
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, liveOrFinal.length) }, worker)
-    );
-
-    // Newest first.
-    allHRs.sort((a, b) => (b.time || "").localeCompare(a.time || ""));
+  // Read prior state + existing payload from KV. New day → both empty.
+  let state = { cursor: 0, doneFinal: {} };
+  try {
+    const raw = await env.LIVE_HR_KV.get(STATE_KEY(date));
+    if (raw) state = { ...state, ...JSON.parse(raw) };
+  } catch (err) {
+    console.log(`state read failed: ${err.message}`);
   }
 
-  const fp = fingerprint(games, allHRs);
-
-  // Compare fingerprint to last write. If unchanged, skip both KV writes.
-  // We still return the assembled payload for /refresh callers.
-  let prevFingerprint = null;
+  let existingHRs = [];
   try {
-    const prevMetaRaw = await env.LIVE_HR_KV.get(META_KEY(date));
-    if (prevMetaRaw) {
-      const prev = JSON.parse(prevMetaRaw);
-      prevFingerprint = prev.fingerprint || null;
+    const raw = await env.LIVE_HR_KV.get(FEED_KEY(date));
+    if (raw) {
+      const prev = JSON.parse(raw);
+      existingHRs = prev.hrs || [];
     }
   } catch (err) {
-    console.log(`meta read failed: ${err.message}`);
+    console.log(`feed read failed: ${err.message}`);
   }
 
+  // Pending = games still worth fetching this cycle (non-final OR
+  // final-but-not-yet-processed).
+  const pending = liveOrFinal.filter((g) => !state.doneFinal[g.gamePk]);
+
+  // Build today's-state-of-the-world payload (used regardless of
+  // whether we have any games to fetch this tick).
   const updatedAt = new Date().toISOString();
-  const payload = {
+  const buildPayload = (hrs) => ({
     date,
     updatedAt,
     gamesTotal: games.length,
     gamesLiveOrFinal: liveOrFinal.length,
-    hrCount: allHRs.length,
-    hrs: allHRs,
+    hrCount: hrs.length,
+    hrs: hrs.slice().sort((a, b) => (b.time || "").localeCompare(a.time || "")),
     games: games.map((g) => ({
       gamePk: g.gamePk,
       state: g.state,
@@ -258,33 +290,82 @@ async function refresh(env) {
       venue: g.venue,
       gameDate: g.gameDate,
     })),
-  };
+  });
 
-  if (prevFingerprint === fp) {
+  // Off-day or all-final-and-processed — nothing to fetch, just refresh
+  // the meta timestamp + games array (cheap, single KV write).
+  if (pending.length === 0) {
+    const payload = buildPayload(existingHRs);
+    await env.LIVE_HR_KV.put(FEED_KEY(date), JSON.stringify(payload), {
+      expirationTtl: 60 * 60 * 36,
+    });
     console.log(
-      `refresh: unchanged (games=${games.length} live=${liveOrFinal.length} hrs=${allHRs.length}) — skipping KV write`
+      `refresh: idle tick (games=${games.length} live=${liveOrFinal.length} ` +
+      `hrs=${existingHRs.length} done=${Object.keys(state.doneFinal).length})`
     );
-    return { ...payload, skipped: true };
+    return { ...payload, skipped: true, reason: "no-pending" };
   }
 
+  // Pick this tick's games via round-robin cursor. Wrap-around when
+  // cursor >= pending.length so we don't strand games at the tail.
+  const start = pending.length > 0 ? state.cursor % pending.length : 0;
+  const tickGames = [];
+  for (let i = 0; i < N_PER_TICK && i < pending.length; i++) {
+    tickGames.push(pending[(start + i) % pending.length]);
+  }
+
+  // Parallel fetch — concurrency capped by N_PER_TICK so total in-flight
+  // requests stay tiny. JSON.parse is CPU-bound per response, not concurrent.
+  const concurrency = Math.min(N_PER_TICK, tickGames.length);
+  let i = 0;
+  const newHRsByGame = {};
+  async function workerFn() {
+    while (i < tickGames.length) {
+      const idx = i++;
+      const g = tickGames[idx];
+      try {
+        const pbp = await fetchPlayByPlay(g.gamePk);
+        if (pbp) newHRsByGame[g.gamePk] = extractHRs(pbp, g);
+      } catch (err) {
+        console.log(`pbp ${g.gamePk} failed: ${err.message}`);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, workerFn));
+
+  // Mark Final games as done so we never refetch them.
+  for (const g of tickGames) {
+    if (g.abstract === "Final") {
+      state.doneFinal[g.gamePk] = true;
+    }
+  }
+
+  // Merge: keep existing HRs from games NOT processed this tick;
+  // replace HRs for games we DID process (in case at-bats progressed).
+  const processedGpks = new Set(tickGames.map((g) => g.gamePk));
+  const keptHRs = existingHRs.filter((h) => !processedGpks.has(h.gamePk));
+  const allHRs = [...keptHRs];
+  for (const gpk of Object.keys(newHRsByGame)) {
+    allHRs.push(...newHRsByGame[gpk]);
+  }
+
+  // Advance cursor past the games we just processed.
+  state.cursor = pending.length > 0
+    ? (start + tickGames.length) % pending.length
+    : 0;
+
+  const payload = buildPayload(allHRs);
   await env.LIVE_HR_KV.put(FEED_KEY(date), JSON.stringify(payload), {
-    // Expire after 36h — keeps yesterday around briefly for late-night fans,
-    // then garbage-collects automatically.
     expirationTtl: 60 * 60 * 36,
   });
-  await env.LIVE_HR_KV.put(
-    META_KEY(date),
-    JSON.stringify({
-      updatedAt,
-      hrCount: allHRs.length,
-      gamesLiveOrFinal: liveOrFinal.length,
-      fingerprint: fp,
-    }),
-    { expirationTtl: 60 * 60 * 36 }
-  );
+  await env.LIVE_HR_KV.put(STATE_KEY(date), JSON.stringify(state), {
+    expirationTtl: 60 * 60 * 36,
+  });
 
   console.log(
-    `refresh: wrote (games=${games.length} live=${liveOrFinal.length} hrs=${allHRs.length})`
+    `refresh: tick ${tickGames.length}/${pending.length} pending ` +
+    `(cursor->${state.cursor}, doneFinal=${Object.keys(state.doneFinal).length}, ` +
+    `hrs=${allHRs.length}, gpks=${tickGames.map((g) => g.gamePk).join(",")})`
   );
   return payload;
 }
