@@ -265,6 +265,7 @@ def enrich_with_career_prior(batter: dict, career_lookup: dict, k: int = CAREER_
     # Only apply when career sample is meaningful (≥ 1000 PA, ~2 full
     # seasons) so the proxy isn't noisy for cup-of-coffee veterans.
     cv_hr_per_pa = career.get("career_hr_per_pa")
+    barrel_shrunk = False
     if cv_hr_per_pa and career.get("career_pa", 0) >= 1000:
         career_barrel_proxy = min(25.0, cv_hr_per_pa * 200)
         cur_barrel = batter.get("barrel_pct")
@@ -273,11 +274,17 @@ def enrich_with_career_prior(batter: dict, career_lookup: dict, k: int = CAREER_
             if shrunk is not None and shrunk != cur_barrel:
                 batter["barrel_pct"] = round(shrunk, 1)
                 shrunk_count += 1
+                barrel_shrunk = True
 
     if shrunk_count:
         batter["_career_shrunk"] = True
         batter["_career_pa"] = career.get("career_pa")
         batter["_career_shrunk_count"] = shrunk_count
+    if barrel_shrunk:
+        # Provenance: shrinkage is a transformation of whatever source the
+        # current barrel_pct already had. Track the final mutator for the
+        # column so refit/audit can filter on it.
+        batter["_barrel_pct_source"] = "career_shrunk"
 
     return batter
 
@@ -286,21 +293,31 @@ def enrich_with_season_batting(batter: dict, season_lookup: dict) -> dict:
     """
     Replace zero/missing power metrics on *batter* with values from
     season_batting. Real, non-zero values on *batter* are kept as-is.
+
+    When `barrel_pct` specifically gets overwritten, stamp
+    `_barrel_pct_source = "season_batting_fallback"` so the per-row
+    provenance column on pick_inputs reflects the actual data path
+    (added 2026-05-03; previously only set the broader `_power_source`).
     """
     pid = batter.get("player_id")
     if not pid or pid not in season_lookup:
         return batter
     sb = season_lookup[pid]
     enriched = False
+    barrel_overwritten = False
     for metric in ("barrel_pct", "exit_velo", "hr_fb_pct", "iso", "woba"):
         cur = batter.get(metric)
         sb_val = sb.get(metric)
         if (cur is None or cur == 0) and sb_val is not None and sb_val > 0:
             batter[metric] = sb_val
             enriched = True
+            if metric == "barrel_pct":
+                barrel_overwritten = True
     if enriched:
         # Mark provenance so downstream diagnostics can flag this row
         batter["_power_source"] = "season_batting_fallback"
+    if barrel_overwritten:
+        batter["_barrel_pct_source"] = "season_batting_fallback"
     return batter
 
 

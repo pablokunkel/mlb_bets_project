@@ -1048,6 +1048,18 @@ def compute_composite(
         "is_dome":                 1 if weather.get("dome") else 0,
         # Lineup
         "batting_order":           batting_order if isinstance(batting_order, int) else None,
+        # Handedness (added 2026-05-03 — diagnostic value for platoon analysis)
+        "bats":                    batter_hand,
+        "throws":                  pitcher.get("throws"),
+        # Provenance (added 2026-05-03)
+        # weather["_source"] is set by fetch_daily_data.get_weather; missing
+        # only on legacy code paths that pre-date the source-stamping change.
+        "weather_source":          weather.get("_source"),
+        # batter["_barrel_pct_source"] is set wherever barrel_pct gets its
+        # value: "synthetic_hr_per_pa" (default from MLB splits),
+        # "season_batting_fallback" (DB overwrite when synthetic was 0),
+        # or "career_shrunk" (when career-prior shrinkage modified it).
+        "barrel_pct_source":       batter.get("_barrel_pct_source"),
     }
 
     return {
