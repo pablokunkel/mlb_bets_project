@@ -119,7 +119,13 @@ class DataSourceStatus:
 # Single weight config for all batters — picks top N by composite score
 # regardless of tier. Tiers are labels only (for round-robin structuring).
 SCORING_CONFIG = "default"  # power 0.30, matchup 0.25, park 0.20, form 0.15, weather 0.10
-TIER_POINTS = {1: 1, 2: 3, 3: 9}
+# Parlay points by tier — higher number = longer shot.
+# T4 added 2026-05-03: confirmed starters who didn't qualify for any
+# season-stats tier (rookies, slow starts, returning IL). They're real
+# starters but with thin track records, so they sit between T3 longshots
+# and "way out there" — give them T3+3=12 to nudge above T3 in parlay
+# scoring without pretending they're bottom-of-barrel longshots.
+TIER_POINTS = {1: 1, 2: 3, 3: 9, 4: 12}
 
 # Players to exclude from picks (long-term IL, season-ending injuries, etc.).
 # Edit this list as needed — much easier than touching the tier data.
@@ -1429,8 +1435,12 @@ def format_card(card, date_str, combo, tier_details, mode):
     lines.append(f"  DAILY HR PARLAY CARD — {date_str}")
     lines.append(f"  Mode: {mode_label}")
     lines.append(f"  Selection: Top {len(card)} by composite score ({tier_summary})")
+    # 2026-05-03 fix: was `TIER_POINTS[c.get('tier', 1)]` — KeyError when
+    # tier=4 (T4-Untiered, added by score_untiered_starters). TIER_POINTS
+    # now has a 4 entry, but keep the .get() fallback so any future tier
+    # additions don't crash card formatting.
     lines.append(f"  Max pts if all hit: "
-                 f"{sum(TIER_POINTS[c.get('tier', 1)] for c in card)}")
+                 f"{sum(TIER_POINTS.get(c.get('tier', 1), 9) for c in card)}")
     lines.append("=" * 76)
     lines.append("")
     lines.append(f"  {'#':<3} {'Player':<22} {'Team':<5} {'Tier':<13} "
