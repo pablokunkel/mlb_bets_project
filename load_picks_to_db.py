@@ -109,17 +109,21 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     # pick_inputs row insertion — captures the raw signals fed into each
     # factor, so the dashboard can decompose what drove each score.
     # Idempotent (INSERT OR REPLACE on PRIMARY KEY (date, batter_id)).
+    # 2026-05-03: vegas_implied_total -> vegas_team_total_pct rename, and
+    # vegas_team_total_raw added (was previously JSON-only).
     pick_inputs_sql = """
         INSERT OR REPLACE INTO pick_inputs (
             date, batter_id,
             barrel_pct, exit_velo, hr_fb_pct, iso, xwoba_contact, pull_fb_pct,
             recent_hr_14d, recent_barrel_pct_14d, ev_trend_14d,
             pitcher_hr_per_9, pitcher_era, pitcher_hh_pct, pitcher_k_per_9, pitcher_fb_pct_allowed,
-            woba_vs_hand, archetype_similarity, vegas_implied_total, platoon_advantage,
+            woba_vs_hand, archetype_similarity,
+            vegas_team_total_pct, vegas_team_total_raw,
+            platoon_advantage,
             hr_park_factor,
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?)
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -211,7 +215,12 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     inputs.get("pitcher_fb_pct_allowed"),
                     inputs.get("woba_vs_hand"),
                     inputs.get("archetype_similarity"),
-                    inputs.get("vegas_implied_total"),
+                    # Backward compat: read new name first, fall back to old
+                    # name so older picks JSONs (pre-rename) still load.
+                    inputs.get("vegas_team_total_pct",
+                               inputs.get("vegas_implied_total")),
+                    inputs.get("vegas_team_total_raw",
+                               inputs.get("vegas_implied_total_raw")),
                     inputs.get("platoon_advantage"),
                     inputs.get("hr_park_factor"),
                     inputs.get("temperature_f"),
