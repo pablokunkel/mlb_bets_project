@@ -403,6 +403,66 @@ LEAGUE_AVG_PITCHER = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Season-HR floor (prototype, off by default)
+# ---------------------------------------------------------------------------
+# Originating case: 2026-05-02 HR autopsy. 25 batters homered. Average
+# rank on our big board: 107.7 (middle of 277 batters). Drake Baldwin
+# hit his 8th HR of the season ranked #97. Jake Burger hit his 6th
+# ranked #243. Pattern: HR signal is being muffled by noise from the
+# other 5 composite factors. Same season-HR count produced wildly
+# different ranks (Buxton 10 HR rank #8, Walker 10 HR rank #85,
+# Baldwin 8 HR rank #97, Burger 6 HR rank #243).
+#
+# This flag adds a discrete-tier floor on power_score keyed off the
+# batter's season HR count. The floor only ELEVATES — never pulls a
+# good score down. Composite then propagates the floored power forward
+# at the standard 0.25 weight.
+#
+# Off by default; flip to True after backtest validation. Different
+# from USE_CAREER_PRIOR (which Bayesian-shrinks per-PA rates toward
+# career mean): this is a hard, score-level floor. The two could stack
+# (career-prior fixes "his rates LOOK bad due to small sample"; HR-floor
+# fixes "his accumulated season HR count is real proof").
+USE_SEASON_HR_FLOOR = False
+
+# (season_hr_threshold, power_score_floor_when_qualified)
+# Calibrated on 2026-05-02 HR data:
+#   - 5 HR  → 50  (a guy with 5 HR shouldn't score below league average)
+#   - 8 HR  → 60  (Drake Baldwin / Pete Alonso pace)
+#   - 12 HR → 70  (Jordan Walker / Christian Walker / Kazuma Okamoto)
+#   - 18 HR → 78  (Judge / Ohtani-class All-Star pace)
+#   - 25 HR → 85  (top-of-leaderboard MVP trajectory)
+# Highest qualifying tier wins. Adjust if backtest shows over- or
+# under-correction.
+SEASON_HR_FLOOR_TIERS: list[tuple[int, float]] = [
+    (5,  50.0),
+    (8,  60.0),
+    (12, 70.0),
+    (18, 78.0),
+    (25, 85.0),
+]
+
+
+def compute_season_hr_floor(season_hr: int | None) -> float:
+    """Look up the power-score floor for a batter's season HR count.
+
+    Returns 0.0 (no floor effect) when:
+      - season_hr is None or <= 0
+      - season_hr is below the lowest tier threshold
+
+    Otherwise returns the highest tier_floor the batter qualifies for.
+    Highest threshold the batter meets-or-exceeds wins.
+    """
+    if season_hr is None or season_hr <= 0:
+        return 0.0
+    floor = 0.0
+    for threshold, tier_floor in SEASON_HR_FLOOR_TIERS:
+        if season_hr >= threshold:
+            floor = max(floor, tier_floor)
+    return floor
+
+
 def score_power(batter: dict) -> float:
     """
     Factor 1: Power Profile (barrel%, exit velo, HR/FB, ISO as xHR proxy).
@@ -449,7 +509,21 @@ def score_power(batter: dict) -> float:
             pull_fb *= 100
         scores.append(min_max_scale(pull_fb, 5, 25))
 
-    return float(np.mean(scores)) if scores else 50.0
+    base_score = float(np.mean(scores)) if scores else 50.0
+
+    # Season-HR floor (off by default; gated by USE_SEASON_HR_FLOOR).
+    # Hard floor based on the batter's accumulated season HR count.
+    # Only ELEVATES the score; never pulls a good score down.
+    # See SEASON_HR_FLOOR_TIERS comment block above for tier rationale.
+    if USE_SEASON_HR_FLOOR:
+        season_hr = batter.get("season_hr")
+        if season_hr is None:
+            season_hr = batter.get("hr")  # live tier dict carries it as `hr`
+        floor = compute_season_hr_floor(season_hr)
+        if floor > base_score:
+            return floor
+
+    return base_score
 
 
 def score_matchup(
