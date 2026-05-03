@@ -356,6 +356,11 @@ def _splits_to_batters(splits: list) -> list[dict]:
             "iso": iso,
             "woba": woba,
             "player_id": player.get("id", 0),
+            # Provenance for the synthetic Statcast estimates above. Real
+            # Statcast values get stamped 'statcast' downstream when bulk
+            # Savant fetches return non-null values; until then we record
+            # that these fields are MLB-Stats-API-derived estimates.
+            "_barrel_pct_source": "synthetic_hr_per_pa",
         })
     return batters
 
@@ -460,6 +465,8 @@ def build_live_tiers(
             blended["exit_velo"] = round(82 + (cur["iso"] * cur_w + prior["iso"] * prior_w + 0.250) * 15, 1)
             blended["hr_fb_pct"] = round(blended["hr_per_pa"] * 100 * 1.8, 1)
             blended["_blend"] = f"{cur_g}g cur + {prior_g}g prior"
+            # Provenance: still synthetic, just blended across two seasons.
+            blended["_barrel_pct_source"] = "synthetic_hr_per_pa"
             merged.append(blended)
         elif cur:
             # Only current-season data (no prior season match)
@@ -547,13 +554,22 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
     pitch used as the hourly index. Previously this function used UTC date and
     UTC hour against an Eastern-time array, which mis-pulled weather by a day
     and/or several hours for any game outside the Eastern timezone.
+
+    Each return dict carries an `_source` field (added 2026-05-03) so
+    downstream consumers can stratify by data quality:
+      - 'dome_default'              indoor venue, fixed indoor weather
+      - 'coords_missing_default'    venue not in VENUE_COORDS, neutral fallback
+      - 'open_meteo'                real API fetch
+      - 'api_failed_default'        API call raised, neutral fallback
     """
     if venue_name in DOME_STADIUMS:
-        return {"temperature_f": 72, "wind_mph": 0, "wind_direction_deg": 0, "dome": True}
+        return {"temperature_f": 72, "wind_mph": 0, "wind_direction_deg": 0,
+                "dome": True, "_source": "dome_default"}
 
     coords = VENUE_COORDS.get(venue_name)
     if not coords:
-        return {"temperature_f": 68, "wind_mph": 5, "wind_direction_deg": 0, "dome": False}
+        return {"temperature_f": 68, "wind_mph": 5, "wind_direction_deg": 0,
+                "dome": False, "_source": "coords_missing_default"}
 
     lat, lon = coords
     tz_name = VENUE_TZ.get(venue_name, "America/New_York")
@@ -596,10 +612,12 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
             "dome": False,
             "tz": tz_name,
             "local_hour": game_hour,
+            "_source": "open_meteo",
         }
     except Exception as e:
         print(f"  [WEATHER] {venue_name}: fetch failed ({e}), using neutral defaults")
-        return {"temperature_f": 68, "wind_mph": 5, "wind_direction_deg": 0, "dome": False}
+        return {"temperature_f": 68, "wind_mph": 5, "wind_direction_deg": 0,
+                "dome": False, "_source": "api_failed_default"}
 
 
 # ---------------------------------------------------------------------------
