@@ -419,6 +419,18 @@
     }
     .cashbag-badge .cashbag-emoji { font-size: 13px; }
 
+    /* Cash-bag highlight on Lab rows (mirrors Today's Picks treatment).
+       Same _todayPicksHrIds set is used to decorate both — see
+       _decorateLabRows() in the script block. */
+    .lab-row.cashed {
+      background: rgba(63, 106, 58, 0.10);
+      border-left: 3px solid var(--grass-deep, #2d5a2a);
+      padding-left: 4px;
+    }
+    .lab-row.cashed .lab-num {
+      color: var(--grass-deep, #2d5a2a);
+    }
+
     /* ── Lab tab (alternate views) ── */
     .lab-intro {
       padding: 14px 18px; margin-bottom: 18px;
@@ -2280,19 +2292,61 @@
       });
     }
 
+    function _decorateLabRows() {
+      // Sister of _decorateTodayPicks for the Lab tab's `.lab-row` rows.
+      // Reuses the same _todayPicksHrIds + _todayPicksHrDetail state so
+      // a single live-feed poll updates both panels. The badge is
+      // appended to the parent of `.lab-name` (the unnamed wrapper
+      // div in the lab-row template).
+      const rows = document.querySelectorAll('#panel-lab .lab-row');
+      if (!rows.length) return;
+      rows.forEach(row => {
+        const pid = parseInt(row.dataset.pid, 10);
+        if (!pid) return;
+        const isHr = _todayPicksHrIds.has(pid);
+        row.classList.toggle('cashed', isHr);
+        const nameEl = row.querySelector('.lab-name');
+        const container = nameEl?.parentElement;
+        if (!container) return;
+        let badge = container.querySelector('.cashbag-badge');
+        if (isHr) {
+          const hr = _todayPicksHrDetail[pid];
+          const inning = hr?.inning
+            ? `${hr.inning}${hr.halfInning === 'top' ? 'T' : hr.halfInning === 'bottom' ? 'B' : ''}`
+            : '';
+          const distance = hr?.totalDistance ? `${hr.totalDistance} ft` : '';
+          const velo = hr?.launchSpeed ? `${Math.round(hr.launchSpeed)} mph` : '';
+          const parts = [];
+          if (inning) parts.push(`HR'd in ${inning}`);
+          if (distance) parts.push(distance);
+          if (velo) parts.push(velo);
+          const label = parts.join(' · ') || 'cashed';
+          if (!badge) {
+            badge = document.createElement('div');
+            badge.className = 'cashbag-badge';
+            container.appendChild(badge);
+          }
+          badge.innerHTML = `<span class="cashbag-emoji">💰</span> ${label}`;
+        } else if (badge) {
+          badge.remove();
+        }
+      });
+    }
+
     async function _liveFetchAndDecorate() {
-      // One-shot fetch + decorate. Used by renderToday after first paint
-      // (so cash bags appear without waiting on the Recap-tab polling
-      // cycle to start). After this, renderLiveHRSection's polling keeps
-      // them up-to-date.
+      // One-shot fetch + decorate. Used by renderToday and renderLab after
+      // first paint (so cash bags appear without waiting on the Recap-tab
+      // polling cycle to start). After this, renderLiveHRSection's polling
+      // keeps both panels up-to-date.
       try {
         const r = await fetch('https://api.dingersonly.cc/api/live-hrs?t=' + Date.now());
         if (!r.ok) return;
         const data = await r.json();
         _updateTodayHrSetFromFeed(data.hrs || []);
         _decorateTodayPicks();
+        _decorateLabRows();
       } catch {
-        // Silent — feed offline shouldn't break Today's Picks render
+        // Silent — feed offline shouldn't break Today's Picks / Lab render
       }
     }
 
@@ -2589,6 +2643,20 @@
 
       container.innerHTML = html;
       bindPlayerClicks();
+
+      // Cash-bag pass — same plumbing as Today's Picks. If the live HR
+      // feed is already cached (HR Recap tab has polled, or Today's Picks
+      // already kicked it off), decorate from cache. Otherwise fire a
+      // one-shot fetch. Subsequent polls keep both panels in sync via
+      // renderLiveHRSection's tick.
+      if (_todayPicksHrIds.size > 0) {
+        _decorateLabRows();
+      } else {
+        _liveFetchAndDecorate();
+      }
+      if (typeof startLiveHRPolling === 'function') {
+        startLiveHRPolling();
+      }
     }
 
     // ── Render: History ──
@@ -4110,11 +4178,12 @@
         data = await resp.json();
         _liveState.lastFetchOkAt = Date.now();
         _liveState.feedCache = data;
-        // Update Today's Picks cash-bag decorations every poll cycle. The
-        // function no-ops when the picks panel isn't rendered, so this is
-        // free when the user is on a different tab.
+        // Update Today's Picks AND Lab cash-bag decorations every poll
+        // cycle. Each function no-ops when its panel isn't rendered, so
+        // this is free when the user is on a different tab.
         _updateTodayHrSetFromFeed(data.hrs || []);
         _decorateTodayPicks();
+        _decorateLabRows();
       } catch {
         data = _liveState.feedCache;
       }
