@@ -257,11 +257,16 @@ async function refresh(env) {
   }
 
   let existingHRs = [];
+  let existingFP = null;
   try {
     const raw = await env.LIVE_HR_KV.get(FEED_KEY(date));
     if (raw) {
       const prev = JSON.parse(raw);
       existingHRs = prev.hrs || [];
+      // Pre-existing payloads written before fingerprinting was added carry
+      // no `fp` field — treat as null so the first post-deploy tick always
+      // writes once (re-establishing the fp), then skip-writes thereafter.
+      existingFP = prev.fp || null;
     }
   } catch (err) {
     console.log(`feed read failed: ${err.message}`);
@@ -273,8 +278,13 @@ async function refresh(env) {
 
   // Build today's-state-of-the-world payload (used regardless of
   // whether we have any games to fetch this tick).
+  //
+  // `fp` is a content fingerprint (excludes wall-clock fields) so two
+  // ticks with identical baseball state produce identical fingerprints.
+  // Compared against `existingFP` from KV to skip no-op writes — see the
+  // 2026-05-03 KV-cost reduction below.
   const updatedAt = new Date().toISOString();
-  const buildPayload = (hrs) => ({
+  const buildPayload = (hrs, fp) => ({
     date,
     updatedAt,
     gamesTotal: games.length,
@@ -290,20 +300,48 @@ async function refresh(env) {
       venue: g.venue,
       gameDate: g.gameDate,
     })),
+    fp,
   });
 
-  // Off-day or all-final-and-processed — nothing to fetch, just refresh
-  // the meta timestamp + games array (cheap, single KV write).
+  // Off-day or all-final-and-processed — nothing to fetch this tick.
+  //
+  // 2026-05-03 KV-cost fix: previously this path always wrote FEED to
+  // refresh updatedAt. With cron firing 1440x/day and a 1k/day write
+  // budget on the free tier, idle-tick writes alone exceeded the limit
+  // (90% warning email 2026-05-03). Now we fingerprint the payload and
+  // skip the write when nothing meaningful changed. The dashboard's
+  // existing payload (with its original updatedAt) is still served from
+  // KV — slightly stale `updatedAt` is acceptable when the underlying
+  // content is identical.
   if (pending.length === 0) {
-    const payload = buildPayload(existingHRs);
+    const idleFP = fingerprint(games, existingHRs);
+    if (idleFP === existingFP) {
+      console.log(
+        `refresh: idle tick (skip-write, fp-stable; games=${games.length} ` +
+        `live=${liveOrFinal.length} hrs=${existingHRs.length} ` +
+        `done=${Object.keys(state.doneFinal).length})`
+      );
+      return {
+        date,
+        updatedAt,
+        hrCount: existingHRs.length,
+        skipped: true,
+        reason: "no-pending-fp-stable",
+      };
+    }
+    // Fingerprint changed — write once to capture the new state. Most
+    // common cases: first idle tick after a Final game finished (games
+    // array states changed), or first tick of a new day (existingFP=null).
+    const payload = buildPayload(existingHRs, idleFP);
     await env.LIVE_HR_KV.put(FEED_KEY(date), JSON.stringify(payload), {
       expirationTtl: 60 * 60 * 36,
     });
     console.log(
-      `refresh: idle tick (games=${games.length} live=${liveOrFinal.length} ` +
-      `hrs=${existingHRs.length} done=${Object.keys(state.doneFinal).length})`
+      `refresh: idle tick (write, fp-changed; games=${games.length} ` +
+      `live=${liveOrFinal.length} hrs=${existingHRs.length} ` +
+      `done=${Object.keys(state.doneFinal).length})`
     );
-    return { ...payload, skipped: true, reason: "no-pending" };
+    return { ...payload, skipped: true, reason: "no-pending-fp-changed" };
   }
 
   // Pick this tick's games via round-robin cursor. Wrap-around when
@@ -354,10 +392,23 @@ async function refresh(env) {
     ? (start + tickGames.length) % pending.length
     : 0;
 
-  const payload = buildPayload(allHRs);
-  await env.LIVE_HR_KV.put(FEED_KEY(date), JSON.stringify(payload), {
-    expirationTtl: 60 * 60 * 36,
-  });
+  // 2026-05-03 KV-cost fix: skip the FEED write when the fingerprint
+  // matches what's already in KV. Cursor/doneFinal mutations require a
+  // STATE write either way (round-robin progress is real state), but the
+  // FEED only needs to update when baseball-relevant content actually
+  // changed. Most active ticks during games-in-progress complete a PBP
+  // fetch that yields zero new HRs (HRs are sparse events) — we still
+  // mark Final games done in STATE, but we don't need to rewrite the
+  // identical FEED.
+  const tickFP = fingerprint(games, allHRs);
+  const feedChanged = tickFP !== existingFP;
+
+  if (feedChanged) {
+    const payload = buildPayload(allHRs, tickFP);
+    await env.LIVE_HR_KV.put(FEED_KEY(date), JSON.stringify(payload), {
+      expirationTtl: 60 * 60 * 36,
+    });
+  }
   await env.LIVE_HR_KV.put(STATE_KEY(date), JSON.stringify(state), {
     expirationTtl: 60 * 60 * 36,
   });
@@ -365,9 +416,15 @@ async function refresh(env) {
   console.log(
     `refresh: tick ${tickGames.length}/${pending.length} pending ` +
     `(cursor->${state.cursor}, doneFinal=${Object.keys(state.doneFinal).length}, ` +
-    `hrs=${allHRs.length}, gpks=${tickGames.map((g) => g.gamePk).join(",")})`
+    `hrs=${allHRs.length}, gpks=${tickGames.map((g) => g.gamePk).join(",")}, ` +
+    `feed=${feedChanged ? "write" : "skip"})`
   );
-  return payload;
+
+  // Return the payload regardless of whether we wrote it — the manual
+  // refresh endpoint and the cold-cache fetch path both rely on the
+  // return value. When we skipped the write, fall back to a payload
+  // built from existing data so the response shape stays the same.
+  return feedChanged ? buildPayload(allHRs, tickFP) : buildPayload(existingHRs, existingFP);
 }
 
 // ---------------------------------------------------------------------------
