@@ -418,6 +418,94 @@
       letter-spacing: 0.02em;
     }
     .cashbag-badge .cashbag-emoji { font-size: 13px; }
+
+    /* ── Lab tab (alternate views) ── */
+    .lab-intro {
+      padding: 14px 18px; margin-bottom: 18px;
+      background: var(--paper); border: 1px solid var(--rule);
+      border-radius: 6px; font-size: 13px; color: var(--ink-soft);
+      line-height: 1.5;
+    }
+    .lab-intro strong { color: var(--ink); }
+    .lab-view {
+      margin-bottom: 22px;
+      background: var(--paper); border: 1px solid var(--rule);
+      border-radius: 6px; padding: 16px 18px;
+    }
+    .lab-view-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 10px; padding-bottom: 8px;
+      border-bottom: 2px solid var(--ink);
+    }
+    .lab-view-title {
+      font-size: 16px; font-weight: 700; color: var(--ink);
+      letter-spacing: -0.01em;
+    }
+    .lab-view-formula {
+      font-size: 11px; color: var(--ink-muted);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.04em;
+    }
+    .lab-view-sub {
+      font-size: 12px; color: var(--ink-soft); margin-bottom: 10px;
+      font-style: italic;
+    }
+    .lab-row {
+      display: grid;
+      grid-template-columns: 24px 36px 1fr auto auto auto;
+      gap: 10px; padding: 8px 4px;
+      align-items: center; cursor: pointer;
+      border-bottom: 1px dashed rgba(184,167,132,0.25);
+      transition: background 0.12s ease;
+    }
+    .lab-row:last-child { border-bottom: none; }
+    .lab-row:hover { background: var(--surface-2); }
+    .lab-row .lab-rank {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--ink-muted); text-align: center;
+    }
+    .lab-row img.lab-headshot, .lab-row .lab-headshot {
+      width: 32px; height: 32px; border-radius: 4px;
+      object-fit: cover; background: var(--surface-2);
+      border: 1px solid var(--rule);
+    }
+    .lab-row .lab-name {
+      font-size: 13px; font-weight: 600; color: var(--ink);
+    }
+    .lab-row .lab-name .lab-team {
+      font-size: 10px; color: var(--ink-muted); margin-left: 5px;
+      font-family: 'JetBrains Mono', monospace; font-weight: 500;
+    }
+    .lab-row .lab-meta {
+      font-size: 11px; color: var(--ink-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .lab-row .lab-pitcher {
+      font-size: 11px; color: var(--ink-soft); font-style: italic;
+    }
+    .lab-row .lab-num {
+      font-family: 'JetBrains Mono', monospace; font-size: 13px;
+      font-weight: 700; color: var(--signal); min-width: 42px; text-align: right;
+    }
+    .lab-stack {
+      background: rgba(63,106,58,0.04);
+      padding: 10px 12px; border-radius: 4px;
+      margin-bottom: 10px; border: 1px solid var(--rule);
+    }
+    .lab-stack-head {
+      font-size: 12px; color: var(--ink-soft); margin-bottom: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      display: flex; justify-content: space-between;
+    }
+    .lab-stack-head .lab-stack-total {
+      color: var(--signal); font-weight: 700;
+    }
+    @media (max-width: 768px) {
+      .lab-row {
+        grid-template-columns: 24px 32px 1fr auto auto;
+      }
+      .lab-row .lab-pitcher { display: none; }
+    }
     .scoreboard-row:hover {
       background: rgba(244, 236, 216, 0.05);
     }
@@ -1709,6 +1797,7 @@
     <div class="tabs">
       <div class="tab active" data-panel="today">Today's Picks</div>
       <div class="tab" data-panel="board">Big Board</div>
+      <div class="tab" data-panel="lab">Lab</div>
       <div class="tab" data-panel="hrrecap">HR Recap</div>
       <div class="tab" data-panel="hitters">Hitters</div>
       <div class="tab" data-panel="history">History</div>
@@ -1745,6 +1834,17 @@
           <div class="rail-card" id="railSlate"><div class="loading">Loading slate...</div></div>
         </aside>
       </div>
+    </div>
+
+    <!-- LAB (alternate views — different filters/sorts on the same full_board) -->
+    <div class="panel" id="panel-lab">
+      <div class="lab-intro">
+        <strong>Lab</strong> · alternate cuts of today's full board.
+        Each view applies a different filter/sort to the same 277-batter pool —
+        a way to shrink the denominator and surface picks the composite top-8
+        misses. Click any row for the Topps card.
+      </div>
+      <div id="labContent"><div class="loading">Loading lab...</div></div>
     </div>
 
     <!-- HR RECAP -->
@@ -2289,6 +2389,206 @@
       if (typeof startLiveHRPolling === 'function') {
         startLiveHRPolling();
       }
+    }
+
+    // ── Render: Lab (alternate views over today's full board) ──
+    // Four views, each a different filter+sort over picks_latest.full_board.
+    // Confirmed-starter filter (batting_order ∈ 1..9) applied to all.
+    // Click any row → existing Topps modal (via bindPlayerClicks).
+    async function renderLab() {
+      const data = await fetchJSON('picks_latest');
+      const container = document.getElementById('labContent');
+      if (!data) {
+        container.innerHTML = '<div class="empty">No picks data available yet.</div>';
+        return;
+      }
+
+      const board = (data.full_board || []).filter(p => {
+        const bo = p.batting_order;
+        if (typeof bo === 'number') return bo >= 1 && bo <= 9;
+        if (typeof bo === 'string' && /^\d+$/.test(bo)) {
+          const n = parseInt(bo, 10);
+          return n >= 1 && n <= 9;
+        }
+        return false;
+      });
+
+      if (board.length === 0) {
+        container.innerHTML = '<div class="empty">No confirmed-starter rows on today\'s board.</div>';
+        return;
+      }
+
+      // VIEW 1: Power × Matchup (multiplicative, not weighted-additive)
+      // Rationale: composite blends 6 factors with fixed weights, smoothing
+      // out the truly-elite "stacks" in the two factors that matter most
+      // for HRs. Multiplicative surfaces batters who are top-quintile in
+      // BOTH dimensions, not just average across all six.
+      const v1 = [...board]
+        .map(p => ({ ...p, _lab_score: (p.power_score || 0) * (p.matchup_score || 0) / 100 }))
+        .sort((a, b) => b._lab_score - a._lab_score)
+        .slice(0, 5);
+
+      // VIEW 2: Hot Streak Watch
+      // Confirmed-starter + already-has-meaningful-HRs + good current form.
+      // Catches the "warming up" pattern where season barrel% / EV are mid
+      // but recent at-bats are trending hot — composite under-rates these
+      // because it averages season vs recent.
+      const v2 = [...board]
+        .filter(p => {
+          const seasonHr = p.season_stats?.hr ?? 0;
+          const form = p.form_score ?? 0;
+          return seasonHr >= 3 && form >= 60;
+        })
+        .sort((a, b) => (b.form_score || 0) - (a.form_score || 0))
+        .slice(0, 5);
+
+      // VIEW 3: Park × Pitcher Exploit
+      // Career power hitter (≥5 HR season-to-date) in HR-friendly park
+      // (park_score >= 65) facing a vulnerable arm (matchup_score >= 70).
+      // Three known lifters stacked → small denominator (~5-15/day).
+      const v3 = [...board]
+        .filter(p => {
+          const seasonHr = p.season_stats?.hr ?? 0;
+          return seasonHr >= 5
+              && (p.park_score || 0) >= 65
+              && (p.matchup_score || 0) >= 70;
+        })
+        .sort((a, b) =>
+          ((b.park_score || 0) + (b.matchup_score || 0))
+          - ((a.park_score || 0) + (a.matchup_score || 0))
+        )
+        .slice(0, 5);
+
+      // VIEW 4: Game Stacks
+      // Group confirmed starters by game_pk; pick top 2-3 by composite per
+      // game; surface the top 4 stacks ranked by Σ(top 2 composites).
+      // Different probability shape: P(at least one of N homers) ≠ Σ P(one).
+      // Useful for parlay construction.
+      const byGame = {};
+      for (const p of board) {
+        if (!p.game_pk) continue;
+        if (!byGame[p.game_pk]) byGame[p.game_pk] = [];
+        byGame[p.game_pk].push(p);
+      }
+      const stacks = [];
+      for (const [gpk, players] of Object.entries(byGame)) {
+        if (players.length < 2) continue;
+        players.sort((a, b) => (b.composite || 0) - (a.composite || 0));
+        const top = players.slice(0, 3);
+        const stackScore = top.slice(0, 2).reduce((s, p) => s + (p.composite || 0), 0);
+        stacks.push({ gamePk: gpk, players: top, score: stackScore });
+      }
+      stacks.sort((a, b) => b.score - a.score);
+      const v4 = stacks.slice(0, 4);
+
+      // Renderers
+      const renderRow = (p, i) => {
+        const pid = p.batter_id || p.player_id || '';
+        const headshot = pid ? headshotUrl(pid) : '';
+        const headshotEl = headshot
+          ? `<img class="lab-headshot" src="${headshot}" alt="${p.batter_name || ''}" onerror="this.style.display='none'"/>`
+          : `<div class="lab-headshot"></div>`;
+        const score = p._lab_score != null
+          ? p._lab_score.toFixed(1)
+          : (p.composite != null ? p.composite.toFixed(1) : '—');
+        const meta = p.batting_order ? `#${p.batting_order}` : '';
+        return `<div class="lab-row clickable-row" data-pid="${pid}">
+          <div class="lab-rank">${i + 1}</div>
+          ${headshotEl}
+          <div>
+            <div class="lab-name">${p.batter_name || ''}<span class="lab-team">${p.team || ''}</span></div>
+          </div>
+          <div class="lab-meta">${meta}</div>
+          <div class="lab-pitcher">vs. ${p.opp_pitcher || '—'}</div>
+          <div class="lab-num">${score}</div>
+        </div>`;
+      };
+
+      const renderView = (title, formula, sub, rows) => {
+        if (!rows.length) {
+          return `<div class="lab-view">
+            <div class="lab-view-head">
+              <div class="lab-view-title">${title}</div>
+              <div class="lab-view-formula">${formula}</div>
+            </div>
+            <div class="lab-view-sub">${sub}</div>
+            <div class="empty" style="font-size:12px;color:var(--ink-muted);padding:14px 0;">
+              No batters meet today's criteria.
+            </div>
+          </div>`;
+        }
+        return `<div class="lab-view">
+          <div class="lab-view-head">
+            <div class="lab-view-title">${title}</div>
+            <div class="lab-view-formula">${formula}</div>
+          </div>
+          <div class="lab-view-sub">${sub}</div>
+          ${rows.map((p, i) => renderRow(p, i)).join('')}
+        </div>`;
+      };
+
+      const renderStacks = (title, formula, sub, stackList) => {
+        if (!stackList.length) {
+          return `<div class="lab-view">
+            <div class="lab-view-head">
+              <div class="lab-view-title">${title}</div>
+              <div class="lab-view-formula">${formula}</div>
+            </div>
+            <div class="lab-view-sub">${sub}</div>
+            <div class="empty" style="font-size:12px;color:var(--ink-muted);padding:14px 0;">
+              No qualifying stacks yet.
+            </div>
+          </div>`;
+        }
+        const stacksHtml = stackList.map((s) => {
+          const sample = s.players[0] || {};
+          const teamLabel = sample.team || '';
+          return `<div class="lab-stack">
+            <div class="lab-stack-head">
+              <span>Game #${s.gamePk} · ${teamLabel} stack · ${s.players.length} batters</span>
+              <span>Stack score <span class="lab-stack-total">${s.score.toFixed(1)}</span></span>
+            </div>
+            ${s.players.map((p, i) => renderRow(p, i)).join('')}
+          </div>`;
+        }).join('');
+        return `<div class="lab-view">
+          <div class="lab-view-head">
+            <div class="lab-view-title">${title}</div>
+            <div class="lab-view-formula">${formula}</div>
+          </div>
+          <div class="lab-view-sub">${sub}</div>
+          ${stacksHtml}
+        </div>`;
+      };
+
+      let html = '';
+      html += renderView(
+        '⚡ Power × Matchup',
+        'power_score × matchup_score / 100',
+        'Top-quintile in BOTH dimensions, not just average across the 6 factors. Surfaces batters who stack the two signals that matter most for HRs.',
+        v1,
+      );
+      html += renderView(
+        '🔥 Hot Streak Watch',
+        'season_hr ≥ 3 AND form_score ≥ 60',
+        'Already-proven HR power AND trending hot recently. Catches the "warming up" pattern that the composite under-rates because it averages season vs. recent.',
+        v2,
+      );
+      html += renderView(
+        '🎯 Park × Pitcher Exploit',
+        'season_hr ≥ 5 AND park_score ≥ 65 AND matchup_score ≥ 70',
+        'Power hitter in HR-friendly park facing a vulnerable arm. Three known lifters stacked → small denominator (~5-15 batters/day).',
+        v3,
+      );
+      html += renderStacks(
+        '🎲 Game Stacks',
+        'Top 2-3 by composite per game · ranked by Σ top-2',
+        'Pick from the same game — different probability shape than independent picks. P(at least one of N homers) is the parlay angle.',
+        v4,
+      );
+
+      container.innerHTML = html;
+      bindPlayerClicks();
     }
 
     // ── Render: History ──
@@ -4721,6 +5021,7 @@
     // Init
     renderToday();
     renderBoard();
+    renderLab();
     renderHRRecap();
     renderHitters();
     renderHistory();
