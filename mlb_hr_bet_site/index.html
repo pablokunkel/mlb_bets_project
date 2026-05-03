@@ -400,6 +400,25 @@
     }
     .scoreboard-row:last-child { border-bottom: none; }
 
+    /* Cash-bag highlight: when a Today's Picks row's batter has homered
+       today (cross-referenced live via api.dingersonly.cc/api/live-hrs).
+       Updates every 30s while the live HR poll runs. */
+    .scoreboard-row.cashed {
+      background: linear-gradient(90deg, rgba(63, 106, 58, 0.18), var(--paper) 35%);
+      border-left: 4px solid var(--grass-deep, #2d5a2a);
+    }
+    .scoreboard-row.cashed .scoreboard-num {
+      color: var(--grass-deep, #2d5a2a);
+    }
+    .cashbag-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      margin-top: 3px; font-size: 11px; font-weight: 600;
+      color: var(--grass-deep, #2d5a2a);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.02em;
+    }
+    .cashbag-badge .cashbag-emoji { font-size: 13px; }
+
     /* ── Lab tab (alternate views) ── */
     .lab-intro {
       padding: 14px 18px; margin-bottom: 18px;
@@ -2193,6 +2212,90 @@
       return '-';
     }
 
+    // ── Cash-bag (Today's Picks live HR highlighter) ──
+    // When a pick's batter has homered today, decorate the scoreboard row
+    // with a 💰 badge + green-tinted background. Pulls from api.dingersonly
+    // .cc/api/live-hrs (already polled by the HR Recap tab; we share the
+    // same _liveState.feedCache).
+    //
+    // Two entry points:
+    //   - renderToday() calls _liveFetchAndDecorate() once after first render
+    //   - renderLiveHRSection() calls _decorateTodayPicks() after every
+    //     30s poll, so the cash bags appear in real time while watching
+    //     a game with the Today's Picks tab open or in the background.
+    let _todayPicksHrIds = new Set();      // batter_ids who've HR'd today
+    let _todayPicksHrDetail = {};           // batter_id -> sample HR event for badge label
+
+    function _updateTodayHrSetFromFeed(feedHrs) {
+      const newIds = new Set();
+      const detail = {};
+      for (const h of feedHrs || []) {
+        if (h.batterId) {
+          newIds.add(h.batterId);
+          // Keep the MOST RECENT HR per batter for the badge label.
+          // Multi-HR games show the latest HR's inning + distance.
+          if (!detail[h.batterId] || (h.time || '') > (detail[h.batterId].time || '')) {
+            detail[h.batterId] = h;
+          }
+        }
+      }
+      _todayPicksHrIds = newIds;
+      _todayPicksHrDetail = detail;
+    }
+
+    function _decorateTodayPicks() {
+      // No-op if Today's Picks hasn't been rendered yet (or current tab
+      // is on a different panel; the rows are still in the DOM though).
+      const rows = document.querySelectorAll('#panel-today .scoreboard-row');
+      if (!rows.length) return;
+      rows.forEach(row => {
+        const pid = parseInt(row.dataset.pid, 10);
+        if (!pid) return;
+        const isHr = _todayPicksHrIds.has(pid);
+        row.classList.toggle('cashed', isHr);
+        // Manage the badge inside .name-block
+        const nameBlock = row.querySelector('.name-block');
+        let badge = nameBlock?.querySelector('.cashbag-badge');
+        if (isHr) {
+          const hr = _todayPicksHrDetail[pid];
+          const inning = hr?.inning
+            ? `${hr.inning}${hr.halfInning === 'top' ? 'T' : hr.halfInning === 'bottom' ? 'B' : ''}`
+            : '';
+          const distance = hr?.totalDistance ? `${hr.totalDistance} ft` : '';
+          const velo = hr?.launchSpeed ? `${Math.round(hr.launchSpeed)} mph` : '';
+          const parts = [];
+          if (inning) parts.push(`HR'd in ${inning}`);
+          if (distance) parts.push(distance);
+          if (velo) parts.push(velo);
+          const label = parts.join(' · ') || 'cashed';
+          if (!badge) {
+            badge = document.createElement('div');
+            badge.className = 'cashbag-badge';
+            nameBlock?.appendChild(badge);
+          }
+          badge.innerHTML = `<span class="cashbag-emoji">💰</span> ${label}`;
+        } else if (badge) {
+          badge.remove();
+        }
+      });
+    }
+
+    async function _liveFetchAndDecorate() {
+      // One-shot fetch + decorate. Used by renderToday after first paint
+      // (so cash bags appear without waiting on the Recap-tab polling
+      // cycle to start). After this, renderLiveHRSection's polling keeps
+      // them up-to-date.
+      try {
+        const r = await fetch('https://api.dingersonly.cc/api/live-hrs?t=' + Date.now());
+        if (!r.ok) return;
+        const data = await r.json();
+        _updateTodayHrSetFromFeed(data.hrs || []);
+        _decorateTodayPicks();
+      } catch {
+        // Silent — feed offline shouldn't break Today's Picks render
+      }
+    }
+
     // ── Render: Today's Picks ──
     async function renderToday() {
       const data = await fetchJSON('picks_latest');
@@ -2276,6 +2379,16 @@
       document.getElementById('todayTable').innerHTML = html;
       bindPlayerClicks();
       bindMobileTables();
+
+      // Cash-bag pass: cross-reference picks with today's live HRs and
+      // decorate any pick whose batter has homered. Async — picks render
+      // first, badges appear as soon as the live-hrs fetch returns.
+      // Also kick off the live HR polling cycle (no-op if HR Recap tab
+      // already started it) so subsequent picks-tab views auto-update.
+      _liveFetchAndDecorate();
+      if (typeof startLiveHRPolling === 'function') {
+        startLiveHRPolling();
+      }
     }
 
     // ── Render: Lab (alternate views over today's full board) ──
@@ -3997,6 +4110,11 @@
         data = await resp.json();
         _liveState.lastFetchOkAt = Date.now();
         _liveState.feedCache = data;
+        // Update Today's Picks cash-bag decorations every poll cycle. The
+        // function no-ops when the picks panel isn't rendered, so this is
+        // free when the user is on a different tab.
+        _updateTodayHrSetFromFeed(data.hrs || []);
+        _decorateTodayPicks();
       } catch {
         data = _liveState.feedCache;
       }
