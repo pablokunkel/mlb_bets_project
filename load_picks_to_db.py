@@ -62,6 +62,7 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     card = data.get("picks", [])
     board = data.get("full_board", [])
     weight_config = data.get("scoring_config", "default")
+    mode = data.get("mode")  # 'live' / 'offline_simulation' (added 2026-05-03)
 
     if not board:
         # Older JSON without full_board — treat the 8-pick card as the entire board.
@@ -102,13 +103,16 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             game_pk, opp_pitcher, opp_pitcher_id,
             composite, power_score, matchup_score, matchup_version,
             park_score, form_score, weather_score, lineup_score,
-            batting_order, weight_config, selected, rank_in_board
-        ) VALUES (?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?)
+            batting_order, weight_config, selected, rank_in_board,
+            mode
+        ) VALUES (?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?)
     """
 
     # pick_inputs row insertion — captures the raw signals fed into each
     # factor, so the dashboard can decompose what drove each score.
     # Idempotent (INSERT OR REPLACE on PRIMARY KEY (date, batter_id)).
+    # 2026-05-03 added bats/throws + weather_source/barrel_pct_source for
+    # provenance — see etl/db.py for column comments.
     pick_inputs_sql = """
         INSERT OR REPLACE INTO pick_inputs (
             date, batter_id,
@@ -118,8 +122,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             woba_vs_hand, archetype_similarity, vegas_implied_total, platoon_advantage,
             hr_park_factor,
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
-            batting_order
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?)
+            batting_order,
+            bats, throws, weather_source, barrel_pct_source
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -173,6 +178,7 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             weight_config,
             sel,
             i,
+            mode,
         ))
         n_inserted += 1
 
@@ -220,6 +226,10 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     inputs.get("humidity_pct"),
                     inputs.get("is_dome"),
                     bo_int,
+                    inputs.get("bats"),
+                    inputs.get("throws"),
+                    inputs.get("weather_source"),
+                    inputs.get("barrel_pct_source"),
                 ))
                 n_inputs += 1
             except Exception:
