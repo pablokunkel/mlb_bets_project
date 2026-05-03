@@ -114,7 +114,7 @@ def main():
                    pi.recent_hr_14d, pi.recent_barrel_pct_14d, pi.ev_trend_14d,
                    pi.pitcher_hr_per_9, pi.pitcher_era, pi.pitcher_k_per_9,
                    pi.pitcher_fb_pct_allowed,
-                   pi.woba_vs_hand, pi.vegas_implied_total,
+                   pi.woba_vs_hand, pi.vegas_team_total_pct,
                    pi.platoon_advantage, pi.hr_park_factor,
                    pi.temperature_f, pi.wind_mph, pi.humidity_pct, pi.is_dome,
                    COALESCE(o.hr_count, 0) AS hr_count,
@@ -163,7 +163,7 @@ def main():
                       f"pit_era={fmt(b['pitcher_era'],prec=2)} pit_k/9={fmt(b['pitcher_k_per_9'],prec=2)} "
                       f"pit_fb%={fmt(b['pitcher_fb_pct_allowed'])} "
                       f"woba_v_hand={fmt(b['woba_vs_hand'],prec=3)} "
-                      f"vegas_tot={fmt(b['vegas_implied_total'],prec=1)} "
+                      f"vegas_tot={fmt(b['vegas_team_total_pct'],prec=1)} "
                       f"platoon={b['platoon_advantage']}")
                 print(f"    ENV      park_pf={fmt(b['hr_park_factor'])} "
                       f"temp={fmt(b['temperature_f'],prec=0)} wind={fmt(b['wind_mph'])} "

@@ -26,7 +26,8 @@ a pick_inputs row, assembles inputs from:
                                                              not all batted balls. Stays NULL.
 
   Lost forever:
-    - vegas_implied_total                                 <- free APIs no history; NULL
+    - vegas_team_total_pct                                <- free odds APIs no history; NULL
+    - vegas_team_total_raw                                <- (same)
 
 Each row written has source='backfill' so the dashboard can distinguish from
 'live' rows going forward. Future runs of generate_picks → load_picks_to_db
@@ -226,7 +227,7 @@ def main():
             barrel_pct, exit_velo, hr_fb_pct, iso, xwoba_contact, pull_fb_pct,
             recent_hr_14d, recent_barrel_pct_14d, ev_trend_14d,
             pitcher_hr_per_9, pitcher_era, pitcher_hh_pct, pitcher_k_per_9, pitcher_fb_pct_allowed,
-            woba_vs_hand, archetype_similarity, vegas_implied_total, platoon_advantage,
+            woba_vs_hand, archetype_similarity, vegas_team_total_pct, platoon_advantage,
             hr_park_factor,
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order, source
@@ -291,7 +292,7 @@ def main():
             bulk_fb.get(ppid),
             sb.get("woba"),
             archetype_sim,
-            None,  # vegas_implied_total — gone forever
+            None,  # vegas_team_total_pct — historical free-API odds gone forever
             platoon,
             pf_overall,
             sl.get("temperature_f"),

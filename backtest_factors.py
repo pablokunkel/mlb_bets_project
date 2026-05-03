@@ -78,7 +78,7 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
             pi.recent_hr_14d, pi.recent_barrel_pct_14d, pi.ev_trend_14d,
             pi.pitcher_hr_per_9, pi.pitcher_era, pi.pitcher_hh_pct,
             pi.pitcher_k_per_9, pi.pitcher_fb_pct_allowed,
-            pi.woba_vs_hand, pi.archetype_similarity, pi.vegas_implied_total,
+            pi.woba_vs_hand, pi.archetype_similarity, pi.vegas_team_total_pct,
             pi.platoon_advantage,
             pi.hr_park_factor,
             pi.temperature_f, pi.wind_mph, pi.wind_direction_deg,

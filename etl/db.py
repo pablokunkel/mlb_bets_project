@@ -402,7 +402,15 @@ def create_tables(conn: sqlite3.Connection):
         -- Matchup: batter + game inputs
         woba_vs_hand            REAL,
         archetype_similarity    REAL,
-        vegas_implied_total     REAL,
+        -- Vegas team total (renamed 2026-05-03; see migration block below)
+        --   *_pct = slate-relative percentile rank 0-100 (this is what feeds
+        --           the matchup score; the column was misleadingly named
+        --           `vegas_implied_total` for months because the field was
+        --           originally a raw run total)
+        --   *_raw = the actual Vegas implied team total in runs (4.5, 5.2,
+        --           etc.); was JSON-only previously, now persisted
+        vegas_team_total_pct    REAL,
+        vegas_team_total_raw    REAL,
         platoon_advantage       INTEGER,        -- 0/1
 
         -- Park
@@ -574,6 +582,34 @@ def create_tables(conn: sqlite3.Connection):
                 conn.execute(ddl)
             except Exception:
                 pass
+
+    # 2026-05-03 schema-cleanup PR: rename pick_inputs.vegas_implied_total ->
+    # vegas_team_total_pct (the column was misnamed for months — it stores a
+    # 0-100 percentile, not a Vegas run total) + add vegas_team_total_raw to
+    # persist the actual run total which had been JSON-only. SQLite's
+    # ALTER TABLE RENAME COLUMN is supported in 3.25+ (Sep 2018).
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    if ('vegas_implied_total' in existing_cols
+            and 'vegas_team_total_pct' not in existing_cols):
+        try:
+            conn.execute(
+                "ALTER TABLE pick_inputs RENAME COLUMN "
+                "vegas_implied_total TO vegas_team_total_pct"
+            )
+        except Exception:
+            pass
+        existing_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+        }
+    if 'vegas_team_total_raw' not in existing_cols:
+        try:
+            conn.execute(
+                "ALTER TABLE pick_inputs ADD COLUMN vegas_team_total_raw REAL"
+            )
+        except Exception:
+            pass
 
     conn.commit()
 

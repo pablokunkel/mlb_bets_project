@@ -169,13 +169,15 @@ def export_latest_picks(conn, out_dir: Path):
     # Vegas implied totals per team — same source the matchup score uses.
     # We pull from the cache the morning ETL hit, which lives in slate_ctx
     # at scoring time but isn't persisted per-team. Approximation here:
-    # if pick_inputs has vegas_implied_total for any batter on this team
+    # if pick_inputs has vegas_team_total_pct for any batter on this team
     # today, that's their team's percentile rank (already 0-100).
+    # 2026-05-03: column renamed from vegas_implied_total — see migration
+    # in etl/db.py. Old DBs are auto-renamed on first create_tables call.
     vegas_rows = conn.execute("""
-        SELECT DISTINCT dp.team, AVG(pi.vegas_implied_total) AS team_total_pct
+        SELECT DISTINCT dp.team, AVG(pi.vegas_team_total_pct) AS team_total_pct
         FROM daily_picks dp
         LEFT JOIN pick_inputs pi ON pi.date = dp.date AND pi.batter_id = dp.batter_id
-        WHERE dp.date = ? AND pi.vegas_implied_total IS NOT NULL
+        WHERE dp.date = ? AND pi.vegas_team_total_pct IS NOT NULL
         GROUP BY dp.team
     """, (latest_date,)).fetchall()
     vegas_by_team = {r["team"]: r["team_total_pct"] for r in vegas_rows}
@@ -576,12 +578,13 @@ def _factor_decomp(conn, days: int = 30,
         return {"days": days, "factors": {}, "n_hr": 0, "n_miss": 0}
 
     # Define the inputs grouped by factor
+    # 2026-05-03: vegas_implied_total renamed to vegas_team_total_pct.
     factor_inputs = {
         "power":   ["barrel_pct", "exit_velo", "hr_fb_pct", "iso", "xwoba_contact", "pull_fb_pct"],
         "form":    ["recent_hr_14d", "recent_barrel_pct_14d", "ev_trend_14d"],
         "matchup": ["pitcher_hr_per_9", "pitcher_era", "pitcher_hh_pct", "pitcher_k_per_9",
                     "pitcher_fb_pct_allowed", "woba_vs_hand", "archetype_similarity",
-                    "vegas_implied_total", "platoon_advantage"],
+                    "vegas_team_total_pct", "platoon_advantage"],
         "park":    ["hr_park_factor"],
         "weather": ["temperature_f", "wind_mph", "humidity_pct", "is_dome"],
         "lineup":  ["batting_order"],
@@ -805,7 +808,7 @@ INPUT_TO_FACTOR = {
     "pitcher_fb_pct_allowed":  "matchup",
     "woba_vs_hand":            "matchup",
     "archetype_similarity":    "matchup",
-    "vegas_implied_total":     "matchup",
+    "vegas_team_total_pct":    "matchup",
     "hr_park_factor":          "park",
     "temperature_f":           "weather",
     "wind_mph":                "weather",
