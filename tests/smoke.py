@@ -183,6 +183,30 @@ def pin_score_matchup_no_data() -> Result:
     )
 
 
+def pin_score_matchup_rookie_bonus() -> Result:
+    """Rookie pitcher (`is_rookie=True`) adds a +15 matchup bonus."""
+    from score_batters import score_matchup, ROOKIE_MATCHUP_BONUS
+    veteran = score_matchup(
+        {"woba_vs_hand": 0.330},
+        {"throws": "R", "hr_per_9": 1.2, "hard_hit_pct_allowed": 35},
+    )
+    rookie = score_matchup(
+        {"woba_vs_hand": 0.330},
+        {"throws": "R", "hr_per_9": 1.2, "hard_hit_pct_allowed": 35, "is_rookie": True},
+    )
+    delta = rookie - veteran
+    if abs(delta - ROOKIE_MATCHUP_BONUS) < 0.5:
+        return Result(
+            f"score_matchup rookie bonus = +{delta:.1f} (~{ROOKIE_MATCHUP_BONUS})",
+            Result.PASS,
+        )
+    return Result(
+        "score_matchup rookie bonus",
+        Result.HALT,
+        f"got delta={delta:.1f}, expected ~{ROOKIE_MATCHUP_BONUS}",
+    )
+
+
 def pin_compute_slate_context_empty() -> Result:
     """compute_slate_context with empty inputs returns a clean dict, not a crash."""
     from score_batters import compute_slate_context
@@ -408,6 +432,7 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_elite,
     pin_score_lineup_position_table,
     pin_score_matchup_no_data,
+    pin_score_matchup_rookie_bonus,
     pin_compute_slate_context_empty,
     pin_compute_slate_context_skip_missing_pitcher,
     pin_compute_slate_context_two_signal_pitcher,
