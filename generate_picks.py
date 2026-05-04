@@ -1088,9 +1088,35 @@ def score_untiered_starters(
                     continue
                 if pname in EXCLUDED_PLAYERS:
                     continue
-                team = game["home_team"] if side == "home" else game["away_team"]
+
+                # 2026-05-03 fix: the bdfed lineup endpoint only returns
+                # boxscoreName ("Cortes", "Correa", "Black") — not fullName.
+                # T1/T2/T3 batters get "Carlos Cortes" because they flow
+                # through _splits_to_batters which uses fullName. T4
+                # batters were inheriting the boxscoreName, which then
+                # showed in dropdowns/cards as last-name-only ugly stubs.
+                # Override with season_batting/career_batting fullName when
+                # we have it (we usually do — even rookies have a row by
+                # mid-season).
+                full_name = pname
+                sb_row = season_lookup.get(pid) if season_lookup else None
+                if sb_row and sb_row.get("player_name"):
+                    full_name = sb_row["player_name"]
+                elif career_lookup and pid in career_lookup:
+                    full_name = career_lookup[pid].get("player_name") or pname
+
+                # 2026-05-03 fix: game["home_team"] / ["away_team"] are
+                # FULL team names ("Athletics", "Milwaukee Brewers"). T1/2/3
+                # batters get the abbreviation via _splits_to_batters; T4
+                # was getting the full name, which polluted the team
+                # dropdown and the team column in dashboards. Convert via
+                # TEAM_FULL_TO_ABBREV; fall back to full name if unmapped
+                # (preserves current behavior for any new/renamed team).
+                full_team = game["home_team"] if side == "home" else game["away_team"]
+                team = TEAM_FULL_TO_ABBREV.get(full_team, full_team)
+
                 stub = {
-                    "name": pname,
+                    "name": full_name,
                     "team": team,
                     "player_id": pid,
                 }
