@@ -112,8 +112,16 @@ def export_latest_picks(conn, out_dir: Path):
                 p.power_score, p.matchup_score, p.park_score,
                 p.form_score, p.weather_score, p.lineup_score,
                 p.batting_order, p.matchup_version, p.game_pk,
-                p.selected, p.rank_in_board
+                p.selected, p.rank_in_board,
+                -- 2026-05-04: pull lineup_source from pick_inputs so the
+                -- dashboard Topps modal can render a "📋 from {date}"
+                -- badge on picks whose batting_order came from a
+                -- recent-lineup fallback (PR #33). NULL on historical
+                -- rows that pre-date the pick_inputs.lineup_source column.
+                pi.lineup_source AS lineup_source
             FROM daily_picks p
+            LEFT JOIN pick_inputs pi
+                ON pi.date = p.date AND pi.batter_id = p.batter_id
             WHERE p.date = ?
         )
         SELECT

@@ -715,6 +715,27 @@
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
+    /* Small inline badge on the Lineup row of the Topps modal. Surfaces
+       PR #33's recent-lineup fallback so we know when the batting_order
+       displayed is from yesterday's lineup, not today's. PR #34. */
+    .lineup-source-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 6px;
+      font-family: 'Inter', sans-serif;
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--ink-muted);
+      background: rgba(0, 0, 0, 0.04);
+      border-radius: 3px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      vertical-align: middle;
+    }
+    .lineup-source-badge.warn {
+      color: #b45309;
+      background: rgba(180, 83, 9, 0.08);
+    }
     .modal-section h4 {
       font-size: 12px; color: var(--text-muted); text-transform: uppercase;
       letter-spacing: 0.5px; margin-bottom: 8px;
@@ -4887,6 +4908,27 @@
 
       if (today) {
         const boardSize = _picksLatestCache?.board_size || (_picksLatestCache?.full_board?.length) || 280;
+        // 2026-05-04: lineup_source badge (PR #34). When the batter's
+        // batting_order came from a recent-lineup fallback (PR #33), flag
+        // it visibly so we know the lineup-derived signals (lineup_score,
+        // batting_order display) are stale-but-not-garbage. Three states:
+        //   "posted"            → no badge (canonical, today's lineup)
+        //   "recent:YYYY-MM-DD" → "📋 from {short-date}" muted badge
+        //   "roster_fallback"   → "⚠ roster fallback" warning badge
+        //   null / undefined    → no badge (legacy data, treat as posted)
+        let lineupBadge = '';
+        const ls = today.lineup_source;
+        if (typeof ls === 'string' && ls.startsWith('recent:')) {
+          const dateStr = ls.slice(7);  // "YYYY-MM-DD"
+          let shortDate = dateStr;
+          try {
+            const d = new Date(dateStr + 'T12:00:00');
+            shortDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          } catch (_) { /* fall back to raw */ }
+          lineupBadge = `<span class="lineup-source-badge">📋 from ${shortDate}</span>`;
+        } else if (ls === 'roster_fallback') {
+          lineupBadge = `<span class="lineup-source-badge warn">⚠ roster fallback</span>`;
+        }
         html += `
           <div class="modal-section">
             <h4>vs. Today's Pitcher</h4>
@@ -4896,7 +4938,7 @@
             ${lineRow('Form',      fmtN(today.form_score,    1),  fmtRank(today.rank_form))}
             ${lineRow('Park',      fmtN(today.park_score,    1),  fmtRank(today.rank_park))}
             ${lineRow('Weather',   fmtN(today.weather_score, 1),  fmtRank(today.rank_weather))}
-            ${lineRow('Lineup',    orderLabel(today.batting_order))}
+            ${lineRow('Lineup',    `${orderLabel(today.batting_order)} ${lineupBadge}`)}
           </div>
         `;
       }
