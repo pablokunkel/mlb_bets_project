@@ -2513,6 +2513,25 @@
         )
         .slice(0, 5);
 
+      // VIEW 3.5: Pure Longshots (no-floor, high-composite low-HR)
+      // Surfaces batters the model loves on tonight's matchup/park/form/
+      // weather signals despite having NOT yet crossed the season-HR
+      // floor (< 5 HR season-to-date). The floor in PR #16/25 only
+      // ELEVATES — it never depresses — so these guys' composites
+      // reflect raw signal mix without any HR-history boost. The bet
+      // case: at +800 sportsbook prices, even a 16% hit rate is +EV.
+      // We're tracking these separately so we can compute that hit rate
+      // empirically over time.
+      const v3b = [...board]
+        .filter(p => {
+          const seasonHr = p.season_stats?.hr ?? 0;
+          // Strict: under all floor tiers (lowest is >=5 HR -> 50.0)
+          // AND composite signal still strong enough to mean something.
+          return seasonHr < 5 && (p.composite || 0) >= 55;
+        })
+        .sort((a, b) => (b.composite || 0) - (a.composite || 0))
+        .slice(0, 5);
+
       // VIEW 4: Game Stacks
       // Group confirmed starters by game_pk; pick top 2-3 by composite per
       // game; surface the top 4 stacks ranked by Σ(top 2 composites).
@@ -2633,6 +2652,12 @@
         'season_hr ≥ 5 AND park_score ≥ 65 AND matchup_score ≥ 70',
         'Power hitter in HR-friendly park facing a vulnerable arm. Three known lifters stacked → small denominator (~5-15 batters/day).',
         v3,
+      );
+      html += renderView(
+        '🎰 Pure Longshots',
+        'season_hr < 5 AND composite ≥ 55',
+        'High-composite batters who haven\'t yet hit 5 HR — under all floor tiers. The model loves them on matchup/park/form/weather despite no HR-history boost. At +800 book prices, ~12% true hit rate breaks even; we\'re tracking these to measure empirically.',
+        v3b,
       );
       html += renderStacks(
         '🎲 Game Stacks',
