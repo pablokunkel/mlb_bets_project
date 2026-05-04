@@ -428,6 +428,18 @@ def _platoon_dampener(games: int | None, slate_max_games: int | None) -> float:
     return PLATOON_DAMPENER_FLOOR + (1.0 - PLATOON_DAMPENER_FLOOR) * play_rate
 
 
+# Rookie pitcher matchup bonus — see score_matchup() for the rationale.
+# Applied additively to the matchup score (capped at 100) when the
+# opposing pitcher has < 300 career Statcast pitches (the rookie set is
+# computed by generate_picks.load_rookie_pitcher_ids and stamped on the
+# pitcher dict as `is_rookie=True`).
+#
+# 15 calibrated to roughly match the lift from a strong vs middling
+# pitcher in the existing matchup distribution — moves a "facing a
+# fresh callup" batter up ~5-10 ranks on a typical board.
+ROOKIE_MATCHUP_BONUS = 15
+
+
 LEAGUE_AVG_PITCHER = {
     "name": "league_avg",
     "hr_per_9": 1.2,
@@ -461,7 +473,13 @@ LEAGUE_AVG_PITCHER = {
 # career mean): this is a hard, score-level floor. The two could stack
 # (career-prior fixes "his rates LOOK bad due to small sample"; HR-floor
 # fixes "his accumulated season HR count is real proof").
-USE_SEASON_HR_FLOOR = False
+USE_SEASON_HR_FLOOR = True   # 2026-05-03: flipped on after 14d harness showed
+                              # decisive wins on all 4 metrics. 30d window was
+                              # ambiguous because most April hitters hadn't yet
+                              # crossed the 5/8/12 HR thresholds. Today's
+                              # Soderstrom miss (4 HR going in, hit a 5th) and
+                              # the Drake Baldwin pattern (8 HR, ranked #97)
+                              # confirmed the qualitative case.
 
 # (season_hr_threshold, power_score_floor_when_qualified)
 # Calibrated on 2026-05-02 HR data:
@@ -511,32 +529,49 @@ def score_power(batter: dict) -> float:
     happened to land at zero (or who was renormalized down to zero in
     fetch_daily_data._splits_to_batters) had their power score dragged
     to ~13 even with elite real Statcast inputs (Buxton 5/1, refit notes).
+
+    2026-05-03 anchor re-tune: original min_max ranges were generous on
+    the upside (barrel 0-25, EV 80-100, HR/FB 0-30) so even MLB-leading
+    Statcast values capped at 50-70%. Real elite cutoffs land much
+    tighter — Aaron Judge's 17% barrel was scoring 68 instead of ~100.
+    Anchors now reflect actual MLB distributions (league avg → 0,
+    elite → 100):
+      barrel%      5-15  (5% league avg, 13%+ elite)
+      exit velo    85-95  (88 avg, 92+ elite)
+      HR/FB%       8-20   (12 avg, 18+ elite)
+      ISO          0.130-0.300  (.150 avg, .250+ elite)
+      xwOBA contact 0.330-0.450  (.380 avg, .420+ elite)
+      pull FB%     8-22   (12 avg, 20+ elite)
+    Mid-tier scores tighten slightly (~3-5 pts lower); elite scores
+    widen significantly (~15-20 pts higher); under-replacement scores
+    bottom out near 0 (was ~20). Result: more rank discrimination at
+    both tails of the distribution.
     """
     scores = []
 
     barrel = batter.get("barrel_pct")
     if barrel is not None and barrel > 0:
-        scores.append(min_max_scale(barrel, 0, 25))
+        scores.append(min_max_scale(barrel, 5, 15))
 
     ev = batter.get("exit_velo")
     if ev is not None and ev > 0:
-        scores.append(min_max_scale(ev, 80, 100))
+        scores.append(min_max_scale(ev, 85, 95))
 
     hr_fb = batter.get("hr_fb_pct")
     if hr_fb is not None and hr_fb > 0:
         if hr_fb < 1:
             hr_fb *= 100
-        scores.append(min_max_scale(hr_fb, 0, 30))
+        scores.append(min_max_scale(hr_fb, 8, 20))
 
     iso = batter.get("iso")
     if iso is not None and iso > 0:
-        scores.append(min_max_scale(iso, 0.100, 0.350))
+        scores.append(min_max_scale(iso, 0.130, 0.300))
 
-    # xwOBA on contact: .280 (poor contact) -> .500 (elite). One of the
-    # most HR-predictive Statcast metrics. Defaults missing.
+    # xwOBA on contact — most HR-predictive Statcast metric. League avg
+    # is ~.380; .420+ marks elite contact quality.
     xwoba_contact = batter.get("xwoba_contact")
     if xwoba_contact is not None and xwoba_contact > 0:
-        scores.append(min_max_scale(xwoba_contact, 0.280, 0.500))
+        scores.append(min_max_scale(xwoba_contact, 0.330, 0.450))
 
     # Pull-FB%: percentage of contact that is pulled fly balls. HRs come
     # almost exclusively from pulled fly balls. League avg ~12%, elite ~22%.
@@ -544,7 +579,7 @@ def score_power(batter: dict) -> float:
     if pull_fb is not None and pull_fb > 0:
         if pull_fb < 1:
             pull_fb *= 100
-        scores.append(min_max_scale(pull_fb, 5, 25))
+        scores.append(min_max_scale(pull_fb, 8, 22))
 
     base_score = float(np.mean(scores)) if scores else 50.0
 
@@ -637,8 +672,19 @@ def score_matchup(
     pitcher_hand = pitcher.get("throws", "R")
     platoon_bonus = 10 if batter_hand != pitcher_hand else 0
 
+    # 2026-05-03 rookie pitcher bonus: pitchers with < 300 career Statcast
+    # pitches (or no pitcher_arsenals row) get LEAGUE_AVG_PITCHER stat
+    # defaults from `fetch_pitcher_stats_mlb`, which scores them as a
+    # middling matchup. Reality: rookie pitchers historically allow ~20%
+    # higher HR/9 than their final career rate as the league learns them.
+    # The Aaron Judge vs Trey Gibson type spot is a HUGE edge — adding a
+    # +15 baseline so batters facing rookies move up the board.
+    # `is_rookie` is stamped on the pitcher dict by
+    # generate_picks.load_rookie_pitcher_ids(). Missing key (False) = veteran.
+    rookie_bonus = ROOKIE_MATCHUP_BONUS if pitcher.get("is_rookie") else 0
+
     base = float(np.mean(scores)) if scores else 50.0
-    return min(100, base + platoon_bonus)
+    return min(100, base + platoon_bonus + rookie_bonus)
 
 
 def score_park(
@@ -1006,6 +1052,22 @@ def compute_composite(
         + weights.get("lineup", 0) * lineup
     )
 
+    # 2026-05-03 park bonus: WEIGHT_CONFIGS["default"] zeroed out park
+    # because the v2 logistic-regression refit found park-as-fixed-anchor
+    # contributed near-zero on a 20-day training window (batters play
+    # their home park ~50% of games — signal washes). But park-as-
+    # within-slate-percentile IS a real edge: Yankee Stadium today (PF
+    # 115, top of the slate) vs Petco (PF 92) is a 25-point park_score
+    # spread that we were throwing away. Rather than restealing weight
+    # from another factor (and re-fitting all weights), add park as a
+    # PURELY ADDITIVE bonus on top of the existing weighted average.
+    # This shifts every composite up a few points (+2.5 avg, +4 for top
+    # parks, +1 for bottom parks) but the relative ranking is what
+    # matters and it brings hot-park batters up the board where they
+    # belong. Weight 0.05 chosen so the bonus is meaningful (3-4 pt
+    # spread between best/worst park) without dominating.
+    composite += 0.05 * park
+
     # 2026-05-04 platoon dampener: multiplicative haircut for batters
     # who don't start every game. The model otherwise treats Cortes
     # (~75% play rate, platoon hitter) the same as a daily starter with
@@ -1013,6 +1075,9 @@ def compute_composite(
     # scratched or pulled mid-game when the matchup flips. Floor at
     # 0.90 (max 10% reduction) so platoon bats stay visible but slip
     # a few ranks. See _platoon_dampener() docstring for the formula.
+    # Applied AFTER the park bonus so the dampener scales the entire
+    # composite (including the bonus) — keeps the multiplicative
+    # interpretation clean.
     #
     # `slate_max_games` is plumbed via slate_ctx — score_live_slate +
     # score_untiered_starters compute it once per slate (the highest

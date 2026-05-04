@@ -175,6 +175,59 @@ def load_season_batting_lookup(season: int) -> dict:
         return {}
 
 
+def load_rookie_pitcher_ids(pitcher_id_map: dict, threshold: int = 300) -> set[int]:
+    """Identify pitchers with thin/no career Statcast data.
+
+    A pitcher is "rookie" for our matchup-bonus purposes when their
+    cumulative `pitcher_arsenals.total_pitches` across all seasons is
+    below `threshold` (default 300 — covers their first 1-3 MLB starts).
+    Pitchers with NO row in the table are also flagged rookie since
+    that's the same signal: not enough big-league exposure for Savant
+    to have classified them.
+
+    Why this matters: a fresh callup like Trey Gibson facing the Yanks
+    gets the LEAGUE_AVG_PITCHER fallback (1.2 HR/9, 4.0 ERA) when MLB
+    Stats API doesn't yet have season data, which scores them as a
+    middle-of-the-pack matchup. Reality: rookie pitchers get shelled
+    historically. score_matchup adds a +15 bonus to the matchup score
+    for batters facing a rookie-flagged pitcher (see ROOKIE_MATCHUP_BONUS
+    in score_batters.py).
+
+    pitcher_id_map: {pitcher_name: pitcher_id}
+    Returns: set of pitcher_ids that should be flagged rookie.
+    """
+    if not pitcher_id_map:
+        return set()
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        if not db_path.exists():
+            return set()
+        conn = sqlite3.connect(str(db_path))
+        ids = [pid for pid in pitcher_id_map.values() if pid]
+        if not ids:
+            conn.close()
+            return set()
+        # Single query: SUM(total_pitches) per pitcher across all seasons
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""SELECT pitcher_id, COALESCE(SUM(total_pitches), 0) AS career_p
+                FROM pitcher_arsenals
+                WHERE pitcher_id IN ({placeholders})
+                GROUP BY pitcher_id""",
+            ids,
+        ).fetchall()
+        conn.close()
+
+        career_by_id = {r[0]: r[1] for r in rows}
+        # IDs with no row -> 0 career pitches -> flagged rookie.
+        # IDs with row but career_p < threshold -> flagged rookie.
+        return {pid for pid in ids if career_by_id.get(pid, 0) < threshold}
+    except Exception as e:
+        print(f"  [ROOKIE] Could not load rookie pitcher set ({e}) — disabling penalty")
+        return set()
+
+
 def load_career_lookup() -> dict:
     """
     Load career_batting from the local DB into {player_id: career_dict}.
@@ -705,6 +758,21 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         # manually for one-off runs that want archetype matching.
         status.warn("Pitcher Archetypes", "skipped (USE_PER_PLAYER_STATCAST=False) - matchup v1 path")
 
+    # ── Rookie pitcher detection ──────────────────────────────────────
+    # Tag pitchers with < 300 career Statcast pitches (or no arsenal row)
+    # as rookies. score_matchup applies a +15 bonus to batters facing them
+    # since LEAGUE_AVG_PITCHER defaults score rookies as middling matchups,
+    # whereas the Aaron Judge vs Trey Gibson type spot is a HUGE edge.
+    rookie_pitcher_ids = load_rookie_pitcher_ids(pitcher_id_map)
+    if rookie_pitcher_ids:
+        rookie_names = [n for n, pid in pitcher_id_map.items() if pid in rookie_pitcher_ids]
+        status.ok("Rookie Pitcher Tag", f"{len(rookie_pitcher_ids)} flagged: {', '.join(rookie_names[:5])}{'...' if len(rookie_names) > 5 else ''}")
+        # Stamp `is_rookie=True` on the pitcher dicts so score_matchup picks
+        # it up via pitcher.get("is_rookie").
+        for pname, pid in pitcher_id_map.items():
+            if pid in rookie_pitcher_ids and pname in pitcher_lookup:
+                pitcher_lookup[pname]["is_rookie"] = True
+
     # ── Pitcher FB% allowed via BULK Savant CSV (one HTTP call) ────────
     # Was per-pitcher Statcast — wedged the noon run on 2026-04-29.
     try:
@@ -1088,9 +1156,35 @@ def score_untiered_starters(
                     continue
                 if pname in EXCLUDED_PLAYERS:
                     continue
-                team = game["home_team"] if side == "home" else game["away_team"]
+
+                # 2026-05-03 fix: the bdfed lineup endpoint only returns
+                # boxscoreName ("Cortes", "Correa", "Black") — not fullName.
+                # T1/T2/T3 batters get "Carlos Cortes" because they flow
+                # through _splits_to_batters which uses fullName. T4
+                # batters were inheriting the boxscoreName, which then
+                # showed in dropdowns/cards as last-name-only ugly stubs.
+                # Override with season_batting/career_batting fullName when
+                # we have it (we usually do — even rookies have a row by
+                # mid-season).
+                full_name = pname
+                sb_row = season_lookup.get(pid) if season_lookup else None
+                if sb_row and sb_row.get("player_name"):
+                    full_name = sb_row["player_name"]
+                elif career_lookup and pid in career_lookup:
+                    full_name = career_lookup[pid].get("player_name") or pname
+
+                # 2026-05-03 fix: game["home_team"] / ["away_team"] are
+                # FULL team names ("Athletics", "Milwaukee Brewers"). T1/2/3
+                # batters get the abbreviation via _splits_to_batters; T4
+                # was getting the full name, which polluted the team
+                # dropdown and the team column in dashboards. Convert via
+                # TEAM_FULL_TO_ABBREV; fall back to full name if unmapped
+                # (preserves current behavior for any new/renamed team).
+                full_team = game["home_team"] if side == "home" else game["away_team"]
+                team = TEAM_FULL_TO_ABBREV.get(full_team, full_team)
+
                 stub = {
-                    "name": pname,
+                    "name": full_name,
                     "team": team,
                     "player_id": pid,
                 }

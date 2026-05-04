@@ -214,6 +214,30 @@ def pin_platoon_dampener_table() -> Result:
     )
 
 
+def pin_score_matchup_rookie_bonus() -> Result:
+    """Rookie pitcher (`is_rookie=True`) adds a +15 matchup bonus."""
+    from score_batters import score_matchup, ROOKIE_MATCHUP_BONUS
+    veteran = score_matchup(
+        {"woba_vs_hand": 0.330},
+        {"throws": "R", "hr_per_9": 1.2, "hard_hit_pct_allowed": 35},
+    )
+    rookie = score_matchup(
+        {"woba_vs_hand": 0.330},
+        {"throws": "R", "hr_per_9": 1.2, "hard_hit_pct_allowed": 35, "is_rookie": True},
+    )
+    delta = rookie - veteran
+    if abs(delta - ROOKIE_MATCHUP_BONUS) < 0.5:
+        return Result(
+            f"score_matchup rookie bonus = +{delta:.1f} (~{ROOKIE_MATCHUP_BONUS})",
+            Result.PASS,
+        )
+    return Result(
+        "score_matchup rookie bonus",
+        Result.HALT,
+        f"got delta={delta:.1f}, expected ~{ROOKIE_MATCHUP_BONUS}",
+    )
+
+
 def pin_compute_slate_context_empty() -> Result:
     """compute_slate_context with empty inputs returns a clean dict, not a crash."""
     from score_batters import compute_slate_context
@@ -351,34 +375,48 @@ def pin_compute_season_hr_floor_tiers() -> Result:
     )
 
 
-def pin_use_season_hr_floor_default_off() -> Result:
-    """Production must default to no floor until backtest validates."""
+def pin_use_season_hr_floor_default_on() -> Result:
+    """Production runs with the floor ON since 2026-05-03.
+
+    Originally defaulted to False (PR #16 shipped as opt-in pending
+    backtest). The 14d harness showed decisive wins on all 4 metrics
+    (avg_rank 87.8→82.7, AUC 0.633→0.661, top10_lift 2.45→2.83,
+    quint_mono 2→3); 30d was ambiguous because April hitters hadn't yet
+    crossed the 5/8/12 HR thresholds. Flipped on 2026-05-03 after
+    Soderstrom (4 HR going in, hit his 5th unprotected) and the
+    long-running Drake Baldwin pattern confirmed the qualitative case.
+    """
     from score_batters import USE_SEASON_HR_FLOOR
-    if USE_SEASON_HR_FLOOR is False:
+    if USE_SEASON_HR_FLOOR is True:
         return Result(
-            "USE_SEASON_HR_FLOOR default = False (production-safe)", Result.PASS
+            "USE_SEASON_HR_FLOOR default = True (post-validation)", Result.PASS
         )
     return Result(
-        "USE_SEASON_HR_FLOOR default = False",
+        "USE_SEASON_HR_FLOOR default = True",
         Result.HALT,
-        f"got {USE_SEASON_HR_FLOOR}; flipping the flag without backtest "
-        "could over-promote slow-power-streak veterans. Default must be False.",
+        f"got {USE_SEASON_HR_FLOOR}; the floor was promoted to default "
+        "after 14d harness validation. Reverting requires re-running the "
+        "backtest harness and documenting the regression.",
     )
 
 
 def pin_score_power_floor_lifts_low_score() -> Result:
     """With flag on, an 8-HR batter with weak inputs gets lifted to 60."""
     import score_batters as sb
+    prev = sb.USE_SEASON_HR_FLOOR
     sb.USE_SEASON_HR_FLOOR = True
     try:
-        # Weak inputs that average to ~30
+        # Weak inputs that average well below 60 under either old or new
+        # power-scale anchors (the 8-HR tier floor is the test, not the
+        # specific avg). 2026-05-03 anchor re-tune dropped these from
+        # ~30 to ~17, but the floor lift to 60 is unchanged.
         baldwin = {
             "barrel_pct": 6.0, "exit_velo": 88.0,
             "hr_fb_pct": 8.0, "iso": 0.180, "hr": 8,
         }
         val = sb.score_power(baldwin)
     finally:
-        sb.USE_SEASON_HR_FLOOR = False
+        sb.USE_SEASON_HR_FLOOR = prev
     if val == 60.0:
         return Result(
             "score_power(8 HR + weak inputs) -> 60.0 (Drake Baldwin scenario)",
@@ -394,16 +432,19 @@ def pin_score_power_floor_lifts_low_score() -> Result:
 def pin_score_power_floor_does_not_pull_down() -> Result:
     """An already-elite power score should NOT be reduced by the floor."""
     import score_batters as sb
+    prev = sb.USE_SEASON_HR_FLOOR
     sb.USE_SEASON_HR_FLOOR = True
     try:
-        # Elite inputs that average to ~72 (Buxton-class)
+        # Elite inputs that average well above the 60-floor for 10 HR.
+        # Under the 2026-05-03 anchor re-tune these average ~94, which
+        # is comfortably above the 60-floor regardless.
         elite = {
             "barrel_pct": 18.0, "exit_velo": 94.0,
             "hr_fb_pct": 22.0, "iso": 0.280, "hr": 10,
         }
         val = sb.score_power(elite)
     finally:
-        sb.USE_SEASON_HR_FLOOR = False
+        sb.USE_SEASON_HR_FLOOR = prev
     if val > 70.0:  # well above the 60-floor for 10 HR
         return Result(
             f"score_power(elite + 10 HR) -> {val:.1f} (floor no-op)",
@@ -423,6 +464,7 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_lineup_position_table,
     pin_score_matchup_no_data,
     pin_platoon_dampener_table,
+    pin_score_matchup_rookie_bonus,
     pin_compute_slate_context_empty,
     pin_compute_slate_context_skip_missing_pitcher,
     pin_compute_slate_context_two_signal_pitcher,
@@ -431,7 +473,7 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_shrink_to_career_huge_sample_barely_shrinks,
     pin_use_career_prior_default_off,
     pin_compute_season_hr_floor_tiers,
-    pin_use_season_hr_floor_default_off,
+    pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
 ]

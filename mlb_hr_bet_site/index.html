@@ -2472,6 +2472,31 @@
         return;
       }
 
+      // VIEW 0: Homerun Leaders (anchor on proven season HR power)
+      // Rationale: the main-board composite blends 6 factors; the model's
+      // Aaron-Judge-at-rank-38 mistake (5/3) shows the composite under-
+      // weights "this guy hits HRs" relative to "this is a good matchup
+      // today." This view inverts that — anchor on the 10 highest season-
+      // HR hitters who are starting today, then pick the 3 most likely to
+      // homer based on EVERYTHING ELSE (composite minus the power
+      // contribution, since power is highly correlated with season_hr by
+      // construction and would otherwise just re-rank by the same axis).
+      // Result: a proven-power short list re-sorted by matchup/park/form/
+      // weather/lineup tilts.
+      // Power weight is 0.25 in WEIGHT_CONFIGS["default"]; subtract that
+      // contribution to get the "non-power composite."
+      const top10HR = [...board]
+        .filter(p => (p.season_stats?.hr ?? 0) >= 1)
+        .sort((a, b) => (b.season_stats?.hr ?? 0) - (a.season_stats?.hr ?? 0))
+        .slice(0, 10);
+      const v0 = top10HR
+        .map(p => ({
+          ...p,
+          _lab_score: (p.composite || 0) - 0.25 * (p.power_score || 0),
+        }))
+        .sort((a, b) => b._lab_score - a._lab_score)
+        .slice(0, 3);
+
       // VIEW 1: Power × Matchup (multiplicative, not weighted-additive)
       // Rationale: composite blends 6 factors with fixed weights, smoothing
       // out the truly-elite "stacks" in the two factors that matter most
@@ -2511,6 +2536,25 @@
           ((b.park_score || 0) + (b.matchup_score || 0))
           - ((a.park_score || 0) + (a.matchup_score || 0))
         )
+        .slice(0, 5);
+
+      // VIEW 3.5: Pure Longshots (no-floor, high-composite low-HR)
+      // Surfaces batters the model loves on tonight's matchup/park/form/
+      // weather signals despite having NOT yet crossed the season-HR
+      // floor (< 5 HR season-to-date). The floor in PR #16/25 only
+      // ELEVATES — it never depresses — so these guys' composites
+      // reflect raw signal mix without any HR-history boost. The bet
+      // case: at +800 sportsbook prices, even a 16% hit rate is +EV.
+      // We're tracking these separately so we can compute that hit rate
+      // empirically over time.
+      const v3b = [...board]
+        .filter(p => {
+          const seasonHr = p.season_stats?.hr ?? 0;
+          // Strict: under all floor tiers (lowest is >=5 HR -> 50.0)
+          // AND composite signal still strong enough to mean something.
+          return seasonHr < 5 && (p.composite || 0) >= 55;
+        })
+        .sort((a, b) => (b.composite || 0) - (a.composite || 0))
         .slice(0, 5);
 
       // VIEW 4: Game Stacks
@@ -2617,6 +2661,12 @@
 
       let html = '';
       html += renderView(
+        '💣 Homerun Leaders',
+        'top 10 by season HR · top 3 by composite − 0.25·power',
+        'Anchor on proven HR power, then re-rank within those 10 by everything except power (so we don\'t double-count what got them on the list). Catches Judge-class hitters that the main board\'s 6-factor weighting under-rates.',
+        v0,
+      );
+      html += renderView(
         '⚡ Power × Matchup',
         'power_score × matchup_score / 100',
         'Top-quintile in BOTH dimensions, not just average across the 6 factors. Surfaces batters who stack the two signals that matter most for HRs.',
@@ -2633,6 +2683,12 @@
         'season_hr ≥ 5 AND park_score ≥ 65 AND matchup_score ≥ 70',
         'Power hitter in HR-friendly park facing a vulnerable arm. Three known lifters stacked → small denominator (~5-15 batters/day).',
         v3,
+      );
+      html += renderView(
+        '🎰 Pure Longshots',
+        'season_hr < 5 AND composite ≥ 55',
+        'High-composite batters who haven\'t yet hit 5 HR — under all floor tiers. The model loves them on matchup/park/form/weather despite no HR-history boost. At +800 book prices, ~12% true hit rate breaks even; we\'re tracking these to measure empirically.',
+        v3b,
       );
       html += renderStacks(
         '🎲 Game Stacks',
