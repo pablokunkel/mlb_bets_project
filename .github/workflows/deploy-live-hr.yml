@@ -1,0 +1,82 @@
+name: Deploy live-hr worker
+
+# Auto-deploy the dingersonly-live-hr Cloudflare Worker on every push
+# to main that touches the worker source. The companion `dingersonlybot`
+# worker (the static-site assets worker) auto-deploys via Cloudflare
+# Workers Builds — that's wired up at the CF dashboard level. But
+# `dingersonly-live-hr` lives in workers/live-hr/ with its own
+# wrangler.toml and has no Workers Builds binding, so without this
+# action a merged PR's source change never reached production. That
+# bit us on PR #22 (KV cost fix): merged 2026-05-03, never deployed,
+# 90% KV-write warning email re-fired the next day with the patch
+# sitting unused in main.
+#
+# Path filter scopes the trigger to just the worker so unrelated
+# pushes (Python pipeline, dashboard JS, etc.) don't burn an Action
+# run for nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "workers/live-hr/**"
+      - ".github/workflows/deploy-live-hr.yml"
+  # Manual trigger so we can re-deploy without a code change (e.g.,
+  # after a CF outage rollback, or to force-resync if the live worker
+  # is suspected stale).
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Just-in-case guard: never deploy from a fork PR. push to main
+    # comes from this repo only, but workflow_dispatch could in theory
+    # be triggered from elsewhere.
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Install wrangler. We don't keep workers/live-hr/package.json
+      # canonical for the deploy step (it's there for local dev) — pin
+      # the version explicitly here so a wrangler major bump can't
+      # silently change deploy semantics behind our back.
+      - name: Install wrangler
+        run: npm install -g wrangler@4
+
+      - name: Deploy worker
+        working-directory: workers/live-hr
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        # --config wrangler.toml is mandatory: without it wrangler
+        # walks UP from the cwd and finds the root wrangler.jsonc
+        # (which is for the dingersonlybot static-site worker), then
+        # silently deploys to the wrong worker. Bit us during the
+        # initial CF setup in early May — keeping the explicit flag
+        # here as belt-and-suspenders since the cwd is already scoped
+        # by working-directory.
+        run: wrangler deploy --config wrangler.toml
+
+      # Confirm the new code is actually serving traffic. The fp field
+      # was added in PR #22 — every payload now carries it. If the
+      # deploy succeeded but the live response is still missing fp,
+      # something is wrong (cached old version, wrong worker name,
+      # KV miss, etc.) and we want CI to fail loudly so the next
+      # merge doesn't compound the problem.
+      - name: Smoke-check deployed worker
+        run: |
+          set -euo pipefail
+          # Give CF a few seconds to propagate the deploy globally.
+          sleep 5
+          body=$(curl -fsSL "https://api.dingersonly.cc/api/live-hrs")
+          echo "Response (first 400 chars): ${body:0:400}"
+          # The fp field is the post-PR-22 marker. Fail the workflow
+          # if the deployed code isn't actually serving with it.
+          echo "$body" | grep -q '"fp"' || {
+            echo "::error::Deployed worker response missing 'fp' field — PR #22's KV optimization may not be live."
+            exit 1
+          }
+          echo "fp field present — deploy verified."
