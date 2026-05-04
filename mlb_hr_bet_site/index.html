@@ -2472,6 +2472,31 @@
         return;
       }
 
+      // VIEW 0: Homerun Leaders (anchor on proven season HR power)
+      // Rationale: the main-board composite blends 6 factors; the model's
+      // Aaron-Judge-at-rank-38 mistake (5/3) shows the composite under-
+      // weights "this guy hits HRs" relative to "this is a good matchup
+      // today." This view inverts that — anchor on the 10 highest season-
+      // HR hitters who are starting today, then pick the 3 most likely to
+      // homer based on EVERYTHING ELSE (composite minus the power
+      // contribution, since power is highly correlated with season_hr by
+      // construction and would otherwise just re-rank by the same axis).
+      // Result: a proven-power short list re-sorted by matchup/park/form/
+      // weather/lineup tilts.
+      // Power weight is 0.25 in WEIGHT_CONFIGS["default"]; subtract that
+      // contribution to get the "non-power composite."
+      const top10HR = [...board]
+        .filter(p => (p.season_stats?.hr ?? 0) >= 1)
+        .sort((a, b) => (b.season_stats?.hr ?? 0) - (a.season_stats?.hr ?? 0))
+        .slice(0, 10);
+      const v0 = top10HR
+        .map(p => ({
+          ...p,
+          _lab_score: (p.composite || 0) - 0.25 * (p.power_score || 0),
+        }))
+        .sort((a, b) => b._lab_score - a._lab_score)
+        .slice(0, 3);
+
       // VIEW 1: Power × Matchup (multiplicative, not weighted-additive)
       // Rationale: composite blends 6 factors with fixed weights, smoothing
       // out the truly-elite "stacks" in the two factors that matter most
@@ -2616,6 +2641,12 @@
       };
 
       let html = '';
+      html += renderView(
+        '💣 Homerun Leaders',
+        'top 10 by season HR · top 3 by composite − 0.25·power',
+        'Anchor on proven HR power, then re-rank within those 10 by everything except power (so we don\'t double-count what got them on the list). Catches Judge-class hitters that the main board\'s 6-factor weighting under-rates.',
+        v0,
+      );
       html += renderView(
         '⚡ Power × Matchup',
         'power_score × matchup_score / 100',
