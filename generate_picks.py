@@ -888,21 +888,32 @@ def score_live_slate(
     confirmed_names: dict[int, set] = {}  # game_pk -> set of lowercase last names
     lineup_order_by_id: dict[int, dict[int, int]] = {}    # game_pk -> {player_id: batting_order}
     lineup_order_by_name: dict[int, dict[str, int]] = {}  # game_pk -> {last_name: batting_order}
+    # 2026-05-04: per-game-side lineup_source so the inputs_snapshot can
+    # tag each batter with where their batting_order came from (tier-1
+    # "posted" / tier-2 "recent:YYYY-MM-DD" / tier-3 "roster_fallback").
+    # Tracked by side (not per-player) since all 9 spots in a side share
+    # the same provenance — they came from the same lineup payload.
+    lineup_source_by_side: dict[int, dict[str, str]] = {}  # game_pk -> {"home": src, "away": src}
 
     for gpk, lu in slate.get("lineups", {}).items():
         ids = set()
         names = set()
         order_by_id = {}
         order_by_name = {}
-        # bdfed returns ALL roster players for each side (~13-15 entries)
-        # with the 9 starters first, then bench. Cap real batting orders at 9;
-        # positions 10+ are bench/reserves. Without this cap, bench players
-        # got batting_order=11/12 which fell into score_lineup_position's
-        # catch-all (35) instead of bench (15) and slipped into top-8 picks.
         bench_ids = set()
         bench_names = set()
+        side_source: dict[str, str] = {}
         for side in ["home", "away"]:
-            for i, p in enumerate(lu.get(side, []), 1):
+            side_players = lu.get(side, [])
+            # Capture lineup_source from the first player with the field
+            # set; PR #33 stamps the same source on all players from a
+            # given tier-1/tier-2/tier-3 fetch, so any one is canonical.
+            for p in side_players:
+                src = p.get("lineup_source")
+                if src:
+                    side_source[side] = src
+                    break
+            for i, p in enumerate(side_players, 1):
                 pid = p.get("player_id")
                 pname = p.get("name", "").lower().strip()
                 if i <= 9:
@@ -921,6 +932,7 @@ def score_live_slate(
         confirmed_names[gpk] = names
         lineup_order_by_id[gpk] = order_by_id
         lineup_order_by_name[gpk] = order_by_name
+        lineup_source_by_side[gpk] = side_source
         slate.setdefault("_bench_ids", {})[gpk] = bench_ids
         slate.setdefault("_bench_names", {})[gpk] = bench_names
 
@@ -974,6 +986,24 @@ def score_live_slate(
         else:
             # No lineup data for this game — roster-only fallback
             batting_order = "roster_only"
+
+        # 2026-05-04: tag the batter with the lineup_source for the side
+        # they're on. PR #33 added the source flag at fetch time; this
+        # threads it onto the batter dict so compute_composite's
+        # inputs_snapshot can persist it. Determines side via team match
+        # against the game's home/away teams (with abbreviation fallback
+        # mirroring the same lookup we already do above for `team_to_game`).
+        b_team = b.get("team", "")
+        home_team = game.get("home_team", "")
+        away_team = game.get("away_team", "")
+        if b_team == home_team or TEAM_ABBREV_TO_FULL.get(b_team) == home_team:
+            side = "home"
+        elif b_team == away_team or TEAM_ABBREV_TO_FULL.get(b_team) == away_team:
+            side = "away"
+        else:
+            side = None
+        if side:
+            b["_lineup_source"] = lineup_source_by_side.get(gpk, {}).get(side)
 
         eligible_batters.append((b, game, player_id, batting_order))
 
@@ -1196,6 +1226,11 @@ def score_untiered_starters(
                     "name": full_name,
                     "team": team,
                     "player_id": pid,
+                    # 2026-05-04: lineup_source flows through here too so
+                    # T4 picks get the same provenance flag as T1/T2/T3
+                    # (the source comes from the same lineup payload p
+                    # that we're enumerating).
+                    "_lineup_source": p.get("lineup_source"),
                 }
                 if season_lookup:
                     stub = enrich_with_season_batting(stub, season_lookup)

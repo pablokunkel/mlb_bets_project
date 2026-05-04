@@ -1173,6 +1173,16 @@ def compute_composite(
         # "season_batting_fallback" (DB overwrite when synthetic was 0),
         # or "career_shrunk" (when career-prior shrinkage modified it).
         "barrel_pct_source":       batter.get("_barrel_pct_source"),
+        # 2026-05-04: lineup_source — where this batter's batting_order
+        # came from. Set by generate_picks at scoring time:
+        #   "posted"            — statsapi schedule?hydrate=lineups (today)
+        #   "recent:YYYY-MM-DD" — team's last posted lineup before today
+        #   "roster_fallback"   — bdfed alphabetical roster (last resort)
+        #   None                — pre-PR-33 code path or missing data
+        # Surfaces on the dashboard Topps modal as a "📋 from {date}"
+        # badge when source is "recent:*", so we know when to discount
+        # the lineup-derived signals (lineup_score, score_lineup_position).
+        "lineup_source":           batter.get("_lineup_source"),
     }
 
     return {

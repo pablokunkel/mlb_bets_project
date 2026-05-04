@@ -436,6 +436,16 @@ def create_tables(conn: sqlite3.Connection):
         barrel_pct_source       TEXT,           -- 'statcast' / 'synthetic_hr_per_pa' /
                                                 -- 'season_batting_fallback' / 'career_shrunk'
 
+        -- Lineup provenance (added 2026-05-04, after PR #33's recent-lineup
+        -- fallback shipped). Tells us where the batter's batting_order
+        -- came from so the dashboard can flag stale rows:
+        --   'posted'            — statsapi posted lineup for today (canonical)
+        --   'recent:YYYY-MM-DD' — team's last posted lineup before today
+        --                        (PR #33 fallback when today's not yet posted)
+        --   'roster_fallback'   — bdfed alphabetical roster (last resort,
+        --                        batting_order will be NULL)
+        lineup_source           TEXT,
+
         fetched_at              TEXT DEFAULT (datetime('now')),
         PRIMARY KEY (date, batter_id)
     );
@@ -576,6 +586,10 @@ def create_tables(conn: sqlite3.Connection):
         ("throws",            "ALTER TABLE pick_inputs ADD COLUMN throws TEXT"),
         ("weather_source",    "ALTER TABLE pick_inputs ADD COLUMN weather_source TEXT"),
         ("barrel_pct_source", "ALTER TABLE pick_inputs ADD COLUMN barrel_pct_source TEXT"),
+        # 2026-05-04: lineup_source — flags where batting_order came from
+        # (posted / recent:DATE / roster_fallback). See pick_inputs CREATE
+        # block for the column comment.
+        ("lineup_source",     "ALTER TABLE pick_inputs ADD COLUMN lineup_source TEXT"),
     ]:
         if col not in existing_cols:
             try:
