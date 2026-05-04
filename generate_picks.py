@@ -162,13 +162,22 @@ def load_season_batting_lookup(season: int) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT player_id, barrel_pct, exit_velo, hr_fb_pct, iso, woba
+            SELECT player_id, player_name, games,
+                   barrel_pct, exit_velo, hr_fb_pct, iso, woba
             FROM season_batting
             WHERE season = ?
             """,
             (season,),
         ).fetchall()
         conn.close()
+        # 2026-05-04: added player_name + games to the SELECT.
+        # PR #24's T4 display fix relied on sb_row["player_name"] to
+        # promote "Black" → "Tyler Black" / "Cortes" → "Carlos Cortes",
+        # but this helper only returned the rate stats. So the override
+        # silently no-op'd and the rookie-class T4 batters still
+        # rendered as last-name-only on today's noon run.
+        # PR #28's platoon dampener also reads sb_row["games"], so we
+        # pull it here in the same query.
         return {r["player_id"]: dict(r) for r in rows if r["player_id"]}
     except Exception as e:
         print(f"  [SEASON-BATTING] Could not load fallback ({e}) — continuing without it")
