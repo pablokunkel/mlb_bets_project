@@ -391,6 +391,43 @@ def shrink_to_career(
 # annually). Real 2026 HR/9 is closer to 1.27, hard-hit% closer to 39%.
 # Current values match what was in the old inline copies for diff
 # minimization; bump after a refit cycle when we want to update.
+# Platoon dampener — multiplicative haircut on composite for batters
+# who don't start every game. The model otherwise treats a part-time
+# platoon hitter the same as a daily starter with identical stats, even
+# though the part-timer is more likely to be late-scratched, get pulled
+# mid-game when the matchup flips, or simply have fewer ABs to homer.
+#
+# Applied as: composite *= floor + (1.0 - floor) * play_rate
+#   where play_rate = batter.games / slate_max_games (clamped to [0, 1])
+# So a daily starter (play_rate=1.0) takes no haircut. A platoon batter
+# at 50% play rate takes a 5% haircut. A barely-used backup at ~10% play
+# rate takes a 9% haircut. Floor at 0.90 — never more than a 10%
+# reduction even for someone with zero games.
+#
+# Tuning: 0.90 floor calibrated to be visible (~3-5 rank shift on a
+# typical 8-pick board) without hiding hot platoon bats entirely. Bump
+# to 0.85 if part-timers continue over-representing in our picks; bump
+# to 0.95 if real platoon hitters disappear from the board after this.
+PLATOON_DAMPENER_FLOOR = 0.90
+
+
+def _platoon_dampener(games: int | None, slate_max_games: int | None) -> float:
+    """Multiplier in [PLATOON_DAMPENER_FLOOR, 1.0] for a batter's composite.
+
+    Returns 1.0 (no dampening) when:
+      - games is None (no info — don't penalize rookies/IL returns)
+      - slate_max_games is None or <= 0 (caller didn't compute the
+        normalizer; safe to no-op)
+      - games >= slate_max_games (this batter is the daily benchmark)
+
+    Otherwise scales linearly: play_rate=0 → floor, play_rate=1 → 1.0.
+    """
+    if games is None or slate_max_games is None or slate_max_games <= 0:
+        return 1.0
+    play_rate = max(0.0, min(1.0, games / slate_max_games))
+    return PLATOON_DAMPENER_FLOOR + (1.0 - PLATOON_DAMPENER_FLOOR) * play_rate
+
+
 LEAGUE_AVG_PITCHER = {
     "name": "league_avg",
     "hr_per_9": 1.2,
@@ -968,6 +1005,22 @@ def compute_composite(
         + weights["weather"] * weather_score
         + weights.get("lineup", 0) * lineup
     )
+
+    # 2026-05-04 platoon dampener: multiplicative haircut for batters
+    # who don't start every game. The model otherwise treats Cortes
+    # (~75% play rate, platoon hitter) the same as a daily starter with
+    # identical stats, even though Cortes is more likely to be late-
+    # scratched or pulled mid-game when the matchup flips. Floor at
+    # 0.90 (max 10% reduction) so platoon bats stay visible but slip
+    # a few ranks. See _platoon_dampener() docstring for the formula.
+    #
+    # `slate_max_games` is plumbed via slate_ctx — score_live_slate +
+    # score_untiered_starters compute it once per slate (the highest
+    # `games` count in the day's batter pool — daily-starter benchmark).
+    # When unavailable (offline / pre-slate-context paths), the helper
+    # returns 1.0 and this is a no-op.
+    slate_max_games = (slate_ctx or {}).get("max_games")
+    composite *= _platoon_dampener(batter.get("games"), slate_max_games)
 
     # Snapshot all raw inputs that fed each factor — used by load_picks_to_db
     # to populate pick_inputs so the dashboard's per-factor decomposition
