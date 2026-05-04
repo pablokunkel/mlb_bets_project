@@ -194,59 +194,89 @@ def fetch_schedule(conn, date_str: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def fetch_lineups(conn, games: list[dict], date_str: str):
-    """Fetch confirmed lineups from bdfed endpoint."""
+    """Fetch confirmed lineups for *date_str* via the MLB Stats API
+    schedule endpoint with hydrate=lineups.
+
+    2026-05-04 critical fix: the previous version called bdfed/matchup
+    per game and treated `array index → batting order`. But the bdfed
+    endpoint returns the alphabetized 26-man active roster, not the
+    batting lineup. So Aaron Judge (last name "J" sorts at position 8)
+    was getting batting_order=8 in daily_lineup every single day even
+    when he was actually batting #2. The whole batting_order column on
+    daily_lineup was alphabetical noise; the lineup_score factor in the
+    composite (weight=0.150) was actively degrading rank quality.
+    Replaced with the schedule-with-lineups call from fetch_daily_data,
+    which returns the real, ordered `lineups.homePlayers[]` /
+    `lineups.awayPlayers[]` arrays with each player's fullName.
+
+    When the lineup hasn't been posted yet (typical for evening games
+    before ~3pm ET), the API returns no lineups block. Those games
+    fall through to a bdfed-roster fallback with batting_order=NULL,
+    so downstream consumers don't pretend an alphabetical roster is a
+    starting lineup.
+    """
     print("\n  [2/3] Fetching confirmed lineups...")
+
+    # Import here (not at module top) to avoid a circular import: this
+    # module is loaded by run_daily.bat as `etl.etl_morning`, but
+    # fetch_daily_data is in the project root.
+    from fetch_daily_data import fetch_lineups_for_date, _bdfed_roster_fallback
+
+    by_game = fetch_lineups_for_date(date_str)
 
     games_with_lineups = 0
     total_players = 0
+    posted_sides = 0
+    fallback_sides = 0
 
     for g in games:
         gpk = g["game_pk"]
-        url = f"{BDFED_API}/{gpk}"
-        try:
-            resp = requests.get(url, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception:
-            continue
+        entry = by_game.get(gpk) or {}
+        home = entry.get("home") or []
+        away = entry.get("away") or []
+
+        # Per-side fallback: pull bdfed once if either side is empty,
+        # use it only for the missing side(s). Saves an API call when
+        # both sides have posted lineups already.
+        if not home or not away:
+            fb = _bdfed_roster_fallback(gpk)
+            if not home:
+                home = fb.get("home") or []
+                fallback_sides += 1
+            else:
+                posted_sides += 1
+            if not away:
+                away = fb.get("away") or []
+                fallback_sides += 1
+            else:
+                posted_sides += 1
+        else:
+            posted_sides += 2
+
+        sides = {"home": home, "away": away}
 
         has_lineup = False
         for side in ["home", "away"]:
-            side_data = data.get(side, {})
-            if isinstance(side_data, list):
-                players = side_data
-            elif isinstance(side_data, dict):
-                players = [side_data[k] for k in sorted(side_data.keys(), key=lambda x: int(x)) if side_data[k]]
-            else:
-                players = []
-
-            for i, player in enumerate(players):
-                if not isinstance(player, dict):
-                    continue
-
-                pid = player.get("id")
+            for p in sides.get(side, []):
+                pid = p.get("player_id")
                 if not pid:
                     continue
-
-                # bdfed returns ~13–15 entries per side: the 9 starters first,
-                # then bench/reserves. Cap real batting orders at 9 so DB
-                # consumers can distinguish a #3 hitter from the 12th-roster
-                # bench bat. Pre-fix, positions 10–15 were written as
-                # batting_order=10..15, which (a) showed up as garbage in any
-                # `SELECT batting_order FROM daily_lineup` query and (b) was
-                # the most likely root cause of "listed bench when actually
-                # batted 3rd" reports during the 2026-05-02 SEA/KC autopsy.
-                bo = i + 1 if i < 9 else None
+                # Position may arrive as either a dict (bdfed fallback)
+                # or a string abbreviation (statsapi shaped output).
+                position = p.get("position")
+                if isinstance(position, dict):
+                    position = position.get("abbreviation") or ""
                 conn.execute("""
                     INSERT OR REPLACE INTO daily_lineup
                     (game_pk, date, side, batting_order, player_id,
                      player_name, position, team)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    gpk, date_str, side, bo,
+                    gpk, date_str, side,
+                    p.get("batting_order"),  # 1-9 when posted, None when fallback
                     pid,
-                    player.get("boxscoreName", ""),
-                    player.get("primaryPosition", ""),
+                    p.get("name", ""),       # fullName when posted, boxscoreName when fallback
+                    position or "",
                     g[f"{side}_team"],
                 ))
                 total_players += 1
@@ -256,7 +286,9 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
             games_with_lineups += 1
 
     conn.commit()
-    print(f"  [2/3] Done. {total_players} players across {games_with_lineups}/{len(games)} games.")
+    total_sides = len(games) * 2
+    print(f"  [2/3] Done. {total_players} players across {games_with_lineups}/{len(games)} games "
+          f"({posted_sides}/{total_sides} sides confirmed, {fallback_sides}/{total_sides} roster-fallback).")
     return games_with_lineups
 
 

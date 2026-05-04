@@ -200,13 +200,105 @@ def get_roster(team_id: int, date_str: str) -> list[dict]:
     return roster
 
 
-def get_lineup(game_pk: int) -> dict:
+# Per-process cache of the schedule+lineups bundle. The MLB Stats API
+# returns ALL games for a date in a single call when we hydrate=lineups,
+# so caller code that asks for one game at a time still pays for only
+# one API roundtrip per date. Keyed by date_str.
+_LINEUPS_BY_DATE_CACHE: dict[str, dict] = {}
+
+
+def fetch_lineups_for_date(date_str: str) -> dict:
+    """Fetch all games' confirmed lineups for *date_str* via the MLB
+    Stats API schedule endpoint with hydrate=lineups.
+
+    Returns {game_pk: {"home": [...players-in-batting-order],
+                       "away": [...players-in-batting-order],
+                       "lineup_posted": bool}}
+
+    Each player dict carries `player_id`, `name` (fullName), `position`,
+    and `batting_order` (1-9, derived from the array index — the API
+    returns players in batting-order sequence).
+
+    `lineup_posted` is True iff the API actually returned a `lineups`
+    block (homePlayers OR awayPlayers) for that game. Games without
+    posted lineups (typically evening games before ~3-5pm ET) come
+    back with empty lists and `lineup_posted=False` — caller decides
+    whether to fall back to the bdfed roster (no batting order known).
+
+    2026-05-04 critical fix: replaces our long-standing use of the
+    bdfed/matchup endpoint, which returned the alphabetized 26-man
+    active roster, NOT the batting-order lineup. We were treating
+    array-index as batting order, so e.g. Aaron Judge ("J" sorts at
+    position 8) was getting score_lineup_position(8)=50 instead of
+    score_lineup_position(2)=85 every time he batted #2. The 0.150
+    composite weight on lineup made this a real degradation.
     """
-    Fetch confirmed starting lineups from the bdfed matchup endpoint.
-    This is the same source that powers the MLB Gameday preview page.
-    Returns {"home": [list of players], "away": [list of players]} where
-    each player dict has: player_id, name, position.
-    Returns empty lists if lineups haven't been posted yet.
+    if date_str in _LINEUPS_BY_DATE_CACHE:
+        return _LINEUPS_BY_DATE_CACHE[date_str]
+
+    url = f"{MLB_STATS_API}/schedule"
+    params = {
+        "sportId": 1,
+        "date": date_str,
+        "hydrate": "lineups,team",
+    }
+    out: dict[int, dict] = {}
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"  [LINEUP] statsapi schedule fetch failed for {date_str}: {e}")
+        # Cache the empty result so we don't retry-spam on a sustained
+        # outage; caller will fall through to bdfed roster fallback.
+        _LINEUPS_BY_DATE_CACHE[date_str] = out
+        return out
+
+    for d in data.get("dates", []) or []:
+        for g in d.get("games", []) or []:
+            gpk = g.get("gamePk")
+            if not gpk:
+                continue
+            lineups_block = g.get("lineups") or {}
+            home_raw = lineups_block.get("homePlayers") or []
+            away_raw = lineups_block.get("awayPlayers") or []
+            posted = bool(home_raw or away_raw)
+
+            def _shape(plist):
+                shaped = []
+                for i, p in enumerate(plist):
+                    if not isinstance(p, dict):
+                        continue
+                    pos = p.get("primaryPosition") or {}
+                    shaped.append({
+                        "player_id": p.get("id"),
+                        "name": p.get("fullName", ""),
+                        "position": pos.get("abbreviation") if isinstance(pos, dict) else str(pos),
+                        # Array index 0 → batting #1, etc. Lineup arrays
+                        # are exactly 9 entries when posted.
+                        "batting_order": i + 1 if i < 9 else None,
+                    })
+                return shaped
+
+            out[gpk] = {
+                "home": _shape(home_raw),
+                "away": _shape(away_raw),
+                "lineup_posted": posted,
+            }
+
+    _LINEUPS_BY_DATE_CACHE[date_str] = out
+    return out
+
+
+def _bdfed_roster_fallback(game_pk: int) -> dict:
+    """Last-resort fallback: pull the bdfed/matchup roster.
+
+    Returns same shape as fetch_lineups_for_date entries, but with
+    batting_order=None for every player (the bdfed endpoint returns
+    the alphabetized 26-man active roster — array index is NOT real
+    batting order). Caller's downstream lineup_score should then read
+    None and apply the documented "unknown-position" fallback (35.0)
+    rather than pretending we have ordered data.
     """
     url = f"{BDFED_MATCHUP_API}/{game_pk}"
     try:
@@ -214,13 +306,12 @@ def get_lineup(game_pk: int) -> dict:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print(f"  [LINEUP] bdfed matchup failed for {game_pk}: {e}")
-        return {"home": [], "away": []}
+        print(f"  [LINEUP] bdfed roster fallback failed for {game_pk}: {e}")
+        return {"home": [], "away": [], "lineup_posted": False}
 
-    result = {"home": [], "away": []}
+    result = {"home": [], "away": [], "lineup_posted": False}
     for side in ["home", "away"]:
         side_data = data.get(side, {})
-        # API may return a list [...] or a dict {"0": {...}, "1": {...}}
         if isinstance(side_data, list):
             players = side_data
         elif isinstance(side_data, dict):
@@ -234,8 +325,66 @@ def get_lineup(game_pk: int) -> dict:
                 "player_id": player.get("id"),
                 "name": player.get("boxscoreName", ""),
                 "position": player.get("primaryPosition", ""),
+                # Critical: NOT i+1. bdfed roster is alphabetical, not
+                # batting-ordered — assigning index here is the bug we
+                # just fixed at the source.
+                "batting_order": None,
             })
     return result
+
+
+def get_lineup(game_pk: int, date_str: str | None = None) -> dict:
+    """Fetch the confirmed starting lineup for *game_pk*.
+
+    Tries statsapi schedule (with hydrate=lineups) first — that's the
+    authoritative source with real batting order and fullName. Each
+    side handled INDEPENDENTLY: if the home team has posted but the
+    away team hasn't (common when one club releases earlier), the home
+    side uses real lineup data while the away side falls back to the
+    bdfed roster for that game.
+
+    Returns {"home": [...], "away": [...], "lineup_posted": bool}.
+    `lineup_posted` is True iff BOTH sides came from statsapi lineups;
+    False if either or both fell back to roster.
+
+    Each player dict: player_id, name (fullName when posted, else
+    boxscoreName from the roster fallback), position, batting_order
+    (1-9 when posted, None when fallback).
+
+    Backward-compat: callers that only check `lu["home"]`/`lu["away"]`
+    truthiness still work — both lists populate either way (just with
+    different ordering semantics flagged via `lineup_posted`).
+    """
+    if date_str is None:
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as _dt
+            date_str = _dt.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            from datetime import datetime as _dt
+            date_str = _dt.now().strftime("%Y-%m-%d")
+
+    by_game = fetch_lineups_for_date(date_str)
+    entry = by_game.get(game_pk) or {}
+    home = entry.get("home") or []
+    away = entry.get("away") or []
+
+    # Per-side fill-in: if either side is empty, pull bdfed once and
+    # use just the missing side(s). Saves the second API call when
+    # both sides are posted (the common path once games approach
+    # first pitch).
+    if not home or not away:
+        fb = _bdfed_roster_fallback(game_pk)
+        if not home:
+            home = fb.get("home") or []
+        if not away:
+            away = fb.get("away") or []
+
+    return {
+        "home": home,
+        "away": away,
+        "lineup_posted": bool(entry.get("home") and entry.get("away")),
+    }
 
 
 def _fetch_season_batting_splits(start_str: str, end_str: str) -> list:
