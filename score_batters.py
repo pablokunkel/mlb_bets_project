@@ -391,6 +391,18 @@ def shrink_to_career(
 # annually). Real 2026 HR/9 is closer to 1.27, hard-hit% closer to 39%.
 # Current values match what was in the old inline copies for diff
 # minimization; bump after a refit cycle when we want to update.
+# Rookie pitcher matchup bonus — see score_matchup() for the rationale.
+# Applied additively to the matchup score (capped at 100) when the
+# opposing pitcher has < 300 career Statcast pitches (the rookie set is
+# computed by generate_picks.load_rookie_pitcher_ids and stamped on the
+# pitcher dict as `is_rookie=True`).
+#
+# 15 calibrated to roughly match the lift from a strong vs middling
+# pitcher in the existing matchup distribution — moves a "facing a
+# fresh callup" batter up ~5-10 ranks on a typical board.
+ROOKIE_MATCHUP_BONUS = 15
+
+
 LEAGUE_AVG_PITCHER = {
     "name": "league_avg",
     "hr_per_9": 1.2,
@@ -600,8 +612,19 @@ def score_matchup(
     pitcher_hand = pitcher.get("throws", "R")
     platoon_bonus = 10 if batter_hand != pitcher_hand else 0
 
+    # 2026-05-03 rookie pitcher bonus: pitchers with < 300 career Statcast
+    # pitches (or no pitcher_arsenals row) get LEAGUE_AVG_PITCHER stat
+    # defaults from `fetch_pitcher_stats_mlb`, which scores them as a
+    # middling matchup. Reality: rookie pitchers historically allow ~20%
+    # higher HR/9 than their final career rate as the league learns them.
+    # The Aaron Judge vs Trey Gibson type spot is a HUGE edge — adding a
+    # +15 baseline so batters facing rookies move up the board.
+    # `is_rookie` is stamped on the pitcher dict by
+    # generate_picks.load_rookie_pitcher_ids(). Missing key (False) = veteran.
+    rookie_bonus = ROOKIE_MATCHUP_BONUS if pitcher.get("is_rookie") else 0
+
     base = float(np.mean(scores)) if scores else 50.0
-    return min(100, base + platoon_bonus)
+    return min(100, base + platoon_bonus + rookie_bonus)
 
 
 def score_park(
