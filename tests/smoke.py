@@ -183,6 +183,37 @@ def pin_score_matchup_no_data() -> Result:
     )
 
 
+def pin_platoon_dampener_table() -> Result:
+    """Platoon dampener honors the documented [floor, 1.0] curve."""
+    from score_batters import _platoon_dampener, PLATOON_DAMPENER_FLOOR
+    cases = [
+        # (games, max_games, expected_multiplier)
+        (None, 33, 1.0),                          # no info → no dampening
+        (33, None, 1.0),                          # no slate ctx → no-op
+        (33, 0, 1.0),                             # zero max → no-op
+        (33, 33, 1.0),                            # daily starter
+        (40, 33, 1.0),                            # over-max (DH'd a doubleheader) → no boost
+        (0, 33, PLATOON_DAMPENER_FLOOR),          # never played → floor
+        # Linear interp: 50% → midway between floor and 1.0
+        (16, 32, PLATOON_DAMPENER_FLOOR + (1.0 - PLATOON_DAMPENER_FLOOR) * 0.5),
+    ]
+    failures = []
+    for games, max_g, expected in cases:
+        got = _platoon_dampener(games, max_g)
+        if abs(got - expected) > 0.001:
+            failures.append(f"({games}, {max_g}) -> {got:.3f} (want {expected:.3f})")
+    if not failures:
+        return Result(
+            f"_platoon_dampener(table) honored (floor={PLATOON_DAMPENER_FLOOR})",
+            Result.PASS,
+        )
+    return Result(
+        "_platoon_dampener(table)",
+        Result.HALT,
+        "; ".join(failures),
+    )
+
+
 def pin_score_matchup_rookie_bonus() -> Result:
     """Rookie pitcher (`is_rookie=True`) adds a +15 matchup bonus."""
     from score_batters import score_matchup, ROOKIE_MATCHUP_BONUS
@@ -432,6 +463,7 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_elite,
     pin_score_lineup_position_table,
     pin_score_matchup_no_data,
+    pin_platoon_dampener_table,
     pin_score_matchup_rookie_bonus,
     pin_compute_slate_context_empty,
     pin_compute_slate_context_skip_missing_pitcher,

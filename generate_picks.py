@@ -1190,6 +1190,14 @@ def score_untiered_starters(
                 }
                 if season_lookup:
                     stub = enrich_with_season_batting(stub, season_lookup)
+                    # 2026-05-04 platoon dampener: attach `games` from
+                    # season_batting so compute_composite can compute
+                    # play_rate. Without this, T4 batters would always read
+                    # `games`=None and skip dampening — exactly the cohort
+                    # most likely to be platoon hitters.
+                    sb_row = season_lookup.get(pid) or {}
+                    if sb_row.get("games") is not None:
+                        stub["games"] = sb_row["games"]
                 if career_lookup:
                     stub = enrich_with_career_prior(stub, career_lookup)
                 stubs.append((stub, game, i, side))
@@ -1414,13 +1422,27 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
                 park_factors=pf,
                 implied_totals_by_team=live_slate.get("implied_totals", {}),
             )
+            # 2026-05-04 platoon dampener: stash the max season-games count
+            # on slate_ctx so compute_composite can compute play_rate per
+            # batter (games / max_games) and apply a [0.90, 1.0] multiplier.
+            # Daily starters (max_games) take no haircut; platoon hitters
+            # slip a few ranks. The "max" is the highest games count across
+            # T1/T2/T3 tier pools — same benchmark used by T4 untiered
+            # batters via slate_ctx so all paths agree.
+            tiers_dict = live_slate.get("live_tiers") or {}
+            all_batters = []
+            for tier_num in (1, 2, 3):
+                all_batters.extend(tiers_dict.get(tier_num) or [])
+            max_games = max((b.get("games") or 0 for b in all_batters), default=0)
+            slate_ctx["max_games"] = max_games
+
             n_parks = len(slate_ctx.get("park_pct", {}))
             n_weather = len(slate_ctx.get("weather_pct", {}))
             n_pitchers = len(slate_ctx.get("pitcher_pct", {}))
             n_totals = len(slate_ctx.get("team_total_pct", {}))
             status.ok(
                 "Slate-Rank Context",
-                f"{n_parks} venues, {n_weather} games, {n_pitchers} pitchers, {n_totals} team totals",
+                f"{n_parks} venues, {n_weather} games, {n_pitchers} pitchers, {n_totals} team totals, max_g={max_games}",
             )
         except Exception as e:
             status.warn("Slate-Rank Context", f"Failed: {e} — falling back to fixed-anchor scoring")
