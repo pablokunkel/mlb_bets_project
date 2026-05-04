@@ -220,13 +220,18 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
     # Import here (not at module top) to avoid a circular import: this
     # module is loaded by run_daily.bat as `etl.etl_morning`, but
     # fetch_daily_data is in the project root.
-    from fetch_daily_data import fetch_lineups_for_date, _bdfed_roster_fallback
+    from fetch_daily_data import (
+        fetch_lineups_for_date,
+        fetch_recent_lineup_for_team,
+        _bdfed_roster_fallback,
+    )
 
     by_game = fetch_lineups_for_date(date_str)
 
     games_with_lineups = 0
     total_players = 0
     posted_sides = 0
+    recent_sides = 0
     fallback_sides = 0
 
     for g in games:
@@ -234,24 +239,41 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
         entry = by_game.get(gpk) or {}
         home = entry.get("home") or []
         away = entry.get("away") or []
+        home_team_id = entry.get("home_team_id")
+        away_team_id = entry.get("away_team_id")
 
-        # Per-side fallback: pull bdfed once if either side is empty,
-        # use it only for the missing side(s). Saves an API call when
-        # both sides have posted lineups already.
+        # Tier 1: statsapi posted lineups (already in `home`/`away`
+        # if they were posted).
+        if home: posted_sides += 1
+        if away: posted_sides += 1
+
+        # Tier 2: recent-lineup for missing sides. Better than
+        # alphabetical roster — real batting order from the team's
+        # last posted lineup. Stamped lineup_source = "recent:DATE"
+        # so downstream consumers can flag fallback rows.
+        if not home and home_team_id:
+            recent = fetch_recent_lineup_for_team(home_team_id, date_str)
+            if recent:
+                home = recent["players"]
+                recent_sides += 1
+        if not away and away_team_id:
+            recent = fetch_recent_lineup_for_team(away_team_id, date_str)
+            if recent:
+                away = recent["players"]
+                recent_sides += 1
+
+        # Tier 3: bdfed roster as last resort. Only fires for sides
+        # that have neither posted today nor a recent prior lineup
+        # (e.g., team that just played their first game of the season,
+        # or recent-lookup API hiccup).
         if not home or not away:
             fb = _bdfed_roster_fallback(gpk)
             if not home:
                 home = fb.get("home") or []
                 fallback_sides += 1
-            else:
-                posted_sides += 1
             if not away:
                 away = fb.get("away") or []
                 fallback_sides += 1
-            else:
-                posted_sides += 1
-        else:
-            posted_sides += 2
 
         sides = {"home": home, "away": away}
 
@@ -288,7 +310,8 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
     conn.commit()
     total_sides = len(games) * 2
     print(f"  [2/3] Done. {total_players} players across {games_with_lineups}/{len(games)} games "
-          f"({posted_sides}/{total_sides} sides confirmed, {fallback_sides}/{total_sides} roster-fallback).")
+          f"({posted_sides}/{total_sides} posted, {recent_sides}/{total_sides} recent-fallback, "
+          f"{fallback_sides}/{total_sides} roster-fallback).")
     return games_with_lineups
 
 

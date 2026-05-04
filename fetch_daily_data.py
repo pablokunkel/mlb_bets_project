@@ -264,7 +264,7 @@ def fetch_lineups_for_date(date_str: str) -> dict:
             away_raw = lineups_block.get("awayPlayers") or []
             posted = bool(home_raw or away_raw)
 
-            def _shape(plist):
+            def _shape(plist, lineup_source: str = "posted"):
                 shaped = []
                 for i, p in enumerate(plist):
                     if not isinstance(p, dict):
@@ -277,17 +277,140 @@ def fetch_lineups_for_date(date_str: str) -> dict:
                         # Array index 0 → batting #1, etc. Lineup arrays
                         # are exactly 9 entries when posted.
                         "batting_order": i + 1 if i < 9 else None,
+                        # 2026-05-05: provenance flag so downstream
+                        # consumers can distinguish a just-posted lineup
+                        # from a recent-game fallback or roster fallback.
+                        "lineup_source": lineup_source,
                     })
                 return shaped
 
+            # Capture team_ids per side so the recent-lineup fallback in
+            # get_lineup() can look up "this team's most recent posted
+            # lineup" without re-fetching the schedule.
+            teams_block = g.get("teams") or {}
+            home_team_id = (teams_block.get("home") or {}).get("team", {}).get("id")
+            away_team_id = (teams_block.get("away") or {}).get("team", {}).get("id")
+
             out[gpk] = {
-                "home": _shape(home_raw),
-                "away": _shape(away_raw),
+                "home": _shape(home_raw, "posted"),
+                "away": _shape(away_raw, "posted"),
                 "lineup_posted": posted,
+                "home_team_id": home_team_id,
+                "away_team_id": away_team_id,
             }
 
     _LINEUPS_BY_DATE_CACHE[date_str] = out
     return out
+
+
+# Per-process cache of recent-lineup lookups. Keyed by team_id since
+# "today's date" is fixed for the lifetime of a daily run. Avoids
+# re-querying the schedule range when multiple games on today's slate
+# need to fall back for the same team (only happens with doubleheaders,
+# but cheap insurance).
+_RECENT_LINEUP_BY_TEAM_CACHE: dict[int, dict | None] = {}
+
+
+def fetch_recent_lineup_for_team(
+    team_id: int,
+    today_date_str: str,
+    lookback_days: int = 7,
+) -> dict | None:
+    """Find a team's most recent posted lineup before *today_date_str*.
+
+    Used as a smart fallback when the team hasn't posted today's lineup
+    yet. Better than alphabetical-roster (the bdfed fallback) because:
+      - Carries real batting order (~80-90% accurate vs. today's eventual
+        lineup, since starting cores are stable for stretches)
+      - Carries real fullName (no boxscoreName / "Castro, W" pattern)
+      - Reflects actual platoon usage (vs. lefty-only batters might
+        still appear if the team faced a righty recently — caveat
+        documented for diagnostics)
+
+    Returns:
+      {"players": [9 ordered],
+       "source_date": "YYYY-MM-DD",
+       "side_in_source_game": "home" | "away"}
+      or None if no lineup found in the lookback window.
+
+    Each player dict carries `lineup_source = "recent:YYYY-MM-DD"` so
+    downstream consumers (and the dashboard) can flag fallback rows.
+    """
+    if team_id in _RECENT_LINEUP_BY_TEAM_CACHE:
+        return _RECENT_LINEUP_BY_TEAM_CACHE[team_id]
+
+    try:
+        from datetime import date as _date, timedelta as _td
+        end = _date.fromisoformat(today_date_str) - _td(days=1)
+        start = end - _td(days=lookback_days - 1)
+    except Exception:
+        _RECENT_LINEUP_BY_TEAM_CACHE[team_id] = None
+        return None
+
+    url = f"{MLB_STATS_API}/schedule"
+    params = {
+        "sportId": 1,
+        "teamId": team_id,
+        "startDate": start.isoformat(),
+        "endDate": end.isoformat(),
+        "hydrate": "lineups,team",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"  [LINEUP] recent-lineup fetch failed for team_id={team_id}: {e}")
+        _RECENT_LINEUP_BY_TEAM_CACHE[team_id] = None
+        return None
+
+    # Walk dates newest-first; pick the first game where this team's
+    # side has a posted lineup. Each `dates[]` entry has `games[]` for
+    # that calendar date.
+    candidates = []
+    for d in data.get("dates", []) or []:
+        d_str = d.get("date")
+        for g in d.get("games", []) or []:
+            teams_block = g.get("teams") or {}
+            home_id = (teams_block.get("home") or {}).get("team", {}).get("id")
+            away_id = (teams_block.get("away") or {}).get("team", {}).get("id")
+            side = "home" if home_id == team_id else ("away" if away_id == team_id else None)
+            if not side:
+                continue
+            lineups_block = g.get("lineups") or {}
+            players = lineups_block.get(f"{side}Players") or []
+            if not players:
+                continue
+            candidates.append((d_str, side, players))
+
+    if not candidates:
+        _RECENT_LINEUP_BY_TEAM_CACHE[team_id] = None
+        return None
+
+    # Newest first by date string (lexical sort works for YYYY-MM-DD).
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    src_date, side, players = candidates[0]
+
+    shaped = []
+    for i, p in enumerate(players):
+        if not isinstance(p, dict):
+            continue
+        pos = p.get("primaryPosition") or {}
+        shaped.append({
+            "player_id": p.get("id"),
+            "name": p.get("fullName", ""),
+            "position": pos.get("abbreviation") if isinstance(pos, dict) else str(pos),
+            "batting_order": i + 1 if i < 9 else None,
+            "lineup_source": f"recent:{src_date}",
+        })
+
+    result = {
+        "players": shaped,
+        "source_date": src_date,
+        "side_in_source_game": side,
+    }
+    _RECENT_LINEUP_BY_TEAM_CACHE[team_id] = result
+    return result
 
 
 def _bdfed_roster_fallback(game_pk: int) -> dict:
@@ -329,6 +452,7 @@ def _bdfed_roster_fallback(game_pk: int) -> dict:
                 # batting-ordered — assigning index here is the bug we
                 # just fixed at the source.
                 "batting_order": None,
+                "lineup_source": "roster_fallback",
             })
     return result
 
@@ -336,24 +460,29 @@ def _bdfed_roster_fallback(game_pk: int) -> dict:
 def get_lineup(game_pk: int, date_str: str | None = None) -> dict:
     """Fetch the confirmed starting lineup for *game_pk*.
 
-    Tries statsapi schedule (with hydrate=lineups) first — that's the
-    authoritative source with real batting order and fullName. Each
-    side handled INDEPENDENTLY: if the home team has posted but the
-    away team hasn't (common when one club releases earlier), the home
-    side uses real lineup data while the away side falls back to the
-    bdfed roster for that game.
+    Tiered fallback strategy (per side, independent):
+      1. **Posted lineup** (statsapi schedule?hydrate=lineups) — real
+         batting order, fullName. The authoritative source.
+      2. **Recent lineup** (statsapi schedule for prior 7 days, last
+         posted) — typically ~80-90% accurate vs. today's eventual
+         lineup. Carries real batting order + fullName but is stale.
+         Players stamped `lineup_source = "recent:YYYY-MM-DD"`.
+      3. **Roster fallback** (bdfed/matchup) — alphabetical 26-man
+         active roster. NO batting order (`batting_order=None`),
+         boxscoreName only. Players stamped
+         `lineup_source = "roster_fallback"`.
+
+    Each side resolves independently — common during the 2-4 hour
+    window before evening first pitches when home clubs have posted
+    and away clubs haven't (or vice versa).
 
     Returns {"home": [...], "away": [...], "lineup_posted": bool}.
-    `lineup_posted` is True iff BOTH sides came from statsapi lineups;
-    False if either or both fell back to roster.
+    `lineup_posted` is True iff BOTH sides came from tier 1 (statsapi
+    posted lineups). Recent + roster fallbacks both flip it False.
 
-    Each player dict: player_id, name (fullName when posted, else
-    boxscoreName from the roster fallback), position, batting_order
-    (1-9 when posted, None when fallback).
-
-    Backward-compat: callers that only check `lu["home"]`/`lu["away"]`
-    truthiness still work — both lists populate either way (just with
-    different ordering semantics flagged via `lineup_posted`).
+    Each player dict: player_id, name, position, batting_order,
+    lineup_source (one of "posted" / "recent:YYYY-MM-DD" /
+    "roster_fallback").
     """
     if date_str is None:
         try:
@@ -368,11 +497,24 @@ def get_lineup(game_pk: int, date_str: str | None = None) -> dict:
     entry = by_game.get(game_pk) or {}
     home = entry.get("home") or []
     away = entry.get("away") or []
+    home_team_id = entry.get("home_team_id")
+    away_team_id = entry.get("away_team_id")
 
-    # Per-side fill-in: if either side is empty, pull bdfed once and
-    # use just the missing side(s). Saves the second API call when
-    # both sides are posted (the common path once games approach
-    # first pitch).
+    # Tier 2: recent-lineup fallback for any missing side. Tries to
+    # avoid the alphabetical-roster fallback when we have a real recent
+    # lineup we can borrow.
+    if not home and home_team_id:
+        recent = fetch_recent_lineup_for_team(home_team_id, date_str)
+        if recent:
+            home = recent["players"]
+    if not away and away_team_id:
+        recent = fetch_recent_lineup_for_team(away_team_id, date_str)
+        if recent:
+            away = recent["players"]
+
+    # Tier 3: bdfed roster fallback for whatever's still missing.
+    # Single API call per game (only when at least one side still needs
+    # it after tier 1 + tier 2).
     if not home or not away:
         fb = _bdfed_roster_fallback(game_pk)
         if not home:
