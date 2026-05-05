@@ -249,9 +249,13 @@ async function refresh(env) {
 
   // Read prior state + existing payload from KV. New day → both empty.
   let state = { cursor: 0, doneFinal: {} };
+  let existingStateRaw = null;  // captured for the no-op-write check at end
   try {
     const raw = await env.LIVE_HR_KV.get(STATE_KEY(date));
-    if (raw) state = { ...state, ...JSON.parse(raw) };
+    if (raw) {
+      existingStateRaw = raw;
+      state = { ...state, ...JSON.parse(raw) };
+    }
   } catch (err) {
     console.log(`state read failed: ${err.message}`);
   }
@@ -393,13 +397,7 @@ async function refresh(env) {
     : 0;
 
   // 2026-05-03 KV-cost fix: skip the FEED write when the fingerprint
-  // matches what's already in KV. Cursor/doneFinal mutations require a
-  // STATE write either way (round-robin progress is real state), but the
-  // FEED only needs to update when baseball-relevant content actually
-  // changed. Most active ticks during games-in-progress complete a PBP
-  // fetch that yields zero new HRs (HRs are sparse events) — we still
-  // mark Final games done in STATE, but we don't need to rewrite the
-  // identical FEED.
+  // matches what's already in KV.
   const tickFP = fingerprint(games, allHRs);
   const feedChanged = tickFP !== existingFP;
 
@@ -409,15 +407,47 @@ async function refresh(env) {
       expirationTtl: 60 * 60 * 36,
     });
   }
-  await env.LIVE_HR_KV.put(STATE_KEY(date), JSON.stringify(state), {
-    expirationTtl: 60 * 60 * 36,
-  });
+
+  // 2026-05-05 KV-cost fix #2: skip STATE writes when neither cursor
+  // nor doneFinal actually changed. The original PR #22 always wrote
+  // STATE on active ticks because cursor "advances every tick" — but
+  // many tick paths leave state effectively unchanged:
+  //   • Wrap-around: cursor=0, pending=3, tickGames=3 → cursor lands
+  //     back at 0; if no game flipped Final this tick, doneFinal also
+  //     unchanged → STATE identical to what's in KV.
+  //   • Mid-cycle re-pulls of in-progress games: same cursor advance
+  //     pattern as before, no new doneFinal entries.
+  // With cron 1/min and games running 4-6 hours, those redundant
+  // writes were the dominant remaining contributor to the 1000/day
+  // KV-write cap (the warning email we got yesterday).
+  //
+  // Compare semantically (cursor + doneFinal key set) rather than by
+  // JSON string — V8 reorders numeric keys on round-trip, so string
+  // equality is fragile.
+  let priorState = null;
+  if (existingStateRaw) {
+    try { priorState = JSON.parse(existingStateRaw); } catch (_) {}
+  }
+  const cursorChanged = priorState?.cursor !== state.cursor;
+  const priorDoneCount = Object.keys(priorState?.doneFinal || {}).length;
+  const newDoneCount = Object.keys(state.doneFinal).length;
+  // doneFinal is monotonic (we only add, never remove) so a count
+  // change uniquely identifies a doneFinal mutation.
+  const doneFinalChanged = priorDoneCount !== newDoneCount;
+  const stateChanged = cursorChanged || doneFinalChanged || !priorState;
+
+  if (stateChanged) {
+    await env.LIVE_HR_KV.put(STATE_KEY(date), JSON.stringify(state), {
+      expirationTtl: 60 * 60 * 36,
+    });
+  }
 
   console.log(
     `refresh: tick ${tickGames.length}/${pending.length} pending ` +
     `(cursor->${state.cursor}, doneFinal=${Object.keys(state.doneFinal).length}, ` +
     `hrs=${allHRs.length}, gpks=${tickGames.map((g) => g.gamePk).join(",")}, ` +
-    `feed=${feedChanged ? "write" : "skip"})`
+    `feed=${feedChanged ? "write" : "skip"}, ` +
+    `state=${stateChanged ? "write" : "skip"})`
   );
 
   // Return the payload regardless of whether we wrote it — the manual
