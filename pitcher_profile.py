@@ -39,10 +39,34 @@ import requests
 CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
 
 # TTLs in seconds
-TTL_BATTER_HR_EVENTS = 86400      # 24 hours
-TTL_VICTIM_PROFILE = 86400        # 24 hours
+#
+# 2026-05-05 bump: the original 24-hour TTLs caused every noon run to
+# rebuild ~100% of victim + pitcher profiles, even though the
+# underlying data only changed by zero-or-one HR overnight. Result:
+# the "Building victim profiles for N batters" loop took 3-5 minutes
+# of "Gathering Player Data" pybaseball calls every single day, and
+# was the dominant runtime cost of generate_picks.
+#
+# Bumped to 3 days for the data-driven inputs (BATTER_HR_EVENTS,
+# VICTIM_PROFILE, PITCHER_PROFILE). Trade-off: a profile can be up
+# to 3 days stale, missing at most ~3 HRs. For a 30-HR slugger
+# that's a small drift on the archetype centroid — negligible. For
+# a 3-HR rookie it's bigger, but those batters already use the n<3
+# LEAGUE_AVG_VICTIM fallback at the very start, and 3-day staleness
+# on 3-6 HR batters just means their profile reflects a slightly
+# earlier sample (still archetype-match-grade).
+#
+# PITCHER_ARSENAL kept at 7 days (already there — pitcher arsenals
+# change very slowly).
+#
+# Net effect: ~33% of profiles rebuild per day instead of ~100%.
+# Estimated daily generate_picks runtime drop: ~2-3 minutes saved
+# (cache hits return instantly; only cache misses pay the
+# pybaseball Statcast roundtrip).
+TTL_BATTER_HR_EVENTS = 3 * 86400  # 3 days (was 24h)
+TTL_VICTIM_PROFILE = 3 * 86400    # 3 days (was 24h)
 TTL_PITCHER_ARSENAL = 7 * 86400   # 7 days
-TTL_PITCHER_PROFILE = 86400       # 24 hours
+TTL_PITCHER_PROFILE = 3 * 86400   # 3 days (was 24h)
 
 
 def _cache_path(namespace: str, key: str) -> Path:
