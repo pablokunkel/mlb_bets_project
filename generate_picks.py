@@ -634,23 +634,39 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         return None
 
     # 2026-05-05: filter out games that won't actually be played today.
-    # Three statuses indicate "no game":
+    # Three status families indicate "no game":
     #   - Postponed:  rescheduled to a different date (most common — rain)
-    #   - Cancelled:  scrubbed entirely (rare but happens)
+    #   - Canceled:   scrubbed entirely (rare but happens)
     #   - Suspended:  game started, won't resume today (rain/weather)
     # Without this filter, generate_picks scores batters in the postponed
     # game against the probable pitchers (who aren't pitching tonight).
     # PR #33's recent-lineup fallback compounds the issue by injecting
     # YESTERDAY's lineup for those teams, so e.g. Soto/Lindor end up on
-    # the pool against a phantom matchup. They could land on the 8-pick
-    # card for a game that doesn't exist.
+    # the pool against a phantom matchup.
+    #
+    # Use lowercase substring match to defend against:
+    #   • Am/Br spelling: "Canceled" (1L, MLB-likely) vs "Cancelled" (2L)
+    #   • Suffixed variants like "Suspended: Rain" / "Postponed: Rain"
+    #     (none observed in 2025-season data — only bare "Postponed" —
+    #     but cheap insurance against future API changes).
+    # 2025-full-season probe verified 30 instances of "Postponed" and
+    # zero of the others; today (2026-05-05) NYM @ COL also returns
+    # exactly "Postponed". So this is robust on observed data + safe
+    # on hypothetical future variants.
     #
     # etl_outcomes already filters on detailedState IN (Final, Game Over)
     # so the metric side is safe — these batters just register as 0/0.
     # But the SCORING side wasn't filtering, so picks could be poisoned.
-    EXCLUDED_GAME_STATUSES = {"Postponed", "Cancelled", "Suspended"}
-    excluded = [g for g in games if g.get("status") in EXCLUDED_GAME_STATUSES]
-    games = [g for g in games if g.get("status") not in EXCLUDED_GAME_STATUSES]
+    EXCLUDED_STATUS_KEYWORDS = ("postpon", "cancel", "suspend")
+
+    def _is_skipped_status(s: str) -> bool:
+        if not s:
+            return False
+        s_low = s.lower()
+        return any(kw in s_low for kw in EXCLUDED_STATUS_KEYWORDS)
+
+    excluded = [g for g in games if _is_skipped_status(g.get("status", ""))]
+    games = [g for g in games if not _is_skipped_status(g.get("status", ""))]
 
     if excluded:
         labels = ", ".join(
