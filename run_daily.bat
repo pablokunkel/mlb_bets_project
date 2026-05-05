@@ -2,13 +2,14 @@
 REM ============================================================
 REM  Daily HR Bet Pipeline -- runs at 12:00 PM
 REM
-REM   0. Pull latest source   -> git pull --rebase --autostash origin main
-REM   1. Morning ETL          -> daily_slate, daily_lineup, weather
-REM   2. Generate picks       -> results/picks_<DATE>.json
-REM   3. Load picks to DB     -> daily_picks rows for the date
-REM   4. Refresh yesterday    -> outcomes + hr_events (self-heal)
-REM   5. Export site          -> mlb_hr_bet_site/data/*.json
-REM   6. Git push             -> Cloudflare Pages auto-deploys from main
+REM   0a. Kill stale Python    -> reap zombies from a Ctrl+C'd prior run
+REM   0b. Pull latest source   -> git pull --rebase --autostash origin main
+REM   1.  Morning ETL          -> daily_slate, daily_lineup, weather
+REM   2.  Generate picks       -> results/picks_<DATE>.json
+REM   3.  Load picks to DB     -> daily_picks rows for the date
+REM   4.  Refresh yesterday    -> outcomes + hr_events (self-heal)
+REM   5.  Export site          -> mlb_hr_bet_site/data/*.json
+REM   6.  Git push             -> Cloudflare Pages auto-deploys from main
 REM
 REM  Step 0 was added 2026-05-03 after a noon-run failure: a PR merged
 REM  on github.com (PR #18) fixed a KeyError that crashed format_card
@@ -65,8 +66,24 @@ echo ========================================
 ) >> "%LOGFILE%" 2>&1
 
 echo.
-echo  [0/6] Pull latest source...                   ^(~5s, soft-fail^)
-echo  [0/6] Pull latest source... >> "%LOGFILE%" 2>&1
+echo  [0a/6] Killing any stale Python processes from prior runs...
+echo  [0a/6] Killing stale Python processes... >> "%LOGFILE%" 2>&1
+REM 2026-05-05 fix: when the user Ctrl+Cs run_daily.bat or the
+REM scheduler kills it mid-run, the python.exe child processes
+REM aren't always reaped. Those zombies hold pybaseball cache
+REM locks + DB connections, and the next invocation hangs at
+REM step [2/6] generate_picks waiting for them. Two days in a
+REM row this bit us (2026-05-04 + 2026-05-05). Now we
+REM defensively kill any python.exe processes from prior runs
+REM at the start of every invocation. The .bat itself is cmd.exe
+REM (not python.exe), so this never kills its own host. /F forces
+REM the kill, /IM matches by image name, 2>nul suppresses the
+REM "no matching process found" error message on a clean machine.
+taskkill /F /IM python.exe >> "%LOGFILE%" 2>&1
+echo       OK
+echo.
+echo  [0b/6] Pull latest source...                  ^(~5s, soft-fail^)
+echo  [0b/6] Pull latest source... >> "%LOGFILE%" 2>&1
 REM Pull merged PRs into local main BEFORE running picks. See header
 REM comment for the 2026-05-03 motivation.
 git pull --rebase --autostash origin main >> "%LOGFILE%" 2>&1
