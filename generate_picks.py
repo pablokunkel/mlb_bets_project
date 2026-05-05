@@ -633,7 +633,45 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         status.fail("MLB Schedule API", "No games found")
         return None
 
-    status.ok("MLB Schedule API", f"{len(games)} games found")
+    # 2026-05-05: filter out games that won't actually be played today.
+    # Three statuses indicate "no game":
+    #   - Postponed:  rescheduled to a different date (most common — rain)
+    #   - Cancelled:  scrubbed entirely (rare but happens)
+    #   - Suspended:  game started, won't resume today (rain/weather)
+    # Without this filter, generate_picks scores batters in the postponed
+    # game against the probable pitchers (who aren't pitching tonight).
+    # PR #33's recent-lineup fallback compounds the issue by injecting
+    # YESTERDAY's lineup for those teams, so e.g. Soto/Lindor end up on
+    # the pool against a phantom matchup. They could land on the 8-pick
+    # card for a game that doesn't exist.
+    #
+    # etl_outcomes already filters on detailedState IN (Final, Game Over)
+    # so the metric side is safe — these batters just register as 0/0.
+    # But the SCORING side wasn't filtering, so picks could be poisoned.
+    EXCLUDED_GAME_STATUSES = {"Postponed", "Cancelled", "Suspended"}
+    excluded = [g for g in games if g.get("status") in EXCLUDED_GAME_STATUSES]
+    games = [g for g in games if g.get("status") not in EXCLUDED_GAME_STATUSES]
+
+    if excluded:
+        labels = ", ".join(
+            f"{g['away_team']}@{g['home_team']} ({g['status']})" for g in excluded
+        )
+        status.warn("MLB Schedule API",
+                    f"{len(games)} games found ({len(excluded)} skipped: {labels})")
+        print(f"  [LIVE] Skipping {len(excluded)} non-playing game(s): {labels}")
+    elif not games:
+        status.fail("MLB Schedule API",
+                    f"All {len(excluded)} games postponed/cancelled — no slate today")
+        return None
+    else:
+        status.ok("MLB Schedule API", f"{len(games)} games found")
+
+    if not games:
+        # Belt-and-suspenders: should be unreachable given the elif above,
+        # but if every game on the calendar is postponed (extreme weather
+        # day, league-wide cancellation, etc.) we'd land here.
+        status.fail("MLB Schedule API", "No playable games today")
+        return None
 
     # Normalize venue names so park factors / weather coords resolve correctly
     for g in games:
