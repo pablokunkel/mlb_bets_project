@@ -464,7 +464,11 @@
     }
     .lab-row {
       display: grid;
-      grid-template-columns: 24px 36px 1fr auto auto auto;
+      /* 2026-05-05: dropped the lab-meta (batting-order) column.
+         Was 6-col `24px 36px 1fr auto auto auto`; now 5-col since we
+         removed the inline #N batting-order display per Pablo's
+         request — the order info is on the Topps modal anyway. */
+      grid-template-columns: 24px 36px 1fr auto auto;
       gap: 10px; padding: 8px 4px;
       align-items: center; cursor: pointer;
       border-bottom: 1px dashed rgba(184,167,132,0.25);
@@ -2580,9 +2584,12 @@
 
       // VIEW 4: Game Stacks
       // Group confirmed starters by game_pk; pick top 2-3 by composite per
-      // game; surface the top 4 stacks ranked by Σ(top 2 composites).
+      // game; show stacks for ALL games today, ranked by Σ(top 2 composites).
       // Different probability shape: P(at least one of N homers) ≠ Σ P(one).
       // Useful for parlay construction.
+      // 2026-05-05: was capped at top-4 stacks; Pablo wanted to see every
+      // game so we can compare rest-of-slate parlay options at a glance.
+      // 12-15 stacks/day means a longer scroll but still browsable.
       const byGame = {};
       for (const p of board) {
         if (!p.game_pk) continue;
@@ -2598,9 +2605,13 @@
         stacks.push({ gamePk: gpk, players: top, score: stackScore });
       }
       stacks.sort((a, b) => b.score - a.score);
-      const v4 = stacks.slice(0, 4);
+      const v4 = stacks;  // all games, not just top 4
 
       // Renderers
+      // 2026-05-05: dropped the .lab-meta column that displayed `#N`
+      // batting_order. Order info still available on the Topps modal
+      // (per Pablo's preference — was visually noisy on the Lab tab
+      // and the row was already crowded). Grid CSS narrowed to 5-col.
       const renderRow = (p, i) => {
         const pid = p.batter_id || p.player_id || '';
         const headshot = pid ? headshotUrl(pid) : '';
@@ -2610,14 +2621,12 @@
         const score = p._lab_score != null
           ? p._lab_score.toFixed(1)
           : (p.composite != null ? p.composite.toFixed(1) : '—');
-        const meta = p.batting_order ? `#${p.batting_order}` : '';
         return `<div class="lab-row clickable-row" data-pid="${pid}">
           <div class="lab-rank">${i + 1}</div>
           ${headshotEl}
           <div>
             <div class="lab-name">${p.batter_name || ''}<span class="lab-team">${p.team || ''}</span></div>
           </div>
-          <div class="lab-meta">${meta}</div>
           <div class="lab-pitcher">vs. ${p.opp_pitcher || '—'}</div>
           <div class="lab-num">${score}</div>
         </div>`;
@@ -2713,8 +2722,8 @@
       );
       html += renderStacks(
         '🎲 Game Stacks',
-        'Top 2-3 by composite per game · ranked by Σ top-2',
-        'Pick from the same game — different probability shape than independent picks. P(at least one of N homers) is the parlay angle.',
+        'Top 2-3 by composite per game · all games · ranked by Σ top-2',
+        'Pick from the same game — different probability shape than independent picks. P(at least one of N homers) is the parlay angle. Every game on tonight\'s slate is shown so you can compare stacks across the board.',
         v4,
       );
 
