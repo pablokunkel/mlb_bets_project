@@ -402,17 +402,36 @@
 
     /* Cash-bag highlight: when a Today's Picks row's batter has homered
        today (cross-referenced live via api.dingersonly.cc/api/live-hrs).
-       Updates every 30s while the live HR poll runs. */
+       Updates every 30s while the live HR poll runs.
+       2026-05-05: stronger green gradient + dark text override. The
+       previous version faded to var(--paper) (cream) at 35% which left
+       the right portion of the row showing cream text on cream — nearly
+       invisible. Now the gradient extends to ~70% with a darker green
+       and overrides cashed-row text to var(--ink) for contrast. */
     .scoreboard-row.cashed {
-      background: linear-gradient(90deg, rgba(63, 106, 58, 0.18), var(--paper) 35%);
+      background: linear-gradient(90deg, rgba(63, 106, 58, 0.45), rgba(63, 106, 58, 0.10) 70%, var(--paper));
       border-left: 4px solid var(--grass-deep, #2d5a2a);
+      color: var(--ink);
     }
     .scoreboard-row.cashed .scoreboard-num {
       color: var(--grass-deep, #2d5a2a);
+      font-weight: 700;
     }
+    /* Inline mini spray-chart diamond shown on cashed rows. Renders
+       the actual hit location from the live HR feed's coordX/coordY,
+       so the row visually answers "where did that ball go?" at a
+       glance. Built by _spraySVGMini() in the script block. */
+    .cashbag-spray {
+      display: inline-block;
+      width: 36px; height: 36px;
+      margin-left: 6px;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+    .cashbag-spray svg { width: 100%; height: 100%; display: block; }
     .cashbag-badge {
-      display: inline-flex; align-items: center; gap: 4px;
-      margin-top: 3px; font-size: 11px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-top: 3px; font-size: 11px; font-weight: 700;
       color: var(--grass-deep, #2d5a2a);
       font-family: 'JetBrains Mono', monospace;
       letter-spacing: 0.02em;
@@ -421,14 +440,18 @@
 
     /* Cash-bag highlight on Lab rows (mirrors Today's Picks treatment).
        Same _todayPicksHrIds set is used to decorate both — see
-       _decorateLabRows() in the script block. */
+       _decorateLabRows() in the script block.
+       2026-05-05: stronger green for parity with the scoreboard row
+       contrast fix; Lab rows already had dark text (var(--ink)) so
+       only the bg needed bumping. */
     .lab-row.cashed {
-      background: rgba(63, 106, 58, 0.10);
+      background: linear-gradient(90deg, rgba(63, 106, 58, 0.20), rgba(63, 106, 58, 0.06) 60%);
       border-left: 3px solid var(--grass-deep, #2d5a2a);
       padding-left: 4px;
     }
     .lab-row.cashed .lab-num {
       color: var(--grass-deep, #2d5a2a);
+      font-weight: 700;
     }
 
     /* ── Lab tab (alternate views) ── */
@@ -1725,9 +1748,14 @@
       transform: translateX(2px);
       box-shadow: 0 2px 8px -2px rgba(80, 55, 25, 0.2);
     }
+    /* 2026-05-05: stronger gold gradient + bumped border weight so the
+       "this was one of our picks" treatment is more visible. Was a
+       very faint 10% tint that faded to paper at 35% — easy to miss
+       on a busy HR Recap day. */
     .live-hr-card.cashed {
       border-left-color: #c8a04a;       /* gold for our picks */
-      background: linear-gradient(90deg, rgba(200, 160, 74, 0.10), var(--paper) 35%);
+      border-left-width: 4px;
+      background: linear-gradient(90deg, rgba(200, 160, 74, 0.28), rgba(200, 160, 74, 0.06) 65%, var(--paper));
     }
     .live-hr-card.new { animation: hrFlash 1.6s ease-out; }
     @keyframes hrFlash {
@@ -2276,6 +2304,31 @@
       _todayPicksHrDetail = detail;
     }
 
+    // 2026-05-05: minimalist 36×36 spray-chart SVG for inline cashed-row
+    // display. Stripped-down sibling of _liveDiamondSVG (which is the
+    // 220×220 version on the Topps modal). Just the diamond outline +
+    // the spray-chart dot — no bases, no dashed wall, no trajectory
+    // path. Designed to read at thumbnail size.
+    //
+    // MLB coords: home plate ~(125, 200), X grows toward RF, Y decreases
+    // toward outfield. Range ~0–250. We map into a 50×50 viewBox with
+    // home at (25, 42) and outfield wall arcing across the top.
+    function _spraySVGMini(coordX, coordY) {
+      const havePlot = (coordX != null && coordY != null);
+      // Map 0–250 MLB coords to 0–50 mini coords. Home plate stays at
+      // bottom-center; outfield is top arc.
+      const mx = havePlot ? (coordX / 250) * 50 : null;
+      const my = havePlot ? (coordY / 250) * 50 : null;
+      const dot = havePlot
+        ? `<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="3" fill="var(--grass-deep, #2a4a26)" stroke="var(--paper)" stroke-width="0.8"/>`
+        : '';
+      return `<svg viewBox="0 0 50 50" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+        <path d="M 6 42 L 6 19 Q 25 0 44 19 L 44 42 Z" fill="rgba(63,106,58,0.12)" stroke="var(--rule)" stroke-width="0.6"/>
+        <polygon points="25,42 33,34 25,26 17,34" fill="var(--paper)" stroke="var(--ink)" stroke-width="0.7"/>
+        ${dot}
+      </svg>`;
+    }
+
     function _decorateTodayPicks() {
       // No-op if Today's Picks hasn't been rendered yet (or current tab
       // is on a different panel; the rows are still in the DOM though).
@@ -2289,6 +2342,7 @@
         // Manage the badge inside .name-block
         const nameBlock = row.querySelector('.name-block');
         let badge = nameBlock?.querySelector('.cashbag-badge');
+        let spray = nameBlock?.querySelector('.cashbag-spray');
         if (isHr) {
           const hr = _todayPicksHrDetail[pid];
           const inning = hr?.inning
@@ -2306,7 +2360,11 @@
             badge.className = 'cashbag-badge';
             nameBlock?.appendChild(badge);
           }
-          badge.innerHTML = `<span class="cashbag-emoji">💰</span> ${label}`;
+          // 2026-05-05: append a mini spray-chart diamond INSIDE the badge
+          // showing where the HR landed. Uses the live HR feed's
+          // coordX/coordY (Statcast-tracked, missing on rare untracked
+          // HRs — diamond renders without dot in that case).
+          badge.innerHTML = `<span class="cashbag-emoji">💰</span> ${label}<span class="cashbag-spray">${_spraySVGMini(hr?.coordX, hr?.coordY)}</span>`;
         } else if (badge) {
           badge.remove();
         }
@@ -2347,7 +2405,7 @@
             badge.className = 'cashbag-badge';
             container.appendChild(badge);
           }
-          badge.innerHTML = `<span class="cashbag-emoji">💰</span> ${label}`;
+          badge.innerHTML = `<span class="cashbag-emoji">💰</span> ${label}<span class="cashbag-spray">${_spraySVGMini(hr?.coordX, hr?.coordY)}</span>`;
         } else if (badge) {
           badge.remove();
         }
