@@ -4386,13 +4386,21 @@
       }
 
       // Cashed count = our top-8 picks who have homered today.
+      // 2026-05-05: was counting HR EVENTS (Bryce Harper's 2 HRs counted
+      // as 2 cashes, padding "CASHED: 4/8" when it's actually 3/8 picks).
+      // Switch to unique pick-batter set so the metric reads "of our 8
+      // picks, how many have homered" — which is what the slash-of-8
+      // visually implies and what the model is actually being graded on.
       const ourPickIds = new Set(
         Object.values(_liveState.picksMap || {})
           .filter(p => p && p.selected)
           .map(p => p.batter_id || p.player_id)
       );
-      let cashedCount = 0;
-      for (const h of hrs) if (ourPickIds.has(h.batterId)) cashedCount += 1;
+      const cashedPickIds = new Set();
+      for (const h of hrs) {
+        if (ourPickIds.has(h.batterId)) cashedPickIds.add(h.batterId);
+      }
+      const cashedCount = cashedPickIds.size;
       const ourPicksTotal = ourPickIds.size || 8;
 
       const lastHRTime = hrs.length ? hrs[0].time : null;
