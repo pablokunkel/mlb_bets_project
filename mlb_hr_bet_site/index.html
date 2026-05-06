@@ -403,19 +403,37 @@
     /* Cash-bag highlight: when a Today's Picks row's batter has homered
        today (cross-referenced live via api.dingersonly.cc/api/live-hrs).
        Updates every 30s while the live HR poll runs.
-       2026-05-05: stronger green gradient + dark text override. The
-       previous version faded to var(--paper) (cream) at 35% which left
-       the right portion of the row showing cream text on cream — nearly
-       invisible. Now the gradient extends to ~70% with a darker green
-       and overrides cashed-row text to var(--ink) for contrast. */
+       2026-05-05 v3: ditch the gradient-to-paper entirely. v1 used a
+       gradient that faded to cream which made cream text on the right
+       half nearly invisible. v2 over-corrected by forcing dark text,
+       which fought the dark-green LEFT half of the gradient — different
+       part of the row, same contrast problem. v3 (this): solid darker-
+       green tint across the whole row + keep the inherited cream text.
+       The "cashed" indicator is now a clear color shift (deeper green
+       than the parent scoreboard's brown wood) plus the chunky left
+       border, with no gradient artifacts to fight contrast on either
+       side of the row. The cashbag-num + cashbag-badge keep their
+       darker-green accents — readable on the lighter-green tint. */
     .scoreboard-row.cashed {
-      background: linear-gradient(90deg, rgba(63, 106, 58, 0.45), rgba(63, 106, 58, 0.10) 70%, var(--paper));
+      background: rgba(63, 106, 58, 0.32);
       border-left: 4px solid var(--grass-deep, #2d5a2a);
-      color: var(--ink);
+      /* No `color` override — inherit the parent's cream so the row
+         reads consistently with non-cashed rows. */
     }
     .scoreboard-row.cashed .scoreboard-num {
-      color: var(--grass-deep, #2d5a2a);
+      /* Keep the highlighted score in deep green for visual emphasis,
+         but bump it stronger so it pops against the lighter-green bg
+         instead of disappearing into it. */
+      color: #d4f4cf;  /* light pastel green; high contrast on the tint */
       font-weight: 700;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+    }
+    /* Cash-bag badge: was deep-green text which now fights the green
+       tint background. Bump to bright pastel green + add text shadow
+       so the "💰 HR'd in 7B · 408 ft · 107 mph" reads clearly. */
+    .scoreboard-row.cashed .cashbag-badge {
+      color: #d4f4cf;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
     }
     /* Inline mini spray-chart diamond shown on cashed rows. Renders
        the actual hit location from the live HR feed's coordX/coordY,
