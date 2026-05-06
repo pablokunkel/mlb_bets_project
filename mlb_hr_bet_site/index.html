@@ -2608,19 +2608,37 @@
         .sort((a, b) => b._lab_score - a._lab_score)
         .slice(0, 5);
 
-      // VIEW 2: Hot Streak Watch
-      // Confirmed-starter + already-has-meaningful-HRs + good current form.
-      // Catches the "warming up" pattern where season barrel% / EV are mid
-      // but recent at-bats are trending hot — composite under-rates these
-      // because it averages season vs recent.
-      const v2 = [...board]
-        .filter(p => {
-          const seasonHr = p.season_stats?.hr ?? 0;
-          const form = p.form_score ?? 0;
-          return seasonHr >= 3 && form >= 60;
+      // VIEW 2: Hot Streak Watch (2026-05-05 rework)
+      // OLD spec: season_hr ≥ 3 AND form_score ≥ 60, sort by form. The
+      // problem: form_score blends 14d HR + recent barrel/EV, so it's
+      // "warming up" not "actually red hot".
+      // NEW spec: top 10 by HR last 7 DAYS (strictly recent power surge),
+      // then sort those 10 by matchup × park × weather (favorable
+      // environment for the surge to continue tonight). The
+      // multiplicative score surfaces batters where ALL THREE are strong,
+      // not where one signal carries weak others — same idea as the
+      // Power × Matchup view but applied across env factors.
+      //
+      // Data: recent_hr_7d is added by export_site_data.py via SQL on
+      // outcomes. Strictly < today, so today's in-progress HRs don't
+      // double-count. Treats null as 0.
+      const top10Hot = [...board]
+        .filter(p => (p.recent_hr_7d ?? 0) >= 1)
+        .sort((a, b) => (b.recent_hr_7d ?? 0) - (a.recent_hr_7d ?? 0))
+        .slice(0, 10);
+      const v2 = top10Hot
+        .map(p => {
+          const m = p.matchup_score || 0;
+          const pk = p.park_score || 0;
+          const w = p.weather_score || 0;
+          // Multiplicative on 0-1 scale (each factor / 100), then back
+          // to 0-100. So 70×70×70 → 34.3, 90×90×90 → 72.9. Penalizes
+          // batters with one weak env factor more than weighted-avg
+          // would, surfacing only batters where ALL THREE are strong.
+          const _lab_score = (m / 100) * (pk / 100) * (w / 100) * 100;
+          return { ...p, _lab_score };
         })
-        .sort((a, b) => (b.form_score || 0) - (a.form_score || 0))
-        .slice(0, 5);
+        .sort((a, b) => b._lab_score - a._lab_score);
 
       // VIEW 3: Park × Pitcher Exploit
       // Career power hitter (≥5 HR season-to-date) in HR-friendly park
@@ -2780,8 +2798,8 @@
       );
       html += renderView(
         '🔥 Hot Streak Watch',
-        'season_hr ≥ 3 AND form_score ≥ 60',
-        'Already-proven HR power AND trending hot recently. Catches the "warming up" pattern that the composite under-rates because it averages season vs. recent.',
+        'top 10 by 7-day HRs · sorted by matchup × park × weather',
+        'Recently-hot batters (≥1 HR in the last 7 days, top 10 by count) ranked by a favorable game environment for tonight: matchup × park × weather, multiplicative. Multiplicative penalizes one-weak-factor batters harder than the weighted composite would, surfacing only those where ALL THREE environmental signals are aligned with the recent HR surge.',
         v2,
       );
       html += renderView(
