@@ -1734,6 +1734,15 @@
       font-size: 11px; font-weight: 400; color: var(--ink-muted);
       font-family: 'JetBrains Mono', monospace; letter-spacing: 0.04em;
     }
+    /* Small parenthetical slate-date tag, only shown when the live feed
+       is anchored to a slate that's not today's calendar date (i.e.,
+       between midnight ET and the next noon run, the feed is still on
+       yesterday's slate). Lets the user see why "Live" might be showing
+       yesterday's HRs. */
+    .live-hr-slate-tag {
+      font-size: 13px; font-weight: 500; color: var(--ink-muted);
+      font-style: italic; letter-spacing: normal;
+    }
     .live-hr-refresh {
       background: var(--paper); color: var(--ink);
       border: 1px solid var(--rule); border-radius: 4px;
@@ -1941,7 +1950,7 @@
         <div class="live-hr-header">
           <h3 class="live-hr-title">
             <span class="live-dot" id="liveHRDot" title="Live"></span>
-            Live Today
+            <span id="liveHRHeadingText">Live Today</span>
             <span class="live-hr-status" id="liveHRStatus"></span>
           </h3>
           <button id="liveHRRefresh" type="button" class="live-hr-refresh">Refresh</button>
@@ -4383,6 +4392,27 @@
       }
 
       section.style.display = 'block';
+
+      // Slate-date heading. The worker runs on the pipeline-published slate
+      // date, NOT calendar today — yesterday's HRs stay on the live feed
+      // until tomorrow's noon run rolls the slate (so the picks-card
+      // cashed flags keep working past midnight). When the slate doesn't
+      // match today's calendar date, surface that as "(M/D slate)" so the
+      // user can see why the feed is showing yesterday's HRs.
+      const _liveHeadingText = document.getElementById('liveHRHeadingText');
+      if (_liveHeadingText && data.date) {
+        const todayET = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/New_York',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(new Date());
+        if (data.date === todayET) {
+          _liveHeadingText.textContent = 'Live Today';
+        } else {
+          const [, m, d] = data.date.split('-');
+          _liveHeadingText.innerHTML =
+            `Live <span class="live-hr-slate-tag">(${parseInt(m, 10)}/${parseInt(d, 10)} slate)</span>`;
+        }
+      }
 
       const hrs = data.hrs || [];
       const games = data.games || [];

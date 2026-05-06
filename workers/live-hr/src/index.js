@@ -19,6 +19,14 @@ const KV_PREFIX = "live-hrs";
 const META_KEY = (date) => `${KV_PREFIX}:meta:${date}`;
 const FEED_KEY = (date) => `${KV_PREFIX}:${date}`;
 
+// Canonical "today's slate" date is published by the daily pipeline
+// (export_site_data.py writes it after every run_daily.bat run). The
+// worker reads this so the live HR feed stays anchored to the most
+// recently published slate instead of rolling at calendar-midnight ET.
+//
+// See export_site_data.py:export_slate_date() for the rationale.
+const SLATE_DATE_URL = "https://dingersonly.cc/data/slate_date.json";
+
 // Cache-Control on the public response. 20s is a good tradeoff: cron writes
 // every 60s, browser polls every ~30s, edge serves stale-but-fresh between.
 const PUBLIC_CACHE_SECONDS = 20;
@@ -46,6 +54,55 @@ function todayInTZ(tz) {
     month: "2-digit",
     day: "2-digit",
   }).format(now);
+}
+
+/**
+ * Slate date published by the daily pipeline. Replaces calendar-midnight
+ * rollover with pipeline-driven rollover so:
+ *
+ *   1. Yesterday's HRs stay on the live feed all night (until run_daily.bat
+ *      publishes today's slate ~12pm ET next day). Picks-card "cashed"
+ *      flags read against the live feed and need yesterday's HRs to render.
+ *   2. A west-coast game finishing at ~1am ET is correctly attributed to
+ *      its slate's date instead of the calendar next-day.
+ *
+ * Failure mode: if slate_date.json is unreachable (deploy mid-flight,
+ * DNS hiccup), fall back to the calendar date for THIS tick. We do NOT
+ * cache the last successful date in KV — in practice the file is on the
+ * same Cloudflare edge as the worker, fetches are <50ms, and a transient
+ * miss self-corrects on the next minute's tick. If the fallback happens
+ * during a slate-window (yesterday's date should have been used), the
+ * worker briefly returns today's data — same UX as the pre-PR behavior,
+ * so this is no regression.
+ *
+ * Failure mode 2 (the deliberate one): if `run_daily.bat` fails for a day,
+ * slate_date.json keeps showing yesterday's date. The worker stays on
+ * yesterday's slate forever. That's intentional — calendar-fallback would
+ * mask the pipeline failure. Stuck = loud signal something is wrong.
+ */
+async function getSlateDate(env) {
+  const tz = env.MLB_TIMEZONE || "America/New_York";
+  try {
+    const resp = await fetch(SLATE_DATE_URL, {
+      // 30s edge cache: file changes once a day, our tick is 60s, so
+      // worst case is a single tick of staleness around a deploy. Aligns
+      // with the schedule fetch's cacheTtl.
+      cf: { cacheTtl: 30, cacheEverything: true },
+      headers: { "User-Agent": "dingersonly-live-hr/0.1" },
+    });
+    if (!resp.ok) throw new Error(`status ${resp.status}`);
+    const data = await resp.json();
+    if (data && typeof data.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+      return data.date;
+    }
+    throw new Error(`malformed slate_date.json: ${JSON.stringify(data?.date)}`);
+  } catch (err) {
+    const fallback = todayInTZ(tz);
+    console.log(
+      `slate_date fetch failed (${err.message}); falling back to calendar ${fallback}`
+    );
+    return fallback;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +288,10 @@ const STATE_KEY = (date) => `${KV_PREFIX}:state:${date}`;
  *   { cursor: int, doneFinal: { gamePk: true, ... } }
  */
 async function refresh(env) {
-  const tz = env.MLB_TIMEZONE || "America/New_York";
-  const date = todayInTZ(tz);
+  // Use the pipeline-published slate date, NOT calendar-today. See
+  // getSlateDate() above for the rationale. On failure (very rare),
+  // getSlateDate() falls through to calendar date.
+  const date = await getSlateDate(env);
 
   let games;
   try {
@@ -476,14 +535,19 @@ export default {
     }
 
     if (url.pathname === "/api/live-hrs") {
-      const tz = env.MLB_TIMEZONE || "America/New_York";
-      const date = url.searchParams.get("date") || todayInTZ(tz);
+      // Default to the pipeline-published slate date. Explicit ?date= still
+      // wins for arbitrary historical lookups (used by the dashboard's HR
+      // Recap tab when you click a prior date).
+      const slateDate = await getSlateDate(env);
+      const date = url.searchParams.get("date") || slateDate;
 
       let body = await env.LIVE_HR_KV.get(FEED_KEY(date));
 
-      // Cold start / first request of the day: do a synchronous refresh so
-      // the user doesn't see an empty page until the first cron tick fires.
-      if (!body && date === todayInTZ(tz)) {
+      // Cold start / first request after a slate roll: do a synchronous
+      // refresh so the user doesn't see an empty page until the next cron
+      // tick fires. Compare against the slate date (not calendar) so the
+      // synchronous refresh fires on the slate we're actually serving.
+      if (!body && date === slateDate) {
         const fresh = await refresh(env);
         body = JSON.stringify(fresh);
       }
