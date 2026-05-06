@@ -36,7 +36,7 @@ REM  Repo: https://github.com/pablokunkel/mlb_bets_project
 REM
 REM  Logs to logs/daily_YYYY-MM-DD.log. Step markers also echo to console.
 REM  Live-tail in another window:
-REM    powershell -Command "Get-Content logs\daily_YYYY-MM-DD.log -Wait -Tail 20"
+REM    powershell -NoProfile -Command "Get-Content -LiteralPath 'logs\daily_YYYY-MM-DD.log' -Wait -Tail 20"
 REM ============================================================
 
 REM Force Python to use UTF-8 for stdout/stderr regardless of Windows
@@ -44,6 +44,17 @@ REM locale. Without this, unicode chars in print() crash with
 REM UnicodeEncodeError when redirected to a log file under cp1252.
 set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
+
+REM Disable Python's stdout block buffering when redirected to a file.
+REM When stdout is a file (not a tty), Python defaults to ~4KB block
+REM buffering, so progress lines from long-running steps like [2/6]
+REM generate_picks.py don't appear in the log for many minutes at a
+REM time. Bit us 2026-05-06 during the manual recovery run: step [2/6]
+REM was silent in the log for ~10 minutes despite the python.exe
+REM process being CPU-busy throughout, making "is it hung?"
+REM unanswerable from the log alone. Unbuffering costs essentially
+REM nothing for an ETL pipeline that runs once a day.
+set PYTHONUNBUFFERED=1
 
 cd /d "%~dp0"
 
@@ -57,7 +68,7 @@ echo.
 echo ========================================
 echo  DAILY HR BET PIPELINE -- %date% %time%
 echo  Log: %LOGFILE%
-echo  (live tail another window: powershell Get-Content "%LOGFILE%" -Wait -Tail 20)
+echo  (live tail another window: powershell -NoProfile -Command "Get-Content -LiteralPath '%LOGFILE%' -Wait -Tail 20")
 echo ========================================
 (
     echo ========================================
