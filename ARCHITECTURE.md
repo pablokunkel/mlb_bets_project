@@ -48,7 +48,15 @@ System overview for MLB HR Bets. Companion to `How_The_HR_Model_Works.md` (model
 ## Data flow per day
 
 1. **2 AM** — `run_nightly.bat` refreshes Statcast / arsenals / season stats into the DB. Pre-warms next-day cache.
-2. **12 PM** — `run_daily.bat` pulls today's schedule + lineups + weather, scores every batter (3 tier passes + 1 untiered pass), writes the top-8 picks + full board to the DB and to `mlb_hr_bet_site/data/*.json`, commits, pushes. Cloudflare auto-deploys.
+2. **12 PM** — `run_daily.bat` runs as 8 steps (see `DEPLOY.md`):
+   - `[0a]` Kill stale `python.exe` zombies from a prior Ctrl-Cd run
+   - `[0b]` `git pull --rebase --autostash origin main`
+   - `[1]` Morning ETL: schedule + lineups + weather → DB
+   - `[2]` Score every batter (3 tier passes + 1 untiered pass)
+   - `[3]` Persist top-8 picks + full board → `daily_picks` + `pick_inputs`
+   - `[4]` Self-heal yesterday's outcomes + HR events (idempotent re-run of `etl_outcomes` to recover from a failed/missed 1 AM run)
+   - `[5]` Export JSON → `mlb_hr_bet_site/data/*.json`
+   - `[6]` Commit + push. Cloudflare auto-deploys.
 3. **(games happen)** — During games, `dingersonly-live-hr` polls MLB Stats API every minute and serves live HR data via `api.dingersonly.cc/api/live-hrs`. The dashboard's HR Recap tab polls this endpoint at 30s while the tab is visible.
 4. **1 AM next day** — `run_outcomes.bat` pulls yesterday's box scores, computes outcomes, re-runs backtest_factors, re-exports JSON, commits, pushes. CF auto-deploys.
 
@@ -60,6 +68,18 @@ System overview for MLB HR Bets. Companion to `How_The_HR_Model_Works.md` (model
 - **v1 path** (fallback): `score_matchup()` in `score_batters.py`. Uses 3 signals (vulnerability, woba_vs_hand, Vegas). No archetype matching.
 
 Both paths share Power, Form, Park, Weather, Lineup scoring. Composite weights are the same (`WEIGHT_CONFIGS["default"]`).
+
+## Lineup data source (rebuilt 2026-05-04)
+
+Lineup ingestion in `fetch_daily_data.py` follows a 3-tier fallback chain. Each batter dict carries a `lineup_source` string that's persisted to `pick_inputs` and surfaced in the dashboard so we can see which tier each row came from.
+
+1. **Posted lineup (preferred).** `statsapi.mlb.com/api/v1/schedule?hydrate=lineups`. One call returns every game on the date with confirmed batting orders 1-9 keyed by `homeBattingOrder` / `awayBattingOrder`. `lineup_source = "posted"`.
+
+2. **Recent posted lineup (fallback when today's not yet up).** Walk back through the last 14 days of the team's `daily_lineup` rows; take the most recent date that has a posted lineup. Players keep their batting-order positions from that date. `lineup_source = "recent:YYYY-MM-DD"`.
+
+3. **Bdfed roster (last resort).** `bdfed.stitch.mlbinfra.com/bdfed/matchup` returns the alphabetical 26-man roster. We mark every player `batting_order = NULL` and `lineup_source = "roster_fallback"` — the picks selection rule (`batting_order between 1 and 9`) excludes these from the final card.
+
+**Critical bug history.** Prior to 2026-05-04, the scoring code took bdfed's roster output and assigned `batting_order = i + 1` based on the array index — but bdfed returns the roster *alphabetically*, not in batting order. The model was effectively scoring random hitters at "position 1-9" for any team without a posted lineup at noon, which during early May was most teams. Live hit rate dropped from 36-40% to ~17% during the bug window. PR #32 switched the primary path to statsapi/schedule, PR #33 added the recent-lineup fallback so a real-but-stale order is preferred over the alphabetical roster, and PR #34 added the `lineup_source` column for visibility.
 
 ## Tier scoring + the untiered fallback (added 2026-05-02)
 
@@ -92,8 +112,8 @@ This pass was added to fix the SEA/KC autopsy symptom (PR #3) where 5 of 9 SEA s
 |---|---|---|
 | `daily_slate` | `etl_morning.fetch_schedule` + `fetch_weather` | Today's games + venue + probable pitchers + weather |
 | `daily_lineup` | `etl_morning.fetch_lineups` | Confirmed lineups; `batting_order` capped at 9 (bench gets NULL) |
-| `daily_picks` | `load_picks_to_db.py` | Today's full scored board (8 picks selected from top composites; full board persisted with `selected=0` for the rest) |
-| `pick_inputs` | `load_picks_to_db.py` | Per-pick raw inputs (decomposes the composite for backtest/refit) |
+| `daily_picks` | `load_picks_to_db.py` | Today's full scored board (8 picks selected from top composites; full board persisted with `selected=0` for the rest). Carries a `mode` column (`'live'` / `'offline_simulation'`) added 2026-05-03. |
+| `pick_inputs` | `load_picks_to_db.py` | Per-pick raw inputs (decomposes the composite for backtest/refit). Schema additions 2026-05-03 → 2026-05-04: `bats`/`throws` (batter + opposing pitcher handedness), `weather_source` / `barrel_pct_source` (provenance flags so the dashboard can distinguish real Statcast from synthetic estimates), `lineup_source` (posted / `recent:YYYY-MM-DD` / `roster_fallback`), and `vegas_team_total_raw` alongside the renamed `vegas_team_total_pct` (formerly mis-named `vegas_implied_total`, which actually stored a 0-100 percentile not a Vegas total in runs — PR #21). |
 | `outcomes` | `etl_outcomes.fetch_outcomes_for_date` | Yesterday's HR-yes/no per batter from box scores |
 | `season_batting` | `etl_nightly.sync_season_batting` | Season-to-date batting stats (Stats API splits + synthetic Statcast estimates) |
 | `pitcher_arsenals` | `etl_nightly` | Pitcher pitch-mix from Savant (>7d staleness check) |
@@ -113,12 +133,18 @@ The pipeline runs on a single machine, single concurrent writer, no remote consu
 
 ## Known architectural debt
 
-(Current as of 2026-05-02 — see `_review/model_audit_2026-05-02.md` for full list.)
+(Current as of 2026-05-06.)
 
 - **`raw_data.csv` is the refit training source but doesn't auto-extend.** Monthly refit reads a 5,196-row 2026-03-27→2026-04-15 window. New days from `daily_picks ⨝ outcomes` are not appended. Result: monthly refit is currently a no-op. Fix is to either append nightly or refit directly off the DB.
-- **Multiple hardcoded "league-average pitcher" dicts.** 6+ sites construct `{"hr_per_9": 1.2, ...}` defaults independently. Drift over seasons; no provenance flag distinguishing measured vs default. Tracked for PR #4.
-- **`pick_inputs.vegas_implied_total` stores a 0–100 percentile, not a Vegas total in runs.** Column name is misleading. Fix in PR #4.
-- **Live tier estimates** (`barrel_pct`, `exit_velo`, `hr_fb_pct` synthesized from `hr_per_pa × constants`) populate `season_batting` via `etl_nightly.sync_season_batting`, so `enrich_with_season_batting`'s "fallback" is sometimes another synthetic estimate rather than real Statcast. Tracked for PR #5+.
+- **Live tier estimates** (`barrel_pct`, `exit_velo`, `hr_fb_pct` synthesized from `hr_per_pa × constants`) populate `season_batting` via `etl_nightly.sync_season_batting`, so `enrich_with_season_batting`'s "fallback" is sometimes another synthetic estimate rather than real Statcast.
+- **Live tracker session window.** The HR Recap "Live Today" panel rolls over at midnight ET, not at end-of-game. West-coast late games that finish past midnight ET still show up under "yesterday" while live status flips to "today" — minor visual mismatch. Planned fix: define a session window from first-pitch of the earliest game to last-out of the latest, instead of using calendar midnight.
+
+### Resolved 2026-05
+
+- **`pick_inputs.vegas_implied_total` mis-naming.** Renamed to `vegas_team_total_pct` and a separate `vegas_team_total_raw` (Vegas total in runs) added (PR #21, 2026-05-03). Schema migration handled in `etl/db.py` — old column auto-renamed at startup.
+- **Multiple hardcoded "league-average pitcher" dicts.** Deduplicated 2026-05-02 — `LEAGUE_AVG_PITCHER` constant in `score_batters.py` is the single source.
+- **Lineup data source was wrong.** Bdfed's alphabetical roster was being treated as a batting order; switched to `statsapi schedule?hydrate=lineups` (PR #32) with a recent-lineup fallback (PR #33) and a `lineup_source` provenance flag (PR #34) all 2026-05-04 → 2026-05-05. See "Lineup data source" section above for the full rebuild.
+- **Untiered confirmed starters silently dropped.** Added the `score_untiered_starters` 4th pass (T4-Untiered) 2026-05-02. See "Tier scoring + the untiered fallback" above.
 
 ## Diagrams of process flow
 
