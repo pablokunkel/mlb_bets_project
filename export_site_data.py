@@ -197,6 +197,25 @@ def export_latest_picks(conn, out_dir: Path):
     for gpk in top25_pks:
         top25_per_game[gpk] = top25_per_game.get(gpk, 0) + 1
 
+    # 2026-05-05 Hot Streak rework: per-batter HR count over the last 7
+    # days STRICTLY BEFORE `latest_date`. Powers the Lab tab's reworked
+    # Hot Streak view ("top 10 by 7d HR with favorable matchup × park ×
+    # weather"). Distinct from `recent_hr_14d` already on pick_inputs —
+    # 7d is the spec Pablo asked for; the 14d field stays for the form_
+    # score calc.
+    #
+    # Date math: latest_date is the picks date (e.g., today). We want
+    # the 7 days BEFORE that — strict less-than so today's in-progress
+    # HRs don't double-count once they're recorded.
+    recent_hr_7d_rows = conn.execute("""
+        SELECT batter_id, SUM(hr_count) AS hr_7d
+        FROM outcomes
+        WHERE date >= date(?, '-7 days') AND date < ?
+        GROUP BY batter_id
+        HAVING SUM(hr_count) > 0
+    """, (latest_date, latest_date)).fetchall()
+    recent_hr_7d_by_id = {r["batter_id"]: r["hr_7d"] for r in recent_hr_7d_rows}
+
     # Augment each batter row with season stats + model track + game info.
     def _augment(b: dict) -> dict:
         season = season_by_id.get(b.get("batter_id"), {})
@@ -222,6 +241,10 @@ def export_latest_picks(conn, out_dir: Path):
             "model_hits":  model_hits,
             "hit_rate":    round(model_hits / days_picked * 100, 1) if days_picked else None,
         }
+        # 7-day HR rolling count (strictly before latest_date). Used by
+        # the Lab tab's Hot Streak view. None when batter had zero HRs
+        # in the window (most batters); the JS treats None as 0.
+        b["recent_hr_7d"] = recent_hr_7d_by_id.get(b.get("batter_id"))
         b["game_time"]  = game.get("game_time")
         b["venue"]      = game.get("venue")
         b["dome"]       = game.get("dome")
