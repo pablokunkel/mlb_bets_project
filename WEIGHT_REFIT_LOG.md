@@ -2,7 +2,53 @@
 
 A running log of monthly weight-refit decisions for `WEIGHT_CONFIGS["default"]` in `score_batters.py`. Each entry captures what was tried, what was learned, and whether anything actually shipped.
 
-Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr-refit-weights-monthly`). Training data feeder: `backfill_features_v2_bulk.py --season 2026` (refreshes Savant feature columns in `raw_data.csv` / `raw_data_v2.csv`).
+Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr-refit-weights-monthly`). Training data feeder: `backfill_features_v2_bulk.py --season 2026` (refreshes Savant feature columns in `raw_data.csv` / `raw_data_v2.csv`). Score-curve / flag decisions are driven separately by `backtest_flags.py`, a same-data harness that compares scoring variants (anchor sets, floor on/off, prior on/off) against the canonical default on lift / AUC / top-8 / top-30 / monotonicity over a fixed window.
+
+---
+
+## 2026-05-03 — score-curve & scoring-flag changes (PR #25, harness-driven)
+
+**Status: shipped.** Three changes landed together as a batched scoring tweak; weights themselves unchanged.
+
+The 2026-05-01 refit decided "no weight change because training data is stale," but several diagnostic signals (input calibration `SIGNAL_NOT_CAPTURED` on barrel%, EV, HR/FB; the 2026-05-02 HR autopsy showing 25 HR hitters' average rank at 107.7) made it clear the upstream score curves themselves were broken — refitting weights on broken curves wouldn't have helped. So we ran `backtest_flags.py` over the available 14d / 30d windows comparing scoring variants and shipped what won decisively.
+
+### Change 1: power-score anchor re-tune
+
+The original 0-100 scaling anchors on the six power-score inputs were calibrated generously on the upside, so even MLB-leading Statcast values capped at 50-70%. Aaron Judge's 17% barrel was scoring 68 instead of saturating the scale. Anchors retuned to reflect actual MLB distributions (league-avg → 0, elite → 100):
+
+| Input            | Old anchors    | New anchors    |
+|------------------|----------------|----------------|
+| barrel %         | 0 - 25         | 5 - 15         |
+| exit velo (mph)  | 80 - 100       | 85 - 95        |
+| HR/FB %          | 0 - 30         | 8 - 20         |
+| ISO              | 0.100 - 0.350  | 0.130 - 0.300  |
+| xwOBA on contact | 0.280 - 0.500  | 0.330 - 0.450  |
+| pull-FB %        | 5 - 25         | 8 - 22         |
+
+Result on the harness: mid-tier scores tightened ~3-5 pts; elite scores widened ~15-20 pts; under-replacement bottoms out near 0 (was ~20). More rank discrimination at both tails. Judge moved 70 → 84.
+
+### Change 2: park additive bonus (`+0.05 × park`)
+
+Park's regression weight stays at 0.000 in the weighted average — refit said "park is non-predictive net of pitcher vulnerability + weather." But park-as-within-slate-percentile *does* carry signal that's getting thrown away (Yankee Stadium PF 115 vs Petco PF 92 is a real 25-pt spread). Rather than re-stealing weight from another factor (which forces a full refit), added park as a **purely additive bonus** on top of the weighted-average composite: `composite += 0.05 × park`. Shifts every composite up ~2.5 pts on average, +5 for top parks, +0 for the worst. Rankings are what matter — bonus brings hot-park batters up the board where they belong.
+
+Harness verdict: marginal but consistent positive lift. No re-fit was needed because the bonus is multiplied by 0.05, well below the noise floor of the weight-refit's reported coefficients.
+
+### Change 3: `USE_SEASON_HR_FLOOR=True` flipped on
+
+Discrete-tier floor on `power_score` keyed off the batter's accumulated season HR count (5 HR → 50, 8 HR → 60, 12 HR → 70, 18 HR → 78, 25 HR → 85). Highest qualifying tier wins; floor only ELEVATES (never pulls a good score down). Originating case: Drake Baldwin homering for his 8th of the season ranked #97 on our board; same season-HR count producing wildly different ranks across hitters (Buxton 10 HR rank #8, Walker 10 HR rank #85, Baldwin 8 HR rank #97).
+
+`backtest_flags.py` over the 14d window: floor-on decisively wins on all 4 metrics (top-8 hit rate, top-30 hit rate, AUC, Spearman). 30d window was ambiguous — most of April's hitters hadn't yet crossed the 5/8/12 HR thresholds, so the flag is a no-op for that period. Decision: ship the flag; rely on the 14d harness as the active window.
+
+A companion flag `USE_CAREER_PRIOR` (Bayesian shrinkage of small-sample per-PA rates toward career mean) stayed off — harness showed marginal gain over floor-only, not enough to justify extra complexity yet. Stacking floor + prior is a future experiment.
+
+### Decisions still pending from 2026-05-01
+
+Both flagged as still open:
+
+- "Wire a job that appends each completed day's `daily_picks ⨝ outcomes` rows into `raw_data.csv`" — **still not done.** Monthly refits remain a no-op until this lands.
+- "`refit_weights.py` `current_default` baseline is stale" — **still not done.** The hardcoded `comp_default` formula in `refit_weights.py` (lines 161-167) still reflects v1_learned weights, not the actual shipped default.
+
+**Verification:** `score_batters` and `generate_picks` import cleanly; backtest_flags harness re-confirmed each flag's verdict before flip.
 
 ---
 
