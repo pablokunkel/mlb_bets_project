@@ -24,7 +24,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -60,6 +60,56 @@ def atomic_write_json(path: Path, data, indent: int = 2) -> None:
         except OSError:
             pass
         raise
+
+
+def export_slate_date(conn, out_dir: Path) -> str:
+    """
+    Write `slate_date.json` — the canonical "today's slate" date in ET.
+
+    Read by the live-hr Cloudflare Worker (`workers/live-hr/`) so the live
+    HR feed stays anchored to the most recently published slate instead of
+    rolling at calendar-midnight ET. This solves two problems that
+    midnight-rollover produced:
+
+      1. Cashed-flag persistence. Picks-card cashed flags read against
+         the live feed. With midnight rollover, yesterday's HRs vanish
+         from the feed at 12:00am ET and the green flags on yesterday's
+         picks go dark — even though the user is still looking at last
+         night's picks until tomorrow's noon run. With slate-driven
+         rollover, the feed stays on the prior slate until the new
+         slate publishes, so flags stay accurate end-to-end.
+
+      2. Late-game attribution. A 10pm PT game finishing at ~1am ET
+         was previously logged under the next day's slate (worker
+         had already rolled). With slate-driven rollover, that HR
+         correctly belongs to the slate it was scored under.
+
+    Failure mode: if `run_daily.bat` fails to run for a day, the worker
+    stays on the prior slate. That's deliberate — calendar-fallback
+    would mask the pipeline failure. Stuck = loud signal something is
+    wrong; the rest of the dashboard (stale picks card, stale outcomes)
+    will already be making it obvious.
+
+    File schema:
+        { "date": "YYYY-MM-DD",
+          "updated_at": "<RFC 3339 UTC>",
+          "source": "export_site_data.py" }
+
+    Returns the slate date string for callers that want it.
+    """
+    row = conn.execute(
+        "SELECT MAX(date) FROM daily_picks WHERE selected = 1"
+    ).fetchone()
+    slate_date = row[0] if row and row[0] else datetime.now().strftime("%Y-%m-%d")
+
+    payload = {
+        "date":       slate_date,
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source":     "export_site_data.py",
+    }
+    atomic_write_json(out_dir / "slate_date.json", payload)
+    print(f"  Exported slate_date.json (date={slate_date})")
+    return slate_date
 
 
 def export_latest_picks(conn, out_dir: Path):
@@ -1880,6 +1930,7 @@ def main():
     conn = get_db()
     create_tables(conn)
     try:
+        export_slate_date(conn, out_dir)
         export_latest_picks(conn, out_dir)
         export_history(conn, out_dir, days=args.days)
         export_performance(conn, out_dir)
