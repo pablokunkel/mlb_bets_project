@@ -1,6 +1,6 @@
 # How the MLB HR Model Picks Its Daily Card
 
-A plain-English walkthrough of how the model decides who's most likely to hit a home run on any given day. Last updated 2026-05-02.
+A plain-English walkthrough of how the model decides who's most likely to hit a home run on any given day. Last updated 2026-05-06.
 
 > For the deploy / release process, see `DEPLOY.md`. For component map and DB tables, see `ARCHITECTURE.md`.
 
@@ -23,7 +23,7 @@ That's the whole thing. Everything below is the detail.
 Before anything can be scored, the model has to know what games are being played today, who's pitching, and who's in the lineup.
 
 - **Schedule and probable pitchers** come from the free MLB Stats API. We get every game on today's date, the starting pitchers, venue, and first-pitch time.
-- **Confirmed lineups** come from MLB's bdfed lineup endpoint. The parser caps at positions 1-9; anyone returned at "10+" is a bench reserve and gets marked as such (these never make the final card, regardless of their composite).
+- **Confirmed lineups** come from MLB's Stats API `schedule?hydrate=lineups` endpoint. The parser respects the order MLB returns (positions 1-9); anyone beyond 9 is a bench reserve and gets marked as such (bench reserves never make the final card, regardless of their composite). When a posted lineup isn't yet up at scoring time (afternoon manager fills, late-arriving slates), the model falls back to that team's most-recent posted lineup from the prior 14 days — a real batting order from a few days ago is dramatically more accurate than the alphabetical 26-man roster, which was the previous fallback. Bdfed roster (alphabetical) remains as the last-resort fallback, with `lineup_source` stamped on every batter so the dashboard shows where the order came from. (Critical bug fix 2026-05-04: prior to this, the model used MLB's bdfed/matchup endpoint, which returns the alphabetical 26-man roster — not the batting order. The model was effectively scoring random hitters at "position 1-9" for any team without a posted lineup. Hit rate dropped to ~17% during the bug window; recovered to ~37% after the fix.)
 - **Weather** comes from Open-Meteo, a free forecast API. We look up the ballpark's coordinates, convert first-pitch to the stadium's local timezone, and pull the hourly temperature, wind speed, wind direction (meteorological "from" convention), and humidity. Domes are flagged so weather scoring can return a flat neutral instead of fictional readings.
 - **Park factors** come from a curated table stored in our own database. Each park has an overall HR factor, a left-handed batter HR factor, and a right-handed batter HR factor. 100 is league average, 130 is Coors, 82 is Oracle Park.
 - **Pitcher season stats** (ERA, HR/9, hard-hit percentage allowed, strikeout rate) come from the MLB Stats API.
@@ -80,7 +80,34 @@ Six inputs from season-to-date stats and Statcast:
 - **xwOBA on contact.** Expected wOBA computed from Statcast launch parameters on every batted-ball event. Filters out luck on outcomes; rewards quality of contact.
 - **Pull-FB percentage.** Of fly balls hit, the share pulled to the batter's natural HR side. Some hitters elevate to all fields but only clear the fence on pull; this isolates that.
 
-Each input is scaled to 0-100 (within-slate percentile rank) and the available ones are averaged. **Every input in this factor uses an `is not None and > 0` skip-on-missing check** — a missing or zero reading is dropped from the average rather than dragging it toward zero. Prior to 2026-05-01, missing barrel% and HR/FB% were silently scored as 0, which dragged elite hitters with sparse Statcast data (e.g., Buxton on a return-from-IL day) to power scores in the teens despite their actual contact quality. The fix made the skip-on-missing behavior uniform across all six inputs.
+Each input is scaled to 0-100 against fixed anchors that reflect actual MLB distributions (league-avg → 0, elite → 100), and the available ones are averaged:
+
+| Input             | League avg → 0 | Elite → 100 |
+|-------------------|----------------|-------------|
+| barrel %          | 5              | 15          |
+| exit velo (mph)   | 85             | 95          |
+| HR/FB %           | 8              | 20          |
+| ISO               | 0.130          | 0.300       |
+| xwOBA on contact  | 0.330          | 0.450       |
+| pull-FB %         | 8              | 22          |
+
+The 2026-05-03 anchor re-tune (PR #25) tightened these from earlier generous ranges (barrel 0-25, EV 80-100, HR/FB 0-30, ISO 0.100-0.350, xwOBA 0.280-0.500, pull-FB 5-25) so MLB-leading values actually reach the top of the scale. Aaron Judge's 17% barrel was scoring 68 under the old anchors; under the new ones it's 100. Mid-tier scores tightened ~3-5 pts; elite scores widened ~15-20 pts; under-replacement bottoms out near 0 (was ~20). Net effect: more rank discrimination at both tails.
+
+**Every input uses an `is not None and > 0` skip-on-missing check** — a missing or zero reading is dropped from the average rather than dragging it toward zero. Prior to 2026-05-01, missing barrel% and HR/FB% were silently scored as 0, which dragged elite hitters with sparse Statcast data (e.g., Buxton on a return-from-IL day) to power scores in the teens despite their actual contact quality. The fix made the skip-on-missing behavior uniform across all six inputs.
+
+**Season-HR floor (added 2026-05-03, PR #25, default on).** A hard, score-level floor on power score keyed off the batter's accumulated season HR count. The floor only ELEVATES — it never pulls a good score down. Tiers:
+
+| Season HR | Power-score floor |
+|-----------|-------------------|
+| 5+        | 50                |
+| 8+        | 60                |
+| 12+       | 70                |
+| 18+       | 78                |
+| 25+       | 85                |
+
+Originating case: 2026-05-02 HR autopsy showed real power hitters being muffled by noise from the other 5 composite factors. Drake Baldwin homered for his 8th of the season ranked #97 on our board; Jake Burger homered for his 6th ranked #243. Same season-HR count was producing wildly different ranks (Buxton 10 HR rank #8, Walker 10 HR rank #85, Baldwin 8 HR rank #97). The floor says: an 8-HR hitter shouldn't be scoring below league-average on power. Highest qualifying tier wins. Gated behind the `USE_SEASON_HR_FLOOR` flag; flipped on 2026-05-03 after a 14-day backtest harness (`backtest_flags.py`) showed decisive wins on all 4 metrics (top-8 hit rate, top-30 hit rate, AUC, Spearman rank correlation).
+
+A second related flag, `USE_CAREER_PRIOR`, exists in `score_batters.py` (off by default). It would Bayesian-shrink small-sample per-PA rates toward career mean — a complementary fix to the floor for "his rates LOOK bad due to small sample" cases. Parked off until backtest validation; the harness can compare floor-only vs floor+prior to tell whether stacking both adds signal.
 
 ### Factor 2 — Matchup Score (weight: 0.264 — the heaviest factor)
 
@@ -96,22 +123,25 @@ This is the smartest factor. When archetype data is available (the daily path wi
 
 **Signal D: Batter wOBA vs. pitcher handedness.** (Added 2026-04-30.) The 2026-04-30 input calibration found `woba_vs_hand` was the single biggest signal-not-captured input — HR rate climbs 4.5x across woba quintiles, but the v2 matchup score wasn't using it at all (only v1 was). Added as a fourth signal, with anchors tightened to 0.280-0.420 (the empirical 20th-80th percentile of the active distribution) so the curve actually spreads across real data rather than compressing into a 30-60 band.
 
-The four signals get averaged (variable arity — Vegas and woba drop out if data is missing for a batter, leaving just vulnerability + similarity). Then **two adjustments**:
+The four signals get averaged (variable arity — Vegas and woba drop out if data is missing for a batter, leaving just vulnerability + similarity). Then **three adjustments**:
 
 - **Ace dampener.** If the pitcher's vulnerability is below 25 (truly elite), we multiply the whole matchup score by 0.70. Below 40 (good), we multiply by 0.85. Stops the model from getting cute and picking against Skubal just because his arsenal happens to match a batter's victim profile.
+- **Rookie pitcher bonus (added 2026-05-03, PR #26).** When the opposing pitcher has fewer than 300 career Statcast pitches, we add +15 to every batter's matchup score against him (capped at 100). Originating case: a fresh callup with 50 career pitches has thin Savant data, so all the archetype/vulnerability inputs land at league-average and the matchup scores in the 50s — but rookie pitchers historically allow ~20% more HRs per 9 than their season-three veterans. The +15 baseline corrects for that prior. The rookie set is computed by `generate_picks.load_rookie_pitcher_ids` and stamped on the pitcher dict as `is_rookie=True`.
 - **No platoon bonus.** Earlier versions added a flat +5 for opposite handedness, but that was double-counted with the handedness already baked into archetype similarity. Removed in v2.
 
 If archetype data is missing (new pitcher, no HR history for the batter, or it's a slate where per-player Statcast isn't running), the model falls back to **v1 matchup scoring**: pitcher vulnerability + woba_vs_hand + Vegas implied total, two-thirds vulnerability and one-third the others.
 
-### Factor 3 — Park Score (weight: 0.000 — currently zero)
+### Factor 3 — Park Score (weight: 0.000 in weighted average, but with a 0.05 additive bonus)
 
 "How HR-friendly is this specific ballpark for a batter of this handedness?"
 
 Each park has three numbers in our table: overall HR factor, LHB factor, RHB factor. The model picks the one matching batter handedness (switch-hitters get the average) and scales it to 0-100 via within-slate percentile.
 
-**Why the weight is zero:** when the model was retrained on enriched data with logistic regression (March 2026), park factor came out essentially non-predictive *net of the other features*. The signal in park factor was already being captured indirectly through pitcher vulnerability (pitchers in homer-friendly parks have inflated HR/9) and weather (warm parks tend to be hitter-friendly). The coefficient was tiny and got dropped.
+**Why the regression weight is zero:** when the model was retrained on enriched data with logistic regression (March 2026), park factor came out essentially non-predictive *net of the other features*. The signal in park factor was already being captured indirectly through pitcher vulnerability (pitchers in homer-friendly parks have inflated HR/9) and weather (warm parks tend to be hitter-friendly). The coefficient was tiny and got dropped from the weighted average.
 
-We **still compute the park score** because it's useful diagnostic information ("Coors is a HR factory today") and the dashboard surfaces it. We just don't weight it in the final composite. Future re-training may bring it back if we find a way to isolate park signal from the correlated effects.
+**But the additive bonus changes the story (added 2026-05-03, PR #25).** Park-as-fixed-anchor is a noisy signal because batters play their home park ~50% of games (signal washes), but park-as-within-slate-percentile *is* a real edge: Yankee Stadium today (PF 115, top of the slate) vs. Petco (PF 92) is a 25-point park-score spread that a zero weight throws away. So we add a purely additive `+0.05 × park_score` bonus on top of the weighted-average composite. This shifts every composite up a few points (+2.5 average, +5 for top parks, +0 for the worst), but rankings are what matter, and the bonus brings hot-park batters up the board where they belong without re-stealing weight from another factor and re-fitting all the others.
+
+So in practice the park score contributes 0-5 points to the final composite. The dashboard still surfaces park as its own column for diagnostic context.
 
 ### Factor 4 — Form Score (weight: 0.279 — the heaviest factor alongside matchup)
 
@@ -151,7 +181,7 @@ This factor wasn't in earlier versions and was added specifically because expect
 
 ## Step 4: Combine into the composite
 
-The composite is a weighted average of the six sub-scores:
+The composite is a weighted average of the six sub-scores plus a park bonus and a platoon multiplier:
 
 | Factor   | Weight |
 |----------|--------|
@@ -162,36 +192,68 @@ The composite is a weighted average of the six sub-scores:
 | Weather  | 0.057  |
 | Lineup   | 0.150  |
 
+```
+composite = (0.250 × power
+           + 0.264 × matchup
+           + 0.000 × park
+           + 0.279 × form
+           + 0.057 × weather
+           + 0.150 × lineup)
+           + 0.05 × park                    ← additive park bonus (PR #25)
+composite *= platoon_dampener(games, slate_max_games)   ← multiplicative haircut (PR #28)
+```
+
 These weights were learned via logistic regression on a 20-day enriched backfill (~5,200 batter-game rows, hit_hr as target, 7 features standardized). Backtest progression:
 
 - **Legacy fixed-anchor model:** 36.04% top-8 hit rate
 - **v1 (learned weights + within-slate percentile rerank):** 38.75%
 - **v2 (current — learned weights + xwoba_contact + fb_pct_allowed + Vegas):** 40.00%
 
+> **About that 40%:** that figure came from an in-sample backtest. Live performance was running ~36-40% through April 2026 — and then dropped to ~17% in early May before we discovered (2026-05-04) that lineups were being read from MLB's bdfed/matchup endpoint, which returns the alphabetical 26-man roster, not the batting order. The model was effectively scoring random hitters at "position 1-9" for any team without a posted lineup — which is most teams during the noon scoring window. After the lineup endpoint fix (PR #32) and recent-lineup fallback (PR #33), live performance recovered to 37.5% on the first two clean days (5/4 + 5/5: 6 of 16). We're treating the 36-40% backtest band as the realistic target, not a guarantee.
+
 The model supports other configs for ablation comparison (`legacy`, `matchup_heavy`, `power_heavy`, `form_heavy`, `no_weather`) but `default` is what runs day-to-day.
 
-**Example walkthrough.** Bryce Harper (L) at Yankee Stadium against a middling righty on a mild sunny day:
+**Park bonus (additive).** After the weighted average, we add `0.05 × park_score`. See Factor 3 above for the rationale — it brings hot-park batters up the board without re-stealing weight.
+
+**Platoon dampener (multiplicative, added 2026-05-03, PR #28).** Multiplicative haircut on the composite for batters who don't start every game, computed as:
+
+```
+play_rate     = batter_games / slate_max_games        (0 to 1)
+dampener      = 0.90 + 0.10 × play_rate               (0.90 to 1.0)
+composite    *= dampener
+```
+
+`slate_max_games` is the highest `games` count in today's batter pool — the daily-starter benchmark. A batter at 75% play rate (typical platoon hitter who sits vs. same-handed starters) gets multiplied by ~0.925; a daily starter gets 1.0 (no haircut). The floor at 0.90 means platoon bats stay visible but slip a few ranks vs. otherwise-equivalent daily starters — this is right because a platoon bat is more likely to be late-scratched or pulled mid-game when the matchup flips. The dampener is `1.0` (no-op) when `games is None` (don't penalize rookies / IL returns) or when slate context isn't available (offline path). Applied AFTER the park bonus so the multiplier scales the entire composite cleanly.
+
+**Example walkthrough.** Bryce Harper (L) at Yankee Stadium against a middling righty on a mild sunny day, daily starter (play_rate = 1.0):
 
 - Power = 82
 - Matchup = 70
-- Park = 95 (computed but zero-weighted, so doesn't contribute)
+- Park = 95
 - Form = 60
 - Weather = 55
 - Lineup = 80 (he hits 2nd or 3rd)
-- Composite = 0.250×82 + 0.264×70 + 0.000×95 + 0.279×60 + 0.057×55 + 0.150×80 = **65.6**
 
-That'd put him around the top of the board — likely a pick.
+```
+weighted_avg = 0.250×82 + 0.264×70 + 0.000×95 + 0.279×60 + 0.057×55 + 0.150×80
+             = 65.625
+park_bonus   = 0.05 × 95 = 4.75
+composite    = (65.625 + 4.75) × 1.0 = 70.4
+```
+
+That'd put him near the top of the board — likely a pick. If Harper were a 75% platoon bat instead, the dampener would knock him to ~65.1.
 
 ---
 
 ## Step 5: Build the 8-pick card
 
-After scoring, we have a "full board" of every scored batter sorted by composite. Selection has three rules, applied in order:
+After scoring, we have a "full board" of every scored batter sorted by composite. Selection has five rules, applied in order:
 
 1. **Take the highest composite score available.**
 2. **Max 2 picks per game (game_pk).** If a single game's lineup has 4 batters in the top 8 by raw composite, only the top 2 of those make the card. The rest stay on the visible board but don't get a star. This prevents one rained-out game from torching half the card.
 3. **Must be a confirmed starter.** `batting_order` integer between 1 and 9. Anyone with batting_order = NULL, "bench", or 10+ is excluded. (This was a real bug fix — before the filter was tightened, the model occasionally picked Seiya Suzuki at bench position 11.)
-4. **Pick-input row hygiene** (added 2026-05-01): `load_picks_to_db.py` excludes from `pick_inputs` any row where all four power inputs (barrel%, exit velo, HR/FB%, ISO) are missing or zero. These rows would otherwise poison the per-factor decomposition charts and the weight refit's training data with all-zero feature vectors.
+4. **Game must not be postponed/cancelled/suspended (added 2026-05-05, PR #40).** `generate_picks` filters games out of the slate before scoring whenever `gameStatus.detailedState` matches `Postponed*`, `Cancelled*`, or `Suspended*` (substring + case-insensitive). Originating case: 2026-05-05 NYM @ COL was scheduled and posted lineups, then got rained out and rescheduled — but the lineup data was still in our DB at noon scoring. Without this filter, generate_picks would happily score that game's batters and the card could include picks for a game that won't be played. When every game on the calendar is postponed, the script exits early ("no slate today") rather than producing zero picks.
+5. **Pick-input row hygiene** (added 2026-05-01): `load_picks_to_db.py` excludes from `pick_inputs` any row where all four power inputs (barrel%, exit velo, HR/FB%, ISO) are missing or zero. These rows would otherwise poison the per-factor decomposition charts and the weight refit's training data with all-zero feature vectors.
 
 We loop down the sorted board, applying these filters, until we have 8 picks. The card gets sorted by composite (best first) for display.
 
@@ -269,7 +331,7 @@ To run: `python etl/historical_calibration.py --seasons 2024 2025` (or `--weathe
 
 A few things we know we're missing:
 
-- **Park weight is zero.** We compute the park score but it doesn't contribute to the composite. The plan is to find a way to re-add park signal once we can isolate it from the correlated effects (pitcher vulnerability already captures most of "homer park" through inflated HR/9).
+- **Park's regression weight is still zero.** Park signal now reaches the composite via the additive `+0.05 × park_score` bonus (PR #25, see Factor 3) — that's a deliberate workaround, not a real fix. The next refit on a larger / cleaner training window may bring park back into the weighted average if we can isolate the signal from correlated effects (pitcher vulnerability already captures most of "homer park" through inflated HR/9).
 - **Per-pitcher Statcast can hang.** When the daily run hits a cold pitcher arsenal cache, fetching all ~30 pitchers' Statcast pitch logs can take 30-50 minutes. Mitigated by overnight cache pre-warming, but still a fragile path.
 - **No actual handedness splits.** We use woba_vs_hand (the batter's wOBA against their pitcher's handedness, season average), but not granular pitch-type splits. A batter who's .310 vs. RHP fastballs but .180 vs. LHP breaking balls scores the same against both today.
 - **No bullpen factor.** If the starter only goes 5 innings, the batter might face very different pitchers later. We only score against the starter.
@@ -281,4 +343,4 @@ A few things we know we're missing:
 
 ## The one-paragraph recap
 
-For every batter in today's lineup, we score six things on a 0-100 scale: raw power (25%), pitcher matchup including vulnerability + archetype-similarity-from-HR-history + Vegas implied total (26%), park HR factor (currently zero-weighted), recent two-week form (28%), weather including handedness-aware wind direction (6%), and batting-order position (15%). We sort the full board by composite, take the top 8 with no more than 2 picks per game and only confirmed starters at batting positions 1-9. Tier labels (T1/T2/T3) appear on the dashboard but don't gate selection. After the day finishes and outcomes come in, a battery of diagnostics — input calibration curves, temp×humidity heatmaps, elite-pitcher-archetype dampening checks, rank-band HR hitter splits — feeds the next round of tuning. That's the model.
+For every batter in today's lineup, we score six things on a 0-100 scale: raw power against fixed MLB-distribution anchors with a season-HR floor (25%), pitcher matchup including vulnerability + archetype-similarity-from-HR-history + Vegas implied total + a +15 rookie-pitcher bonus (26%), park HR factor (zero-weighted in the average but with a +0.05 additive bonus on top), recent two-week form (28%), weather including handedness-aware wind direction (6%), and batting-order position (15%). The composite is multiplied by a [0.90, 1.0] platoon dampener that knocks part-time bats down a few ranks. We sort the full board by composite, take the top 8 with no more than 2 picks per game, only confirmed starters at batting positions 1-9, and only games that aren't postponed/cancelled/suspended. Tier labels (T1/T2/T3 + T4-Untiered for low-game starters) appear on the dashboard but don't gate selection. After the day finishes and outcomes come in, a battery of diagnostics — input calibration curves, temp×humidity heatmaps, elite-pitcher-archetype dampening checks, rank-band HR hitter splits — feeds the next round of tuning. That's the model.
