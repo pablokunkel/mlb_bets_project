@@ -4396,8 +4396,15 @@
       const ourPicksTotal = ourPickIds.size || 8;
 
       const lastHRTime = hrs.length ? hrs[0].time : null;
+      // 2026-05-05: count UNIQUE batters who homered, not total HR events.
+      // The cards below already show one row per HR (so multi-HR games
+      // get multiple cards) — the headline number should be people, not
+      // events. This also matches the "HR HITTERS" season-summary card
+      // at the top of this tab, so they read as the same metric just
+      // scoped differently (today vs season).
+      const uniqueHitters = new Set(hrs.map(h => h.batterId).filter(Boolean)).size;
       stats.innerHTML = `
-        <div class="stat-card"><div class="label">HRs Today</div><div class="value accent">${hrs.length}</div></div>
+        <div class="stat-card"><div class="label">HR Hitters</div><div class="value accent">${uniqueHitters}</div></div>
         <div class="stat-card"><div class="label">Live Games</div><div class="value">${liveGames}</div></div>
         <div class="stat-card"><div class="label">Total Games</div><div class="value">${games.length}</div></div>
         <div class="stat-card"><div class="label">Cashed</div><div class="value green">${cashedCount}/${ourPicksTotal}</div></div>
