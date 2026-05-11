@@ -18,15 +18,17 @@
 # does its thing, pushes back. cancel-in-progress: false so we wait
 # politely rather than killing an in-flight run.
 #
-# THIS WORKFLOW IS NOT YET ACTIVE. The schedule trigger is commented out
-# while we test via workflow_dispatch first. Flip the schedule on after
-# the manual test runs cleanly.
+# SCHEDULE ACTIVE as of 2026-05-11. Manual test run was
+#   https://github.com/pablokunkel/mlb_bets_project/actions/runs/25681566702
+# (~30 min, green end-to-end, site auto-deployed via CF Pages).
+# workflow_dispatch is kept alongside the schedule for manual reruns
+# (debugging, forcing a re-fetch of a specific date, etc.).
 # =============================================================================
 
 name: Daily picks (noon ET)
 
 on:
-  # Manual trigger — use this for the first ~5 runs to confirm the wiring.
+  # Manual trigger — kept for reruns and date-specific backfills.
   workflow_dispatch:
     inputs:
       date:
@@ -34,9 +36,8 @@ on:
         required: false
         default: ""
 
-  # Scheduled trigger — UNCOMMENT after manual runs prove green.
-  # schedule:
-  #   - cron: "30 15 * * *"   # 15:30 UTC = 11:30 AM ET (EDT) / 10:30 AM ET (EST)
+  schedule:
+    - cron: "30 15 * * *"   # 15:30 UTC = 11:30 AM ET (EDT) / 10:30 AM ET (EST)
 
 concurrency:
   group: hr-bets-db

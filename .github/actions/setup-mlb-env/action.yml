@@ -10,7 +10,8 @@
 # Steps in order:
 #   1. Set up Python (pinned version)
 #   2. Restore pip cache  → faster cold runs (pybaseball + pandas wheels add up)
-#   3. Restore pybaseball /tmp/cache  → skips re-fetching the same Statcast CSVs
+#   3. Restore Statcast caches (pybaseball + project) → skips re-fetching
+#      the same Savant CSVs and rebuilt archetype/victim JSON blobs
 #   4. Install deps from infra/requirements-actions.txt
 #   5. Pull hr_bets.db from R2 to ../data/hr_bets.db (matching etl/db.py path)
 #
@@ -71,22 +72,47 @@ runs:
         restore-keys: |
           pip-${{ runner.os }}-py${{ inputs.python-version }}-
 
-    # ─── pybaseball cache (the slow one) ───────────────────────────────────
-    # pybaseball stashes Statcast CSV fetches in /tmp by default (XDG_CACHE
-    # falls back to /tmp on Linux runners). Caching this between runs means
-    # the next noon's generate_picks.py reuses yesterday's Savant pulls
-    # for any unchanged date range — same trick as prewarm_cache.py on the
-    # laptop. Cache key is by-week so we periodically refresh in case the
-    # data underneath changes (it does — Statcast revises late games).
-    - name: Restore pybaseball Statcast cache
+    # ─── Statcast caches (the slow ones) ───────────────────────────────────
+    # Two cache directories feed picks generation, and BOTH must survive
+    # between runs or the nightly pre-warm pays full-cold-start cost
+    # (~30-40 min on the runner, per the 5/11 manual test
+    #  https://github.com/pablokunkel/mlb_bets_project/actions/runs/25684423657
+    #  which sat at 50m30s waiting on uncached per-player Statcast pulls):
+    #
+    #   1. ~/.pybaseball/cache
+    #        pybaseball's built-in CSV cache, enabled by the cache.enable()
+    #        call in fetch_daily_data.py.
+    #   2. <repo_parent>/data/cache
+    #        The project's own JSON cache layer used by pitcher_profile.py
+    #        (CACHE_DIR = parent/data/cache) and features_v2.py
+    #        (CACHE_DIR = parent/data/cache/features_v2). Lives alongside
+    #        hr_bets.db at the repo's parent dir, NOT inside the workspace.
+    #
+    # Cache key: weekly. Shares between runs within the same ISO week,
+    # then refreshes weekly to absorb Statcast late-game revisions and
+    # season-stat drift. restore-keys lets the first run of a new week
+    # warm-start from last week's cache instead of going fully cold.
+    #
+    # Earlier mistakes preserved for diff readers:
+    #   - Path /tmp/cache + ~/.cache/pybaseball — both wrong, so
+    #     actions/cache emitted a Path Validation Error and saved nothing.
+    #     Fixed 2026-05-11 after the first nightly test took 50m30s.
+    #   - Key included github.run_id (unique per run) so the cache never
+    #     shared between runs. Now keyed weekly.
+    - name: Compute Statcast cache week-key
+      id: weekkey
+      shell: bash
+      run: echo "key=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Statcast caches (pybaseball + project)
       uses: actions/cache@v4
       with:
         path: |
-          /tmp/cache
-          ~/.cache/pybaseball
-        key: pybaseball-${{ runner.os }}-${{ github.run_id }}
+          ~/.pybaseball/cache
+          ${{ github.workspace }}/../data/cache
+        key: statcast-${{ runner.os }}-${{ steps.weekkey.outputs.key }}
         restore-keys: |
-          pybaseball-${{ runner.os }}-
+          statcast-${{ runner.os }}-
 
     # ─── Deps ──────────────────────────────────────────────────────────────
     - name: Install Python deps

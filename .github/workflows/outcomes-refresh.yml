@@ -13,8 +13,10 @@
 #     coast finishes — but more importantly, well clear of the nightly job
 #     at 4 AM ET below.
 #
-# THIS WORKFLOW IS NOT YET ACTIVE. The schedule trigger is commented out
-# while we test via workflow_dispatch first.
+# SCHEDULE ACTIVE as of 2026-05-11. Manual test run was
+#   https://github.com/pablokunkel/mlb_bets_project/actions/runs/25684177606
+# (47s end-to-end on warm pip cache, green). workflow_dispatch is kept for
+# manual reruns and one-off date backfills.
 # =============================================================================
 
 name: Outcomes + accuracy refresh (~2 AM ET)
@@ -27,9 +29,8 @@ on:
         required: false
         default: ""
 
-  # Scheduled trigger — UNCOMMENT after manual runs prove green.
-  # schedule:
-  #   - cron: "0 6 * * *"   # 06:00 UTC = 2 AM ET (EDT) / 1 AM ET (EST)
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC = 2 AM ET (EDT) / 1 AM ET (EST)
 
 concurrency:
   group: hr-bets-db
