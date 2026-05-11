@@ -1,0 +1,42 @@
+# =============================================================================
+# Python deps for GitHub Actions runs of the HR Bets pipeline.
+#
+# Scoped to /infra/ deliberately so local dev installs are untouched — the
+# laptop already has these installed in its own venv. This file is what the
+# GH Actions runner pip-installs at the start of each scheduled job.
+#
+# Versions are pinned. The Statcast/FanGraphs scraping stack (pybaseball +
+# the pandas it depends on) is the most brittle — when those break, picks
+# generation silently falls back to offline mode with the wrong data. Locking
+# versions here is cheap insurance.
+#
+# To regenerate against your local venv (after testing a bump locally):
+#     pip freeze | grep -iE '^(pandas|numpy|requests|pybaseball|scipy|scikit-learn|boto3|python-dotenv)=' > infra/requirements-actions.txt
+#
+# Last refreshed: 2026-05-11
+# =============================================================================
+
+# ─── Core data stack ────────────────────────────────────────────────────────
+pandas==2.2.3
+numpy==2.1.3
+requests==2.32.3
+
+# ─── MLB / Statcast data fetchers ───────────────────────────────────────────
+# pybaseball pulls from Baseball Savant + FanGraphs. Pin tightly: when this
+# breaks, generate_picks.py falls back to offline mode and the picks for the
+# day are garbage. Re-test locally before bumping.
+pybaseball==2.2.7
+
+# ─── Model machinery ────────────────────────────────────────────────────────
+scipy==1.14.1
+scikit-learn==1.5.2
+
+# ─── R2 / S3 client (for hr_bets.db sync) ───────────────────────────────────
+# Cloudflare R2 exposes an S3-compatible API; boto3 talks to it directly
+# with a custom endpoint_url. No CF-specific SDK needed.
+boto3==1.35.49
+
+# ─── Optional: .env loader ──────────────────────────────────────────────────
+# features_v2.py ships its own tiny inline .env loader, so we don't strictly
+# need python-dotenv. Included anyway in case a future module reaches for it.
+python-dotenv==1.0.1

@@ -1,0 +1,85 @@
+# =============================================================================
+# nightly-refresh.yml — Hosted equivalent of run_nightly.bat.
+#
+# Replaces the 2 AM ET Task Scheduler run that refreshes Statcast HR events,
+# pitcher arsenals, season stats, and pre-warms the bulk Savant cache so
+# the noon picks job is fast.
+#
+# Schedule rationale:
+#   - 08:00 UTC = 4 AM ET (EDT). Sits cleanly after outcomes-refresh's
+#     06:00 UTC slot, giving a 2-hour buffer for outcomes to finish before
+#     we start hammering Statcast for the nightly refresh.
+#   - No deploy step here — this is upstream data refresh only. The noon
+#     picks job is what publishes.
+#
+# THIS WORKFLOW IS NOT YET ACTIVE. The schedule trigger is commented out.
+# =============================================================================
+
+name: Nightly Statcast refresh (~4 AM ET)
+
+on:
+  workflow_dispatch: {}
+
+  # Scheduled trigger — UNCOMMENT after manual runs prove green.
+  # schedule:
+  #   - cron: "0 8 * * *"   # 08:00 UTC = 4 AM ET (EDT) / 3 AM ET (EST)
+
+concurrency:
+  group: hr-bets-db
+  cancel-in-progress: false
+
+permissions:
+  # No git push from this workflow, but the composite action still needs
+  # contents: read (which we have by default).
+  contents: read
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+    # Generous: the nightly Statcast pull is the longest job in the cycle
+    # (~15-25 min for the standard ETL, plus 10-20 min for prewarm).
+    timeout-minutes: 90
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1   # no rebase/push needed → shallow is fine
+
+      - name: Set up env + pull DB
+        uses: ./.github/actions/setup-mlb-env
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+
+      # ─── Pipeline (mirrors run_nightly.bat) ─────────────────────────────
+
+      - name: "[1/2] Standard nightly ETL (Statcast, arsenals, season stats)"
+        run: python -m etl.etl_nightly
+
+      # Soft-fail: a partial cache is still useful. Matches the .bat's
+      # tolerance for prewarm failure.
+      - name: "[2/2] Pre-warm archetype + bulk Savant caches (soft-fail)"
+        continue-on-error: true
+        run: python prewarm_cache.py
+
+      # ─── Push refreshed DB back to R2 ───────────────────────────────────
+      # No git push — there's no site JSON to publish. Just persist the
+      # updated DB so noon picks-generation tomorrow uses it.
+      - name: Push hr_bets.db back to R2
+        if: success()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python infra/r2_sync.py push

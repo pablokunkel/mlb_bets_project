@@ -1,0 +1,129 @@
+# =============================================================================
+# Composite action: set up the Python + R2 environment for an HR Bets job.
+#
+# Used by daily-picks.yml, outcomes-refresh.yml, and nightly-refresh.yml.
+# Centralizes the boilerplate so a Python version bump or a deps change
+# touches one file instead of three. Mirrors what `cd C:\…\MLB HR Bets &&
+# call .venv\Scripts\activate` does on the laptop — install the same deps
+# and pull the same DB.
+#
+# Steps in order:
+#   1. Set up Python (pinned version)
+#   2. Restore pip cache  → faster cold runs (pybaseball + pandas wheels add up)
+#   3. Restore pybaseball /tmp/cache  → skips re-fetching the same Statcast CSVs
+#   4. Install deps from infra/requirements-actions.txt
+#   5. Pull hr_bets.db from R2 to ../data/hr_bets.db (matching etl/db.py path)
+#
+# What this action does NOT do:
+#   - Checkout the repo. The caller must run actions/checkout@v4 first, because
+#     different workflows want different fetch-depths and ref handling.
+#   - Push to R2. Each workflow pushes at the end on its own, gated on the
+#     pipeline steps succeeding.
+# =============================================================================
+
+name: Set up MLB HR Bets env
+description: Python + deps + restore SQLite DB from Cloudflare R2
+
+inputs:
+  python-version:
+    description: Python version to install
+    required: false
+    default: "3.12"
+  r2-account-id:
+    description: Cloudflare R2 account ID
+    required: true
+  r2-access-key-id:
+    description: R2 access key ID
+    required: true
+  r2-secret-access-key:
+    description: R2 secret access key
+    required: true
+  r2-bucket:
+    description: R2 bucket name holding hr_bets.db
+    required: true
+  r2-db-key:
+    description: Object key inside the bucket (defaults to hr_bets.db)
+    required: false
+    default: hr_bets.db
+  skip-db-pull:
+    description: If "true", install deps but skip the R2 pull. Used by smoke tests.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # ─── Python ────────────────────────────────────────────────────────────
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    # ─── Pip cache (wheels for pandas/scipy/sklearn are ~80MB combined) ───
+    # Keyed on the requirements file's content hash so a deps change busts
+    # the cache automatically. Without this, every run reinstalls from PyPI
+    # and adds ~90s to the cold start.
+    - name: Restore pip cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: pip-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles('infra/requirements-actions.txt') }}
+        restore-keys: |
+          pip-${{ runner.os }}-py${{ inputs.python-version }}-
+
+    # ─── pybaseball cache (the slow one) ───────────────────────────────────
+    # pybaseball stashes Statcast CSV fetches in /tmp by default (XDG_CACHE
+    # falls back to /tmp on Linux runners). Caching this between runs means
+    # the next noon's generate_picks.py reuses yesterday's Savant pulls
+    # for any unchanged date range — same trick as prewarm_cache.py on the
+    # laptop. Cache key is by-week so we periodically refresh in case the
+    # data underneath changes (it does — Statcast revises late games).
+    - name: Restore pybaseball Statcast cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          /tmp/cache
+          ~/.cache/pybaseball
+        key: pybaseball-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: |
+          pybaseball-${{ runner.os }}-
+
+    # ─── Deps ──────────────────────────────────────────────────────────────
+    - name: Install Python deps
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        pip install -r infra/requirements-actions.txt
+        python -c "import pandas, numpy, requests, boto3; print('deps OK')"
+
+    # ─── R2 → local DB pull ────────────────────────────────────────────────
+    # Skipped if skip-db-pull=true (used by a future smoke-test workflow
+    # that only verifies deps install and exits).
+    - name: Pull hr_bets.db from R2
+      if: inputs.skip-db-pull != 'true'
+      shell: bash
+      env:
+        R2_ACCOUNT_ID: ${{ inputs.r2-account-id }}
+        R2_ACCESS_KEY_ID: ${{ inputs.r2-access-key-id }}
+        R2_SECRET_ACCESS_KEY: ${{ inputs.r2-secret-access-key }}
+        R2_BUCKET: ${{ inputs.r2-bucket }}
+        R2_DB_KEY: ${{ inputs.r2-db-key }}
+      run: |
+        set -euo pipefail
+        python infra/r2_sync.py pull
+        # Sanity check: file exists, is non-trivially sized, and SQLite
+        # can open it. Fail loud here rather than 5 minutes into ETL.
+        python - <<'PY'
+        import sqlite3, sys
+        from pathlib import Path
+        sys.path.insert(0, ".")
+        from etl.db import DB_PATH
+        p = Path(DB_PATH)
+        assert p.exists(), f"DB_PATH {p} missing after pull"
+        assert p.stat().st_size > 1_000_000, f"DB suspiciously small: {p.stat().st_size} bytes"
+        conn = sqlite3.connect(str(p))
+        n = conn.execute("SELECT COUNT(*) FROM daily_picks").fetchone()[0]
+        conn.close()
+        print(f"DB OK: {p} ({p.stat().st_size//1024//1024} MB, {n} daily_picks rows)")
+        PY
