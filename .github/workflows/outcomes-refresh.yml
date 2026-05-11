@@ -1,0 +1,118 @@
+# =============================================================================
+# outcomes-refresh.yml — Hosted equivalent of run_outcomes.bat.
+#
+# Replaces the 1 AM ET Task Scheduler run that pulls yesterday's box scores,
+# recomputes factor accuracy, re-exports site JSON, and pushes to main.
+#
+# Why 06:00 UTC (= 2 AM ET in EDT) instead of mirroring the laptop's 1 AM:
+#   - West-coast night games finish around 12:30-1:30 AM ET. The MLB Stats
+#     API's box-score finalization can lag the last out by 5-15 minutes.
+#     2 AM ET gives a clean buffer that the laptop's 1 AM run did not.
+#   - GH Actions cron drift is real (5-30 min during peak hours). Starting
+#     at 2 AM and possibly drifting to 2:30 AM is still well clear of west
+#     coast finishes — but more importantly, well clear of the nightly job
+#     at 4 AM ET below.
+#
+# THIS WORKFLOW IS NOT YET ACTIVE. The schedule trigger is commented out
+# while we test via workflow_dispatch first.
+# =============================================================================
+
+name: Outcomes + accuracy refresh (~2 AM ET)
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Date to fetch outcomes for (YYYY-MM-DD, blank = yesterday UTC)
+        required: false
+        default: ""
+
+  # Scheduled trigger — UNCOMMENT after manual runs prove green.
+  # schedule:
+  #   - cron: "0 6 * * *"   # 06:00 UTC = 2 AM ET (EDT) / 1 AM ET (EST)
+
+concurrency:
+  group: hr-bets-db
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  outcomes:
+    runs-on: ubuntu-latest
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+    timeout-minutes: 30
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      # backtest_factors.py doesn't need the Vegas key (it only re-scores
+      # historic pick_inputs rows), but pass it through for symmetry — if
+      # we ever extend the backtest to re-fetch live signals, it's there.
+      VEGAS_ODDS_API_KEY: ${{ secrets.VEGAS_ODDS_API_KEY }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up env + pull DB
+        uses: ./.github/actions/setup-mlb-env
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+
+      - name: Resolve date (default = yesterday UTC)
+        id: date
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.date }}" ]]; then
+            d="${{ inputs.date }}"
+          else
+            d=$(date -u -d "yesterday" +%Y-%m-%d)
+          fi
+          echo "date=$d" >> "$GITHUB_OUTPUT"
+          echo "Resolved date: $d"
+
+      # ─── Pipeline (mirrors run_outcomes.bat 1-4) ────────────────────────
+
+      - name: "[1/4] Fetch yesterday's outcomes"
+        run: python -m etl.etl_outcomes --date "${{ steps.date.outputs.date }}"
+
+      # Soft-fail: if backtest crashes, the dashboard keeps last-known
+      # factor_accuracy.json. Same semantics as run_outcomes.bat step 2.
+      - name: "[2/4] Backtest factors (soft-fail)"
+        continue-on-error: true
+        run: python backtest_factors.py
+
+      - name: "[3/4] Re-export site data"
+        run: python export_site_data.py
+
+      - name: "[4/4] Commit + push refreshed JSON"
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          git add mlb_hr_bet_site/data/*.json || true
+          git commit -m "Outcomes + accuracy refresh" --allow-empty
+          git pull --rebase --autostash origin main
+          git push origin main
+
+      - name: Push hr_bets.db back to R2
+        if: success()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python infra/r2_sync.py push

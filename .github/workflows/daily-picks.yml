@@ -1,0 +1,181 @@
+# =============================================================================
+# daily-picks.yml — Hosted equivalent of run_daily.bat.
+#
+# Replaces the noon-ET Windows Task Scheduler run on Pablo's laptop. Same
+# pipeline, same git push at the end → Cloudflare auto-deploys the site.
+#
+# DST + cron drift notes (the timezone problem nobody loves):
+#   - GH Actions cron is in UTC. There's no built-in ET support.
+#   - During MLB season (April-October), ET = EDT = UTC-4, so noon ET = 16:00 UTC.
+#   - GH Actions cron is best-effort and can drift 5-30 min during peak hours.
+#     We schedule 15:30 UTC (11:30 AM ET) to keep a comfortable cushion before
+#     the earliest first pitches (~1:05 PM ET on weekday day games).
+#   - In winter (EST = UTC-5), 15:30 UTC = 10:30 AM ET — still fine for the
+#     occasional March/November games. No DST-switching needed.
+#
+# Concurrency: pinned to the `hr-bets-db` group so this never overlaps with
+# the outcomes-refresh or nightly-refresh workflows. Each grabs the DB,
+# does its thing, pushes back. cancel-in-progress: false so we wait
+# politely rather than killing an in-flight run.
+#
+# THIS WORKFLOW IS NOT YET ACTIVE. The schedule trigger is commented out
+# while we test via workflow_dispatch first. Flip the schedule on after
+# the manual test runs cleanly.
+# =============================================================================
+
+name: Daily picks (noon ET)
+
+on:
+  # Manual trigger — use this for the first ~5 runs to confirm the wiring.
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Date to generate picks for (YYYY-MM-DD, blank = today UTC)
+        required: false
+        default: ""
+
+  # Scheduled trigger — UNCOMMENT after manual runs prove green.
+  # schedule:
+  #   - cron: "30 15 * * *"   # 15:30 UTC = 11:30 AM ET (EDT) / 10:30 AM ET (EST)
+
+concurrency:
+  group: hr-bets-db
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # need to push the data/ json updates back to main
+
+jobs:
+  daily-picks:
+    runs-on: ubuntu-latest
+    # Belt-and-suspenders: never run from a fork. (workflow_dispatch can in
+    # theory be triggered by a fork's maintainer; this trips them up.)
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+
+    # Generous timeout — generate_picks.py can take 5-10 min cold, plus
+    # ETL + export + push. Way under the 6h hard cap; tight enough that a
+    # truly hung run gets killed within an hour instead of burning minutes.
+    timeout-minutes: 45
+
+    env:
+      # Match run_daily.bat's UTF-8 forcing — relevant for any tee/grep over
+      # the step logs (GH Actions log viewer is UTF-8 native, but downstream
+      # log parsing tools may not be).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      # API keys consumed by features_v2.py and friends.
+      VEGAS_ODDS_API_KEY: ${{ secrets.VEGAS_ODDS_API_KEY }}
+
+    steps:
+      # ─── Checkout main with full history so git pull/push works ─────────
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          # fetch-depth: 0 ensures `git pull --rebase` has full history to
+          # rebase onto. Shallow clones break rebase mid-job.
+          fetch-depth: 0
+          # Use the workflow's GITHUB_TOKEN for push. Default permissions
+          # set above grant write to the same repo.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ─── Set up Python, deps, and pull DB from R2 ───────────────────────
+      - name: Set up env + pull DB
+        uses: ./.github/actions/setup-mlb-env
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+
+      # ─── Resolve the target date (input override OR today UTC) ──────────
+      # GH Actions cron is UTC, so "today" on the runner is calendar-correct
+      # at 15:30 UTC (= 11:30 AM ET, still the same calendar day in ET).
+      - name: Resolve date
+        id: date
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.date }}" ]]; then
+            d="${{ inputs.date }}"
+          else
+            d=$(date -u +%Y-%m-%d)
+          fi
+          echo "date=$d" >> "$GITHUB_OUTPUT"
+          echo "Resolved date: $d"
+
+      # ─── Pipeline steps (mirror run_daily.bat 1-5) ──────────────────────
+      # Step 0a (kill stale python) is N/A on an ephemeral runner.
+      # Step 0b (git pull --rebase --autostash) is implicit via checkout @ main.
+
+      - name: "[1/5] Morning ETL — schedule, lineups, weather"
+        run: python -m etl.etl_morning --date "${{ steps.date.outputs.date }}"
+
+      - name: "[2/5] Generate picks"
+        run: python generate_picks.py --date "${{ steps.date.outputs.date }}"
+
+      - name: "[3/5] Load picks to DB"
+        run: python load_picks_to_db.py --date "${{ steps.date.outputs.date }}"
+
+      # Soft-fail (matches run_daily.bat step 4 semantics): if yesterday's
+      # 1AM outcomes job never ran, self-heal here so HR Recap isn't blank.
+      # If it DID run, this is an idempotent INSERT OR REPLACE no-op.
+      - name: "[4/5] Self-heal yesterday's outcomes"
+        continue-on-error: true
+        run: |
+          y=$(date -u -d "${{ steps.date.outputs.date }} -1 day" +%Y-%m-%d)
+          echo "Refreshing outcomes for $y (self-heal)"
+          python -m etl.etl_outcomes --date "$y"
+
+      - name: "[5/5] Export site data"
+        run: python export_site_data.py
+
+      # ─── Commit & push the JSON updates to main ─────────────────────────
+      # Cloudflare auto-deploys the static site on push to main. Mirrors
+      # run_daily.bat step [6/6] including --allow-empty (in case there's
+      # genuinely nothing to update) and pull --rebase before push (in
+      # case a PR landed during the noon window).
+      - name: Commit + push site data
+        env:
+          # Identify as the action so PR review tools don't think a human
+          # made the commit. Matches the convention in deploy-live-hr.yml.
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          git add mlb_hr_bet_site/data/*.json mlb_hr_bet_site/index.html || true
+          git commit -m "Daily update ${{ steps.date.outputs.date }}" --allow-empty
+          # Rebase in case main moved during the run (PR merge, etc.).
+          # Same defense as run_daily.bat's pull --rebase --autostash.
+          git pull --rebase --autostash origin main
+          git push origin main
+
+      # ─── Push DB back to R2 ─────────────────────────────────────────────
+      # Only push if every step above succeeded. A failed pipeline means
+      # the local DB may have partial writes; uploading it would corrupt
+      # the source of truth. `if: success()` is the gate.
+      - name: Push hr_bets.db back to R2
+        if: success()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python infra/r2_sync.py push
+
+      # ─── Smoke check — verify dingersonly.cc shows the new card ─────────
+      # Optional; CF deploy can take 2-3 min so we give it some time.
+      # Comment out if the wait time bothers you.
+      - name: Smoke check site (give CF 3 min to propagate)
+        if: success()
+        run: |
+          set -euo pipefail
+          sleep 180
+          d="${{ steps.date.outputs.date }}"
+          body=$(curl -fsSL "https://dingersonly.cc/data/slate_date.json")
+          echo "slate_date.json: $body"
+          echo "$body" | grep -q "\"$d\"" || {
+            echo "::warning::site slate_date.json doesn't yet reference $d — CF deploy may still be propagating."
+          }
