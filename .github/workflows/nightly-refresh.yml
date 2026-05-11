@@ -12,7 +12,12 @@
 #   - No deploy step here — this is upstream data refresh only. The noon
 #     picks job is what publishes.
 #
-# THIS WORKFLOW IS NOT YET ACTIVE. The schedule trigger is commented out.
+# SCHEDULE ACTIVE as of 2026-05-11. Manual test run was
+#   https://github.com/pablokunkel/mlb_bets_project/actions/runs/25684423657
+# (50m30s end-to-end — slow because the Statcast cache config in the
+# composite action was wrong; that's fixed in this same PR. Subsequent
+# runs after cache warms should be 15-20 min.) workflow_dispatch is kept
+# for manual reruns.
 # =============================================================================
 
 name: Nightly Statcast refresh (~4 AM ET)
@@ -20,9 +25,8 @@ name: Nightly Statcast refresh (~4 AM ET)
 on:
   workflow_dispatch: {}
 
-  # Scheduled trigger — UNCOMMENT after manual runs prove green.
-  # schedule:
-  #   - cron: "0 8 * * *"   # 08:00 UTC = 4 AM ET (EDT) / 3 AM ET (EST)
+  schedule:
+    - cron: "0 8 * * *"   # 08:00 UTC = 4 AM ET (EDT) / 3 AM ET (EST)
 
 concurrency:
   group: hr-bets-db
