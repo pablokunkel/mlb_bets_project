@@ -168,7 +168,14 @@ def export_latest_picks(conn, out_dir: Path):
                 -- badge on picks whose batting_order came from a
                 -- recent-lineup fallback (PR #33). NULL on historical
                 -- rows that pre-date the pick_inputs.lineup_source column.
-                pi.lineup_source AS lineup_source
+                pi.lineup_source AS lineup_source,
+                -- 2026-05-12: expose recent_hr_14d on the Big Board row
+                -- so the new filter drawer can offer a 14-day "HR cold
+                -- streak" toggle alongside the existing 7d field that
+                -- ships at line 297. Field already drives form_score
+                -- (see line ~665, factor_inputs["form"]) — just was not
+                -- previously surfaced to the JSON.
+                pi.recent_hr_14d AS recent_hr_14d
             FROM daily_picks p
             LEFT JOIN pick_inputs pi
                 ON pi.date = p.date AND pi.batter_id = p.batter_id
