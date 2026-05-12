@@ -6,21 +6,33 @@
 #
 # DST + cron drift notes (the timezone problem nobody loves):
 #   - GH Actions cron is in UTC. There's no built-in ET support.
-#   - During MLB season (April-October), ET = EDT = UTC-4, so noon ET = 16:00 UTC.
-#   - GH Actions cron is best-effort and can drift 5-30 min during peak hours.
-#     We schedule 15:30 UTC (11:30 AM ET) to keep a comfortable cushion before
-#     the earliest first pitches (~1:05 PM ET on weekday day games).
-#   - In winter (EST = UTC-5), 15:30 UTC = 10:30 AM ET — still fine for the
-#     occasional March/November games. No DST-switching needed.
+#   - During MLB season (April-October), ET = EDT = UTC-4.
+#   - GH Actions scheduled workflows are best-effort. In practice we've
+#     observed drift up to ~2h 30m on the shared free runners (the first
+#     scheduled run on 2026-05-12 fired at 17:33 UTC for a 15:30 UTC cron).
+#     Round minute marks (:00, :30) are the worst because everyone else
+#     schedules there too — using an off-peak minute (:07) measurably
+#     reduces drift.
+#   - We schedule 13:07 UTC (9:07 AM EDT / 8:07 AM EST), which leaves
+#     ~3h of headroom for drift before the earliest first pitches
+#     (~1:05 PM ET on weekday day games, occasional 12:05 PM ET starts).
+#     Even at the bad-drift end (~2.5h late, 45m job, 3m CF propagation)
+#     the site updates by ~12:25 PM ET. Best case it's done by ~9:55 AM ET,
+#     which has no downside.
+#   - Lineup-data risk at this hour is low: the morning ETL falls back to
+#     "most recent lineup for team" when the day's lineup isn't posted
+#     yet (see etl/etl_morning.py:212).
 #
 # Concurrency: pinned to the `hr-bets-db` group so this never overlaps with
 # the outcomes-refresh or nightly-refresh workflows. Each grabs the DB,
 # does its thing, pushes back. cancel-in-progress: false so we wait
 # politely rather than killing an in-flight run.
 #
-# SCHEDULE ACTIVE as of 2026-05-11. Manual test run was
+# SCHEDULE ACTIVE as of 2026-05-12. Manual test run was
 #   https://github.com/pablokunkel/mlb_bets_project/actions/runs/25681566702
 # (~30 min, green end-to-end, site auto-deployed via CF Pages).
+# Earlier 15:30 UTC schedule was abandoned 2026-05-12 after observing
+# ~2h scheduled-cron drift on the very first scheduled run.
 # workflow_dispatch is kept alongside the schedule for manual reruns
 # (debugging, forcing a re-fetch of a specific date, etc.).
 # =============================================================================
@@ -37,7 +49,10 @@ on:
         default: ""
 
   schedule:
-    - cron: "30 15 * * *"   # 15:30 UTC = 11:30 AM ET (EDT) / 10:30 AM ET (EST)
+    # 13:07 UTC = 9:07 AM ET (EDT) / 8:07 AM ET (EST).
+    # Early + off-peak minute to absorb up to ~3h of GH Actions cron drift
+    # before the earliest first pitches (~1:05 PM ET). See header comment.
+    - cron: "7 13 * * *"
 
 concurrency:
   group: hr-bets-db
@@ -92,7 +107,7 @@ jobs:
 
       # ─── Resolve the target date (input override OR today UTC) ──────────
       # GH Actions cron is UTC, so "today" on the runner is calendar-correct
-      # at 15:30 UTC (= 11:30 AM ET, still the same calendar day in ET).
+      # at 13:07 UTC (= 9:07 AM ET, still the same calendar day in ET).
       - name: Resolve date
         id: date
         shell: bash
