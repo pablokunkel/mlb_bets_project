@@ -2,6 +2,21 @@ name = "dingersonly-live-hr"
 main = "src/index.js"
 compatibility_date = "2025-04-01"
 
+# Account ID is hard-coded so `wrangler deploy` doesn't need to call the
+# /memberships API to discover it. The CI-deploy GitHub Action uses an API
+# token that's scoped to Workers Scripts:Edit but lacks User->User Details:Read,
+# so the membership lookup fails (auth code 10000) and aborts the deploy.
+#
+# That silent-failure mode is why PRs #31, #37, and #46 all merged without
+# their worker changes ever reaching production — the action would deploy,
+# log the auth error, exit 1, and nobody noticed because the smoke-check
+# never ran. Pinning account_id here bypasses the membership call and lets
+# the existing token's actual permissions (Workers Scripts:Edit) do the job.
+#
+# Account ID is not secret — it's a tenant identifier visible in any
+# wrangler whoami output. Checking it in is the CF-idiomatic fix.
+account_id = "a5aacdb089b643b16526e40d9974efd6"
+
 # Run every minute. (Cloudflare's smallest cron granularity.)
 # We early-exit inside the handler when no games are scheduled, so
 # off-season / off-day invocations are essentially free.
