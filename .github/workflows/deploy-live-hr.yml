@@ -60,23 +60,51 @@ jobs:
         # by working-directory.
         run: wrangler deploy --config wrangler.toml
 
-      # Confirm the new code is actually serving traffic. The fp field
-      # was added in PR #22 — every payload now carries it. If the
-      # deploy succeeded but the live response is still missing fp,
-      # something is wrong (cached old version, wrong worker name,
-      # KV miss, etc.) and we want CI to fail loudly so the next
-      # merge doesn't compound the problem.
+      # Confirm the new code is actually serving traffic. We check two
+      # invariants that together cover most of what's shipped to date:
+      #
+      #   1. fp field present (PR #22). Every payload carries it; absence
+      #      means an ancient version is live.
+      #
+      #   2. Worker's `date` matches slate_date.json (PR #46). The worker
+      #      reads slate_date.json and pins its rollover to whatever the
+      #      pipeline published. If the worker is serving today's calendar
+      #      date while slate_date.json is on yesterday's, PR #46's
+      #      slate-driven rollover isn't reaching production.
+      #
+      # The PR #46 check is what would have caught the bug found on
+      # 2026-05-12 (cashed flags dark between midnight ET and the noon
+      # run): the original smoke check only verified fp, so three failed
+      # deploys (#31, #37, #46) all rolled by with the action red but
+      # the symptom only visible to users at midnight.
       - name: Smoke-check deployed worker
         run: |
           set -euo pipefail
           # Give CF a few seconds to propagate the deploy globally.
           sleep 5
+
           body=$(curl -fsSL "https://api.dingersonly.cc/api/live-hrs")
           echo "Response (first 400 chars): ${body:0:400}"
-          # The fp field is the post-PR-22 marker. Fail the workflow
-          # if the deployed code isn't actually serving with it.
+
+          # Invariant 1: fp field (PR #22).
           echo "$body" | grep -q '"fp"' || {
             echo "::error::Deployed worker response missing 'fp' field — PR #22's KV optimization may not be live."
             exit 1
           }
-          echo "fp field present — deploy verified."
+          echo "✓ fp field present (PR #22)."
+
+          # Invariant 2: worker date == slate_date.json date (PR #46).
+          # Use python so we get robust JSON parsing rather than fragile regex.
+          slate_date=$(curl -fsSL "https://dingersonly.cc/data/slate_date.json" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['date'])")
+          worker_date=$(echo "$body" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['date'])")
+          echo "slate_date.json:  $slate_date"
+          echo "worker /api date: $worker_date"
+          if [ "$slate_date" != "$worker_date" ]; then
+            echo "::error::Worker is serving date=$worker_date but slate_date.json says $slate_date — PR #46's slate-driven rollover is not active (worker fell back to calendar date)."
+            exit 1
+          fi
+          echo "✓ worker date matches slate (PR #46)."
+
+          echo "Smoke checks passed."
