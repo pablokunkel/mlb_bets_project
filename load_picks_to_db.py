@@ -121,6 +121,7 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             barrel_pct, exit_velo, hr_fb_pct, iso, xwoba_contact, pull_fb_pct,
             recent_hr_14d, recent_barrel_pct_14d, ev_trend_14d,
             pitcher_hr_per_9, pitcher_era, pitcher_hh_pct, pitcher_k_per_9, pitcher_fb_pct_allowed,
+            pitcher_recent_hr9_21d, pitcher_recent_starts_21d,
             woba_vs_hand, archetype_similarity,
             vegas_team_total_pct, vegas_team_total_raw,
             platoon_advantage,
@@ -128,7 +129,7 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?)
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -219,6 +220,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     inputs.get("pitcher_hh_pct"),
                     inputs.get("pitcher_k_per_9"),
                     inputs.get("pitcher_fb_pct_allowed"),
+                    # 2026-05-13: pitcher recency — rolling 21d HR/9 + start count
+                    inputs.get("pitcher_recent_hr9_21d"),
+                    inputs.get("pitcher_recent_starts_21d"),
                     inputs.get("woba_vs_hand"),
                     inputs.get("archetype_similarity"),
                     # Backward compat: read new name first, fall back to old

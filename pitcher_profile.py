@@ -138,6 +138,54 @@ LEAGUE_AVG_VICTIM = {
 
 
 # ---------------------------------------------------------------------------
+# Pitcher recency blend (added 2026-05-13)
+# ---------------------------------------------------------------------------
+# Season HR/9 lags 3-4 bad starts — a pitcher whose recent stretch has
+# collapsed (Brady Singer on 2026-05-12: 9 HR over 4 starts vs. season
+# 1.89 HR/9) was invisible to the model. The pitcher recency signal
+# (rolling 21-day HR/9 from MLB API gameLog) is blended into the effective
+# HR/9 used by score_pitcher_vulnerability and compute_slate_context.
+#
+# Tune these two constants together; the refit will be able to learn
+# coefficients on pitcher_recent_hr9_21d as its own column once it's
+# persisted in pick_inputs (Phase 2).
+RECENT_HR9_BLEND_WEIGHT = 0.60   # recent weight; season gets (1 - this)
+RECENT_HR9_MIN_STARTS   = 2      # below this, fall back to season-only
+
+
+def effective_hr9(
+    season_hr9: float | None,
+    recent_hr9: float | None,
+    recent_starts: int | None,
+) -> float | None:
+    """
+    Blend season + recent HR/9 into a single "effective" value for the
+    vulnerability HR/9 component. Returns None when neither input is
+    usable (caller treats as missing signal).
+
+    Rules:
+      - recent_starts < RECENT_HR9_MIN_STARTS → season only (one bad start
+        shouldn't yank the score)
+      - recent missing but season present → season only
+      - season missing but recent present → recent only (rare; brand-new
+        starter without season HR/9 yet)
+      - both present and recent_starts >= MIN → 60/40 recent-leaning blend
+    """
+    has_season = season_hr9 is not None and season_hr9 > 0
+    has_recent = recent_hr9 is not None and recent_hr9 >= 0
+    starts = recent_starts or 0
+
+    if has_recent and has_season and starts >= RECENT_HR9_MIN_STARTS:
+        w = RECENT_HR9_BLEND_WEIGHT
+        return w * recent_hr9 + (1.0 - w) * season_hr9
+    if has_season:
+        return season_hr9
+    if has_recent and starts >= RECENT_HR9_MIN_STARTS:
+        return recent_hr9
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Pitch type classification
 # ---------------------------------------------------------------------------
 
@@ -589,11 +637,21 @@ def score_pitcher_vulnerability(
     # only when nothing was measured.
     scores = []
 
-    hr9 = pitcher_stats.get("hr_per_9")
-    if hr9 is not None and hr9 > 0:
-        # HR/9: 0–4.5 → 0–100 (higher = more vulnerable). Cap raised from
-        # 3.0 to 4.5 so 4+ HR/9 outliers can rank above merely-bad pitchers.
-        scores.append(max(0, min(100, (hr9 / 4.5) * 100)))
+    # 2026-05-13: blend season + recent (21d) HR/9 via effective_hr9().
+    # Season-only HR/9 missed pitchers whose last 3-4 starts had collapsed
+    # (Brady Singer on 2026-05-12: recent 3.07 vs. season 1.89). Blend
+    # rules + ratio live in effective_hr9() so refits can tune them.
+    hr9_effective = effective_hr9(
+        pitcher_stats.get("hr_per_9"),
+        pitcher_stats.get("recent_hr9_21d"),
+        pitcher_stats.get("recent_starts_21d"),
+    )
+    if hr9_effective is not None and hr9_effective > 0:
+        # 0–4.5 → 0–100 (higher = more vulnerable). Cap raised from 3.0
+        # to 4.5 (2026-05-02) so 4+ HR/9 outliers can still distinguish
+        # themselves; the blend can push effective HR/9 above season HR/9
+        # for trending-bad pitchers, so the same cap applies cleanly.
+        scores.append(max(0, min(100, (hr9_effective / 4.5) * 100)))
 
     era = pitcher_stats.get("era")
     if era is not None and era > 0:

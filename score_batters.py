@@ -237,13 +237,25 @@ def compute_slate_context(
     # build raw from only what's measured; pitchers with <2 signals are
     # skipped from pitcher_pct entirely so score_matchup falls through to
     # the v1 path (which is also fixed below).
+    # Lazy import to keep the module-load graph simple (mirrors the
+    # `from pitcher_profile import score_matchup_v2` pattern at line 995).
+    from pitcher_profile import effective_hr9
+
     pitcher_vuln_raw = {}
     for pname, p in (pitcher_stats_by_name or {}).items():
         if not p:
             continue
 
         components = []
-        hr9 = p.get("hr_per_9")
+        # 2026-05-13: blend season + recent (21d) HR/9. The percentile rank
+        # below then orders pitchers by their blended vulnerability — fixes
+        # the "season HR/9 lags recent collapse" gap that left Brady Singer
+        # ranked below Mikolas on the 2026-05-12 slate.
+        hr9 = effective_hr9(
+            p.get("hr_per_9"),
+            p.get("recent_hr9_21d"),
+            p.get("recent_starts_21d"),
+        )
         if hr9 is not None and hr9 > 0:
             components.append(hr9 * 30.0)
         era = p.get("era")
@@ -1139,6 +1151,12 @@ def compute_composite(
         "pitcher_hh_pct":          pitcher.get("hard_hit_pct_allowed"),
         "pitcher_k_per_9":         pitcher.get("k_per_9"),
         "pitcher_fb_pct_allowed":  pitcher.get("fb_pct_allowed"),
+        # Pitcher recency (added 2026-05-13). Blended 60/40 with
+        # pitcher_hr_per_9 inside score_pitcher_vulnerability when
+        # recent_starts_21d >= 2. Persisted as its own input column so the
+        # next refit can learn an independent coefficient.
+        "pitcher_recent_hr9_21d":     pitcher.get("recent_hr9_21d"),
+        "pitcher_recent_starts_21d":  pitcher.get("recent_starts_21d"),
         # Matchup — batter / game
         # NOTE on woba_vs_hand: this can be a synthetic estimate when the
         # batter dict came from MLB Stats API splits via _splits_to_batters
