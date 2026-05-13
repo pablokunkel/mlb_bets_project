@@ -1,0 +1,111 @@
+# =============================================================================
+# monthly-refit.yml — Hosted equivalent of the local
+# `mlb-hr-refit-weights-monthly` Claude scheduled task at
+#   C:\Users\pablo\OneDrive\Documents\Claude\Scheduled\mlb-hr-refit-weights-monthly\
+#
+# Re-fits WEIGHT_CONFIGS["default"] logistic-regression weights against the
+# latest daily_picks ⨝ pick_inputs ⨝ outcomes rows in the live DB, prints
+# diagnostics + a paste-ready WEIGHT_CONFIGS line, and uploads the full
+# report as a workflow artifact for review.
+#
+# Why this workflow exists:
+#   The original local scheduled task was created 2026-04-29, BEFORE the
+#   pipeline moved to GH Actions on 2026-05-11. Pre-migration the task
+#   could rely on a fresh local hr_bets.db kept current by the laptop's
+#   daily/nightly/outcomes .bat scheduled tasks. Post-migration those .bat
+#   tasks are disabled and the DB lives only in R2 — the local refit
+#   script FileNotFoundErrors on first launch. This workflow runs inside
+#   the same Actions environment that already pulls DB from R2.
+#
+# Cadence:
+#   14:07 UTC on the 1st of each month (= 10:07 AM EDT / 9:07 AM EST).
+#   Off-peak minute (:07) to dodge GH's :00 cron pileup — same pattern as
+#   daily-picks.yml. The local SKILL said "10 AM"; this lands within the
+#   noisy ±2h drift band of free runners.
+#
+# What this workflow does NOT do:
+#   - Push the DB back to R2. Refit is read-only.
+#   - Commit anything. Weight changes require human judgment (see
+#     WEIGHT_REFIT_LOG.md for prior decisions where the refit ran but
+#     no change shipped, e.g. 2026-05-01). The artifact captures the
+#     paste-ready line; the user pastes manually into score_batters.py.
+# =============================================================================
+
+name: Monthly weight refit (1st @ ~10 AM ET)
+
+on:
+  # Manual trigger — for ad-hoc reruns, --since window experiments, etc.
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Only train on rows with date >= this YYYY-MM-DD (blank = all)
+        required: false
+        default: ""
+
+  schedule:
+    # 14:07 UTC = 10:07 AM ET (EDT) / 9:07 AM ET (EST) on the 1st of every month.
+    - cron: "7 14 1 * *"
+
+# Serialize with the other DB-touching workflows. Refit is read-only so it
+# can't corrupt anything, but a noon-picks run concurrently reading from a
+# WAL-checkpoint-in-progress DB has bitten us before. Same group name as
+# daily/outcomes/nightly so they all queue together.
+concurrency:
+  group: hr-bets-db
+  cancel-in-progress: false
+
+permissions:
+  contents: read   # no commits, no pushes — just read DB + emit artifact
+
+jobs:
+  refit:
+    runs-on: ubuntu-latest
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+    # Refit itself is fast (<1 min on 5k rows). Generous cap accommodates
+    # the cold-cache pip + R2 pull (~3-5 min on a fresh runner).
+    timeout-minutes: 20
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1   # no push needed → shallow is fine
+
+      - name: Set up env + pull DB
+        uses: ./.github/actions/setup-mlb-env
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+
+      # --update prints a WEIGHT_CONFIGS line ready to paste into
+      # score_batters.py. `tee` so the report goes both to the Actions log
+      # (immediately visible) AND to a file we can upload as an artifact
+      # (downloadable, persists 90 days).
+      - name: Run refit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.since }}" ]]; then
+            echo "Running refit with --since ${{ inputs.since }}"
+            python refit_weights.py --since "${{ inputs.since }}" --update | tee refit_report.txt
+          else
+            python refit_weights.py --update | tee refit_report.txt
+          fi
+
+      # Even on failure — if refit crashed partway, the partial stdout
+      # still captures the diagnostic state up to the failure point.
+      - name: Upload refit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refit-report-${{ github.run_id }}
+          path: refit_report.txt
+          retention-days: 90
