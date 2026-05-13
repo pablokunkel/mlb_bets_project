@@ -55,6 +55,7 @@ from fetch_daily_data import (
     get_lineup,
     build_live_tiers,
     get_recent_game_log,
+    get_recent_pitcher_game_log,
 )
 from mlb_2025_tiers import (
     ALL_TIERS,
@@ -508,6 +509,39 @@ def fetch_form_data_batch(player_ids: list[tuple[str, int]], season: int) -> dic
     return results
 
 
+def fetch_pitcher_recent_form_batch(
+    pitcher_ids: list[tuple[str, int]],
+    season: int,
+    today_str: str | None = None,
+    days: int = 21,
+) -> dict:
+    """
+    Bulk-fetch rolling 21-day HR/9 (and IP / start counts) for each pitcher
+    in today's slate. Mirrors fetch_form_data_batch() but for pitchers.
+
+    Added 2026-05-13. Closes the "pitcher recency" gap that left
+    score_pitcher_vulnerability blind to pitchers whose last 3-4 starts
+    were trending much worse (or better) than their season aggregate.
+
+    *pitcher_ids* is a list of (name, pitcher_id) tuples.
+    *today_str* is the date the picks are being generated for; the window
+    is [today - days, today), excluding today's game itself (we're scoring
+    games yet to be played).
+
+    Returns {pitcher_id: {recent_hr_count, recent_ip, recent_starts,
+    recent_hr_per_9}}. Missing pitchers (API failure, no recent gameLog,
+    or <1 IP in window) are simply absent from the dict.
+    """
+    results = {}
+    for name, pid in pitcher_ids:
+        if not pid or pid < 1000:
+            continue
+        log = get_recent_pitcher_game_log(pid, season, today_str=today_str, days=days)
+        if log:
+            results[pid] = log
+    return results
+
+
 def try_fetch_pitcher_season_stats(pitcher_name: str, season: int) -> dict:
     """Try to get pitcher season stats from FanGraphs. Returns dict or empty.
 
@@ -834,6 +868,40 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
             status.warn("Pitcher FB% Allowed", "0 starters — vulnerability falls back to league avg")
     except Exception as e:
         status.warn("Pitcher FB% Allowed", f"Bulk fetch failed: {e}")
+
+    # ── Pitcher recency: rolling 21-day HR/9 via MLB API gameLog ───────
+    # Closes the "season HR/9 lags 3-4 bad starts" gap. score_pitcher_
+    # vulnerability and compute_slate_context now blend recent + season
+    # HR/9 (60/40) when recent_starts_21d >= 2. Singer (2026-05-12)
+    # case: recent HR/9 3.07 vs season 1.89 → blended 2.60, lifts him
+    # past Mikolas on the slate vulnerability rank.
+    try:
+        pitcher_ids_for_recency = [(n, pid) for n, pid in pitcher_id_map.items() if pid]
+        bulk_pitcher_recency = fetch_pitcher_recent_form_batch(
+            pitcher_ids_for_recency, season, today_str=date_str, days=21
+        )
+        n_with_recency = 0
+        for pname, pid in pitcher_id_map.items():
+            if pid in bulk_pitcher_recency and pname in pitcher_lookup:
+                log = bulk_pitcher_recency[pid]
+                pitcher_lookup[pname]["recent_hr9_21d"]       = log.get("recent_hr_per_9")
+                pitcher_lookup[pname]["recent_hr_count_21d"]  = log.get("recent_hr_count")
+                pitcher_lookup[pname]["recent_starts_21d"]    = log.get("recent_starts")
+                pitcher_lookup[pname]["recent_ip_21d"]        = log.get("recent_ip")
+                if log.get("recent_hr_per_9") is not None:
+                    n_with_recency += 1
+        if n_with_recency > 0:
+            status.ok(
+                "Pitcher Recency (21d HR/9)",
+                f"{n_with_recency}/{len(pitcher_lookup)} via MLB gameLog",
+            )
+        else:
+            status.warn(
+                "Pitcher Recency (21d HR/9)",
+                "0 starters — vulnerability uses season-only HR/9",
+            )
+    except Exception as e:
+        status.warn("Pitcher Recency (21d HR/9)", f"Bulk fetch failed: {e}")
 
     # ── Batter xwOBA on contact via BULK Savant CSV (one HTTP call) ────
     # Replaces per-batter Statcast in score_live_slate. Slate-level cache.

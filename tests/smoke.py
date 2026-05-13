@@ -457,6 +457,83 @@ def pin_score_power_floor_does_not_pull_down() -> Result:
     )
 
 
+# ---------------------------------------------------------------------------
+# Pitcher recency blend (added 2026-05-13)
+# ---------------------------------------------------------------------------
+
+def pin_effective_hr9_season_only_when_no_recent() -> Result:
+    """Missing recency → effective HR/9 = season HR/9 unchanged."""
+    from pitcher_profile import effective_hr9
+    got = effective_hr9(1.89, None, None)
+    if got is not None and abs(got - 1.89) < 1e-6:
+        return Result("effective_hr9(no recent) -> season only", Result.PASS)
+    return Result(
+        "effective_hr9(no recent) -> season only",
+        Result.HALT,
+        f"got {got}; expected 1.89",
+    )
+
+
+def pin_effective_hr9_blend_when_enough_starts() -> Result:
+    """recent_starts >= 2 → 0.6*recent + 0.4*season (Singer 5/12 case)."""
+    from pitcher_profile import effective_hr9, RECENT_HR9_BLEND_WEIGHT
+    # Singer counterfactual the morning of 2026-05-12: recent 3.07, season 1.89
+    got = effective_hr9(1.89, 3.07, 3)
+    expected = RECENT_HR9_BLEND_WEIGHT * 3.07 + (1 - RECENT_HR9_BLEND_WEIGHT) * 1.89
+    if got is not None and abs(got - expected) < 1e-6:
+        return Result(
+            f"effective_hr9(Singer 5/12) -> {got:.3f} (blend ratio {RECENT_HR9_BLEND_WEIGHT})",
+            Result.PASS,
+        )
+    return Result(
+        "effective_hr9 blend",
+        Result.HALT,
+        f"got {got}; expected {expected:.4f}",
+    )
+
+
+def pin_effective_hr9_below_min_starts_falls_back() -> Result:
+    """One recent start isn't enough — fall back to season HR/9."""
+    from pitcher_profile import effective_hr9, RECENT_HR9_MIN_STARTS
+    # Use 1 start (below min) — should ignore recent even though it's huge
+    got = effective_hr9(1.89, 9.00, 1)
+    if got is not None and abs(got - 1.89) < 1e-6:
+        return Result(
+            f"effective_hr9(<{RECENT_HR9_MIN_STARTS} starts) falls back to season",
+            Result.PASS,
+        )
+    return Result(
+        "effective_hr9 below-min-starts fallback",
+        Result.HALT,
+        f"got {got}; expected 1.89 (1 start should NOT trigger blend)",
+    )
+
+
+def pin_score_pitcher_vulnerability_recency_lifts_score() -> Result:
+    """score_pitcher_vulnerability blends recent into HR/9 — Singer-style
+    case (season 1.89, recent 3.07, 3 starts) ranks above season-only."""
+    from pitcher_profile import score_pitcher_vulnerability
+    season_only = score_pitcher_vulnerability({
+        "name": "P_seasonOnly",
+        "hr_per_9": 1.89, "era": 5.63, "hard_hit_pct_allowed": 38, "k_per_9": 6.14,
+    })
+    with_recency = score_pitcher_vulnerability({
+        "name": "P_withRecency",
+        "hr_per_9": 1.89, "era": 5.63, "hard_hit_pct_allowed": 38, "k_per_9": 6.14,
+        "recent_hr9_21d": 3.07, "recent_starts_21d": 3,
+    })
+    if with_recency > season_only + 1:   # blend must produce non-trivial lift
+        return Result(
+            f"score_pitcher_vulnerability recency lift: {season_only:.1f} -> {with_recency:.1f}",
+            Result.PASS,
+        )
+    return Result(
+        "score_pitcher_vulnerability recency lift",
+        Result.HALT,
+        f"season_only={season_only:.1f} with_recency={with_recency:.1f} (expected with_recency > season_only + 1)",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -476,6 +553,11 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
+    # 2026-05-13: pitcher recency blend
+    pin_effective_hr9_season_only_when_no_recent,
+    pin_effective_hr9_blend_when_enough_starts,
+    pin_effective_hr9_below_min_starts_falls_back,
+    pin_score_pitcher_vulnerability_recency_lifts_score,
 ]
 
 

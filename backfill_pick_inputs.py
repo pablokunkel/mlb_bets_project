@@ -221,6 +221,12 @@ def main():
     # ----------------------------------------------------------------------
     # 5. Iterate and INSERT OR REPLACE
     # ----------------------------------------------------------------------
+    # NOTE 2026-05-13: this backfill does NOT populate pitcher_recent_hr9_21d /
+    # pitcher_recent_starts_21d (those columns stay NULL on backfilled rows).
+    # Before the next weight refit, write a separate backfill that queries
+    # the MLB API gameLog (per pitcher × per pick_inputs date) so the refit
+    # has a clean recency column across the training window. The live
+    # generate_picks path populates these columns from today onward.
     insert_sql = """
         INSERT OR REPLACE INTO pick_inputs (
             date, batter_id,

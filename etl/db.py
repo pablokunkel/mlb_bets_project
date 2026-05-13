@@ -398,6 +398,14 @@ def create_tables(conn: sqlite3.Connection):
         pitcher_hh_pct          REAL,
         pitcher_k_per_9         REAL,
         pitcher_fb_pct_allowed  REAL,
+        -- Pitcher recency (added 2026-05-13): rolling 21-day HR/9 + start
+        -- count from MLB API gameLog. Blended 60/40 with pitcher_hr_per_9
+        -- inside score_pitcher_vulnerability when starts_21d >= 2; persisted
+        -- here so the next refit can learn its own coefficient instead of
+        -- inheriting season HR/9's standardized weight (form 0.496,
+        -- matchup 0.468 from the 2026-05-01 refit baseline).
+        pitcher_recent_hr9_21d  REAL,
+        pitcher_recent_starts_21d INTEGER,
 
         -- Matchup: batter + game inputs
         woba_vs_hand            REAL,
@@ -624,6 +632,25 @@ def create_tables(conn: sqlite3.Connection):
             )
         except Exception:
             pass
+
+    # 2026-05-13: pitcher recency columns — rolling 21-day HR/9 and start
+    # count from MLB API gameLog. NULL-safe additive; older rows stay NULL
+    # until rerun against the new pipeline. See pick_inputs CREATE block
+    # comment for the blend semantics.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("pitcher_recent_hr9_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_hr9_21d REAL"),
+        ("pitcher_recent_starts_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_starts_21d INTEGER"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
 
     conn.commit()
 

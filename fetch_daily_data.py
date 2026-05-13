@@ -1124,6 +1124,109 @@ def get_recent_game_log(player_id: int, season: int, last_n_games: int = 10) -> 
     }
 
 
+def get_recent_pitcher_game_log(
+    pitcher_id: int,
+    season: int,
+    today_str: str | None = None,
+    days: int = 21,
+) -> dict:
+    """
+    Pull a pitcher's recent game log from the MLB Stats API and aggregate
+    HR allowed + IP over the last *days* days BEFORE *today_str* (exclusive).
+
+    Mirrors get_recent_game_log() but for pitchers. Adds the "pitcher
+    recency" signal that score_pitcher_vulnerability() needed —
+    season-aggregate HR/9 lags 3-4 bad starts, so a pitcher whose recent
+    stretch has collapsed (e.g., Brady Singer on 2026-05-12: 9 HR allowed
+    over 4 starts vs. season HR/9 of 1.89) was invisible to the model.
+
+    Returns dict with keys:
+        recent_hr_count   — HRs allowed in window
+        recent_ip         — innings pitched in window (parsed from "5.2" =
+                            5 IP + 2 outs format MLB API uses)
+        recent_starts     — count of games started in window
+        recent_hr_per_9   — HR * 9 / IP, or None if IP < 1.0
+    Empty dict on API failure (caller treats as missing signal).
+    """
+    url = f"{MLB_STATS_API}/people/{pitcher_id}/stats"
+    params = {
+        "stats": "gameLog",
+        "season": season,
+        "group": "pitching",
+        "gameType": "R",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return {}
+
+    stats_list = data.get("stats", [])
+    if not stats_list:
+        return {}
+    splits = stats_list[0].get("splits", [])
+    if not splits:
+        return {}
+
+    # Window: [today - days, today). today_str excluded — we're scoring
+    # games yet to be played, recent form is what came BEFORE today.
+    if today_str:
+        try:
+            today_dt = datetime.strptime(today_str, "%Y-%m-%d")
+        except ValueError:
+            today_dt = datetime.now()
+    else:
+        today_dt = datetime.now()
+    cutoff_str = (today_dt - timedelta(days=days)).strftime("%Y-%m-%d")
+    today_iso = today_dt.strftime("%Y-%m-%d")
+
+    recent_hr = 0
+    recent_outs = 0     # 1 IP = 3 outs; lets us add "5.2" + "4.1" precisely
+    recent_starts = 0
+    for g in splits:
+        gdate = g.get("date") or ""
+        if gdate < cutoff_str or gdate >= today_iso:
+            continue
+        s = g.get("stat", {}) or {}
+        # inningsPitched format: "5.2" = 5 IP + 2 outs (i.e. 5 2/3 IP).
+        ip_str = str(s.get("inningsPitched", "0") or "0")
+        try:
+            whole, _, frac = ip_str.partition(".")
+            outs = int(whole) * 3 + (int(frac) if frac else 0)
+        except (ValueError, TypeError):
+            outs = 0
+        games_started = int(s.get("gamesStarted", 0) or 0)
+        # Filter to starts only — recency signal is "how he's pitching as
+        # a starter," not noise from random relief appearances. A starter
+        # appearing in relief is rare but still skipped here.
+        if games_started == 0 and outs == 0:
+            continue
+        recent_hr += int(s.get("homeRuns", 0) or 0)
+        recent_outs += outs
+        recent_starts += games_started
+
+    recent_ip = recent_outs / 3.0
+    if recent_ip < 1.0:
+        # Below 1 IP in 21 days isn't a usable rate — return counts but
+        # let recent_hr_per_9 be None so the blend falls back to season.
+        return {
+            "recent_hr_count": recent_hr,
+            "recent_ip": round(recent_ip, 1),
+            "recent_starts": recent_starts,
+            "recent_hr_per_9": None,
+        }
+
+    recent_hr_per_9 = recent_hr * 9.0 / recent_ip
+
+    return {
+        "recent_hr_count": recent_hr,
+        "recent_ip": round(recent_ip, 1),
+        "recent_starts": recent_starts,
+        "recent_hr_per_9": round(recent_hr_per_9, 2),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Aggregate fetch for a single date
 # ---------------------------------------------------------------------------
