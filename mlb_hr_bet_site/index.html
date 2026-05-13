@@ -1303,6 +1303,114 @@
       padding: 4px 8px; font-family: 'JetBrains Mono', monospace;
       font-size: 12px;
     }
+    /* 2026-05-12: "Build your own list" filter drawer. ☰ button opens a
+       floating popover with 6 score sliders + barrel/ISO + HR window +
+       sort. Floats over content so the board doesn't shift. In-memory
+       state — resets on full reload, persists across tab switches. */
+    .board-controls { position: relative; }
+    .board-filter-toggle {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 7px 12px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px; font-weight: 500;
+      color: var(--ink);
+      cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .board-filter-toggle:hover { border-color: var(--ink); }
+    .board-filter-toggle.has-active {
+      border-color: var(--signal); color: var(--signal);
+    }
+    .board-filter-toggle .badge {
+      display: none;
+      background: var(--signal); color: var(--paper);
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      padding: 1px 5px; border-radius: 8px; min-width: 16px;
+      text-align: center; line-height: 1.4;
+    }
+    .board-filter-toggle.has-active .badge { display: inline-block; }
+
+    .board-filter-popover {
+      position: absolute;
+      top: calc(100% + 6px); right: 0;
+      width: 360px; max-width: calc(100vw - 24px);
+      background: var(--surface-elevated, var(--paper));
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+      padding: 14px;
+      z-index: 50;
+      display: none;
+    }
+    .board-filter-popover.open { display: block; }
+    .board-filter-popover h5 {
+      margin: 0 0 8px;
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--ink-muted);
+    }
+    .filter-section { margin-bottom: 14px; }
+    .filter-section:last-child { margin-bottom: 0; }
+    .filter-row {
+      display: grid;
+      grid-template-columns: 78px 1fr 42px;
+      gap: 8px; align-items: center;
+      margin-bottom: 5px;
+    }
+    .filter-row label {
+      font-size: 12px; color: var(--ink-soft);
+    }
+    .filter-row input[type="range"] {
+      width: 100%; cursor: pointer; accent-color: var(--signal);
+      margin: 0;
+    }
+    .filter-row .filter-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--ink);
+      text-align: right;
+    }
+    .filter-row .filter-val.is-default { color: var(--ink-muted); }
+    .filter-hr-window, .filter-sort {
+      display: flex; gap: 6px; align-items: center;
+      font-size: 12px; color: var(--ink-soft);
+      flex-wrap: wrap;
+    }
+    .filter-hr-window select,
+    .filter-hr-window input,
+    .filter-sort select,
+    .filter-sort button {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 4px 7px;
+      font-family: 'Inter', sans-serif;
+      font-size: 12px; color: var(--ink);
+    }
+    .filter-hr-window input {
+      width: 44px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .filter-sort select { flex: 1; min-width: 140px; cursor: pointer; }
+    .filter-sort button {
+      cursor: pointer; min-width: 32px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .filter-sort button:hover { border-color: var(--ink); }
+    .filter-footer {
+      margin-top: 10px; padding-top: 10px;
+      border-top: 1px dashed var(--rule);
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; color: var(--ink-muted);
+    }
+    .filter-reset {
+      background: transparent; border: none; cursor: pointer;
+      color: var(--signal); font-size: 12px; font-weight: 500;
+      padding: 2px 4px;
+    }
+    .filter-reset:hover { text-decoration: underline; }
     /* Right rail — slate cards + composite distribution histogram */
     .board-rail {
       display: flex; flex-direction: column; gap: 14px;
@@ -1589,7 +1697,13 @@
       .board-controls { gap: 6px; }
       .board-search { min-width: 0; max-width: none; flex: 1 1 100%; }
       .board-team-filter { flex: 1 1 60%; min-width: 130px; }
+      .board-filter-toggle { flex: 1 1 35%; justify-content: center; }
       .board-controls > span { flex: 1 1 100%; text-align: right; }
+      /* Filter popover — full width on phones, snap to viewport edges */
+      .board-filter-popover {
+        width: calc(100vw - 24px);
+        right: -8px; left: -8px;
+      }
 
       /* HR Recap controls — same treatment */
       .recap-controls { gap: 6px; }
@@ -1915,9 +2029,105 @@
         <select id="boardTeamFilter" class="board-team-filter">
           <option value="all">All teams</option>
         </select>
+        <!-- 2026-05-12: "Build your own list" filter drawer. Floats over
+             content via .board-filter-popover so the table doesn't shift.
+             See renderBoard()'s filter chain for the matching JS logic. -->
+        <button id="boardFilterToggle" type="button" class="board-filter-toggle"
+                aria-haspopup="dialog" aria-expanded="false" aria-controls="boardFilterPopover">
+          ☰ Filters <span class="badge" id="boardFilterBadge">0</span>
+        </button>
         <span style="color:var(--ink-muted);font-size:12px;margin-left:auto">
-          Top <input id="boardLimit" type="number" min="10" max="500" value="100" class="board-limit-input"/> by composite
+          Top <input id="boardLimit" type="number" min="10" max="500" value="100" class="board-limit-input"/>
+          <span id="boardSortLabel">by composite</span>
         </span>
+        <div id="boardFilterPopover" class="board-filter-popover" role="dialog" aria-label="Big Board filters" hidden>
+          <div class="filter-section">
+            <h5>Scores · minimum (0–100)</h5>
+            <div class="filter-row">
+              <label for="filterPower">Power</label>
+              <input id="filterPower" type="range" min="0" max="100" step="1" value="0" data-filter-score="power_score"/>
+              <span class="filter-val is-default" data-val-for="power_score">0</span>
+            </div>
+            <div class="filter-row">
+              <label for="filterMatchup">Matchup</label>
+              <input id="filterMatchup" type="range" min="0" max="100" step="1" value="0" data-filter-score="matchup_score"/>
+              <span class="filter-val is-default" data-val-for="matchup_score">0</span>
+            </div>
+            <div class="filter-row">
+              <label for="filterPark">Park</label>
+              <input id="filterPark" type="range" min="0" max="100" step="1" value="0" data-filter-score="park_score"/>
+              <span class="filter-val is-default" data-val-for="park_score">0</span>
+            </div>
+            <div class="filter-row">
+              <label for="filterForm">Form</label>
+              <input id="filterForm" type="range" min="0" max="100" step="1" value="0" data-filter-score="form_score"/>
+              <span class="filter-val is-default" data-val-for="form_score">0</span>
+            </div>
+            <div class="filter-row">
+              <label for="filterWeather">Weather</label>
+              <input id="filterWeather" type="range" min="0" max="100" step="1" value="0" data-filter-score="weather_score"/>
+              <span class="filter-val is-default" data-val-for="weather_score">0</span>
+            </div>
+            <div class="filter-row">
+              <label for="filterLineup">Lineup</label>
+              <input id="filterLineup" type="range" min="0" max="100" step="1" value="0" data-filter-score="lineup_score"/>
+              <span class="filter-val is-default" data-val-for="lineup_score">0</span>
+            </div>
+          </div>
+          <div class="filter-section">
+            <h5>Underlying skill · minimum</h5>
+            <div class="filter-row">
+              <label for="filterBarrel">Barrel %</label>
+              <!-- max 25 covers MLB ceiling (~22% all-time). step 0.5 for granular hot-streak filtering. -->
+              <input id="filterBarrel" type="range" min="0" max="25" step="0.5" value="0" data-filter-stat="barrel_pct"/>
+              <span class="filter-val is-default" data-val-for="barrel_pct">0</span>
+            </div>
+            <div class="filter-row">
+              <label for="filterIso">ISO</label>
+              <!-- ISO scale: .000 to .400. step .010 for fine slicing. Stored as float 0-0.4. -->
+              <input id="filterIso" type="range" min="0" max="0.400" step="0.010" value="0" data-filter-stat="iso"/>
+              <span class="filter-val is-default" data-val-for="iso">.000</span>
+            </div>
+          </div>
+          <div class="filter-section">
+            <h5>HR window · cold streak / hot streak</h5>
+            <div class="filter-hr-window">
+              <span>Last</span>
+              <select id="filterHrWindow">
+                <option value="off">— off —</option>
+                <option value="7d">7 days</option>
+                <option value="14d">14 days</option>
+              </select>
+              <span>HR between</span>
+              <input id="filterHrMin" type="number" min="0" max="20" value="0"/>
+              <span>and</span>
+              <input id="filterHrMax" type="number" min="0" max="20" value="20"/>
+            </div>
+          </div>
+          <div class="filter-section">
+            <h5>Sort by</h5>
+            <div class="filter-sort">
+              <select id="filterSort">
+                <option value="composite">Composite</option>
+                <option value="power_score">Power score</option>
+                <option value="matchup_score">Matchup score</option>
+                <option value="park_score">Park score</option>
+                <option value="form_score">Form score</option>
+                <option value="weather_score">Weather score</option>
+                <option value="lineup_score">Lineup score</option>
+                <option value="season_stats.barrel_pct">Barrel %</option>
+                <option value="season_stats.iso">ISO</option>
+                <option value="recent_hr_7d">HRs last 7d</option>
+                <option value="recent_hr_14d">HRs last 14d</option>
+              </select>
+              <button id="filterSortDir" type="button" title="Toggle sort direction" data-dir="desc">↓</button>
+            </div>
+          </div>
+          <div class="filter-footer">
+            <span id="filterMatchCount">—</span>
+            <button id="boardFilterReset" type="button" class="filter-reset">Reset all</button>
+          </div>
+        </div>
       </div>
       <div class="board-grid">
         <div id="boardTable"><div class="loading">Loading board...</div></div>
@@ -4055,6 +4265,21 @@
     let _boardCache = null;
     let _boardTeam   = 'all';
     let _boardSearch = '';
+    // 2026-05-12: "Build your own list" filter drawer state. Reset on
+    // full reload; persists across tab switches since the SPA never
+    // reloads on tab change. Keys in scoreMin match field names on each
+    // row so the filter loop can iterate generically.
+    const _boardFilters = {
+      scoreMin: {
+        power_score: 0, matchup_score: 0, park_score: 0,
+        form_score: 0, weather_score: 0, lineup_score: 0,
+      },
+      statMin: { barrel_pct: 0, iso: 0 },
+      hrWindow: 'off',   // 'off' | '7d' | '14d'
+      hrMin: 0, hrMax: 20,
+      sortField: 'composite',
+      sortDir: 'desc',
+    };
 
     async function renderBoard() {
       if (!_boardCache) {
@@ -4089,7 +4314,43 @@
           return n.includes(search);
         });
       }
-      rows.sort((a, b) => (b.composite || 0) - (a.composite || 0));
+      // 2026-05-12: filter drawer thresholds. Iterate only the score
+      // fields with a non-zero floor so the no-filter case stays O(n).
+      for (const [field, minVal] of Object.entries(_boardFilters.scoreMin)) {
+        if (minVal > 0) rows = rows.filter(r => (r[field] || 0) >= minVal);
+      }
+      if (_boardFilters.statMin.barrel_pct > 0) {
+        const m = _boardFilters.statMin.barrel_pct;
+        rows = rows.filter(r => (r.season_stats?.barrel_pct ?? 0) >= m);
+      }
+      if (_boardFilters.statMin.iso > 0) {
+        const m = _boardFilters.statMin.iso;
+        rows = rows.filter(r => (r.season_stats?.iso ?? 0) >= m);
+      }
+      // HR window — count of HRs in last 7d or 14d (null treated as 0,
+      // matches existing recent_hr_7d semantics).
+      if (_boardFilters.hrWindow !== 'off') {
+        const hrField = _boardFilters.hrWindow === '7d' ? 'recent_hr_7d' : 'recent_hr_14d';
+        const hmin = _boardFilters.hrMin, hmax = _boardFilters.hrMax;
+        rows = rows.filter(r => {
+          const v = r[hrField] || 0;
+          return v >= hmin && v <= hmax;
+        });
+      }
+      // Sort — supports dotted paths (e.g. "season_stats.iso"). Null sorts
+      // last regardless of direction so "min HRs ascending" doesn't surface
+      // every missing-data row at the top.
+      const _sf = _boardFilters.sortField, _sd = _boardFilters.sortDir;
+      const _getVal = _sf.indexOf('.') < 0
+        ? (r) => r[_sf]
+        : (r) => { const [a, b] = _sf.split('.'); return r[a]?.[b]; };
+      rows.sort((a, b) => {
+        const va = _getVal(a), vb = _getVal(b);
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        return _sd === 'desc' ? (vb - va) : (va - vb);
+      });
       rows = rows.slice(0, limit);
 
       const totalSelected = board.filter(r => r.selected).length;
@@ -4142,6 +4403,33 @@
       renderHistogramRail(_boardCache);
       bindMobileTables();
       bindPlayerClicks();
+
+      // 2026-05-12: filter drawer chrome — badge count, "Showing N of M"
+      // footer in the popover, and dynamic "by {sort}" suffix on the
+      // Top-N label. Kept inside renderBoard so any state change that
+      // re-renders also refreshes the chrome.
+      {
+        let activeN = 0;
+        for (const v of Object.values(_boardFilters.scoreMin)) if (v > 0) activeN++;
+        for (const v of Object.values(_boardFilters.statMin))  if (v > 0) activeN++;
+        if (_boardFilters.hrWindow !== 'off') activeN++;
+        const toggleBtn = document.getElementById('boardFilterToggle');
+        if (toggleBtn) {
+          toggleBtn.classList.toggle('has-active', activeN > 0);
+          const badge = document.getElementById('boardFilterBadge');
+          if (badge) badge.textContent = String(activeN);
+        }
+        const mc = document.getElementById('filterMatchCount');
+        if (mc) mc.textContent = `Showing ${rows.length} of ${board.length}`;
+        const sortLabels = {
+          composite: 'composite', power_score: 'power', matchup_score: 'matchup',
+          park_score: 'park', form_score: 'form', weather_score: 'weather',
+          lineup_score: 'lineup', 'season_stats.barrel_pct': 'barrel%',
+          'season_stats.iso': 'ISO', recent_hr_7d: '7d HR', recent_hr_14d: '14d HR',
+        };
+        const sl = document.getElementById('boardSortLabel');
+        if (sl) sl.textContent = `by ${sortLabels[_boardFilters.sortField] || _boardFilters.sortField} ${_boardFilters.sortDir === 'desc' ? '↓' : '↑'}`;
+      }
     }
 
     // ── Right rail: Today's Slate of games (condensed) ──
@@ -4238,6 +4526,124 @@
       renderBoard();
     });
     document.getElementById('boardLimit').addEventListener('change', renderBoard);
+
+    // ── Filter drawer wiring (2026-05-12) ─────────────────────────
+    // Single popover anchored to ☰ Filters button. Live-apply on every
+    // input — list size ~380, perf is fine. Click outside / Escape /
+    // re-click toggles closed. Reset zeroes every threshold and snaps
+    // sort back to composite/desc; state is in-memory so a hard reload
+    // also clears everything.
+    (function wireFilterDrawer() {
+      const btn = document.getElementById('boardFilterToggle');
+      const pop = document.getElementById('boardFilterPopover');
+      if (!btn || !pop) return;  // big board not on this page
+
+      function setOpen(open) {
+        pop.classList.toggle('open', open);
+        pop.hidden = !open;
+        btn.setAttribute('aria-expanded', String(open));
+      }
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setOpen(!pop.classList.contains('open'));
+      });
+      // Click outside the popover (and not on the toggle) closes it.
+      document.addEventListener('click', (e) => {
+        if (!pop.classList.contains('open')) return;
+        if (pop.contains(e.target) || btn.contains(e.target)) return;
+        setOpen(false);
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && pop.classList.contains('open')) {
+          setOpen(false);
+          btn.focus();
+        }
+      });
+
+      // Score sliders — six 0-100 ranges. Iterate by data attribute so
+      // adding a new score later only requires adding a row in the HTML.
+      pop.querySelectorAll('[data-filter-score]').forEach(input => {
+        input.addEventListener('input', (e) => {
+          const f = e.target.dataset.filterScore;
+          const v = parseInt(e.target.value, 10) || 0;
+          _boardFilters.scoreMin[f] = v;
+          const lbl = pop.querySelector(`[data-val-for="${f}"]`);
+          if (lbl) {
+            lbl.textContent = String(v);
+            lbl.classList.toggle('is-default', v === 0);
+          }
+          renderBoard();
+        });
+      });
+      // Stat sliders — barrel_pct (0-25, one decimal), ISO (0-.400, three).
+      pop.querySelectorAll('[data-filter-stat]').forEach(input => {
+        input.addEventListener('input', (e) => {
+          const f = e.target.dataset.filterStat;
+          const v = parseFloat(e.target.value) || 0;
+          _boardFilters.statMin[f] = v;
+          const lbl = pop.querySelector(`[data-val-for="${f}"]`);
+          if (lbl) {
+            lbl.textContent = f === 'iso' ? v.toFixed(3).replace(/^0/, '') : v.toFixed(1);
+            lbl.classList.toggle('is-default', v === 0);
+          }
+          renderBoard();
+        });
+      });
+      // HR window — select + min/max numbers. All three bound to the same
+      // handler since they always update together.
+      function syncHrWindow() {
+        _boardFilters.hrWindow = document.getElementById('filterHrWindow').value;
+        _boardFilters.hrMin    = parseInt(document.getElementById('filterHrMin').value, 10) || 0;
+        _boardFilters.hrMax    = parseInt(document.getElementById('filterHrMax').value, 10);
+        if (Number.isNaN(_boardFilters.hrMax)) _boardFilters.hrMax = 20;
+        renderBoard();
+      }
+      document.getElementById('filterHrWindow').addEventListener('change', syncHrWindow);
+      document.getElementById('filterHrMin').addEventListener('change', syncHrWindow);
+      document.getElementById('filterHrMax').addEventListener('change', syncHrWindow);
+      // Sort field + direction toggle.
+      document.getElementById('filterSort').addEventListener('change', (e) => {
+        _boardFilters.sortField = e.target.value;
+        renderBoard();
+      });
+      const dirBtn = document.getElementById('filterSortDir');
+      dirBtn.addEventListener('click', () => {
+        _boardFilters.sortDir = _boardFilters.sortDir === 'desc' ? 'asc' : 'desc';
+        dirBtn.textContent = _boardFilters.sortDir === 'desc' ? '↓' : '↑';
+        dirBtn.dataset.dir = _boardFilters.sortDir;
+        renderBoard();
+      });
+      // Reset — zero every threshold, snap sort to composite/desc, sync UI.
+      document.getElementById('boardFilterReset').addEventListener('click', () => {
+        Object.keys(_boardFilters.scoreMin).forEach(k => { _boardFilters.scoreMin[k] = 0; });
+        Object.keys(_boardFilters.statMin).forEach(k => { _boardFilters.statMin[k] = 0; });
+        _boardFilters.hrWindow = 'off';
+        _boardFilters.hrMin = 0; _boardFilters.hrMax = 20;
+        _boardFilters.sortField = 'composite';
+        _boardFilters.sortDir = 'desc';
+        // Push state back into the DOM controls.
+        pop.querySelectorAll('[data-filter-score]').forEach(inp => {
+          inp.value = 0;
+          const lbl = pop.querySelector(`[data-val-for="${inp.dataset.filterScore}"]`);
+          if (lbl) { lbl.textContent = '0'; lbl.classList.add('is-default'); }
+        });
+        pop.querySelectorAll('[data-filter-stat]').forEach(inp => {
+          inp.value = 0;
+          const lbl = pop.querySelector(`[data-val-for="${inp.dataset.filterStat}"]`);
+          if (lbl) {
+            lbl.textContent = inp.dataset.filterStat === 'iso' ? '.000' : '0.0';
+            lbl.classList.add('is-default');
+          }
+        });
+        document.getElementById('filterHrWindow').value = 'off';
+        document.getElementById('filterHrMin').value = 0;
+        document.getElementById('filterHrMax').value = 20;
+        document.getElementById('filterSort').value = 'composite';
+        dirBtn.textContent = '↓';
+        dirBtn.dataset.dir = 'desc';
+        renderBoard();
+      });
+    })();
 
     // ============================================================
     // Live HR feed (api.dingersonly.cc) — shipped 2026-05-02
