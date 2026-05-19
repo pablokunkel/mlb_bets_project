@@ -5,6 +5,7 @@ REM
 REM   1. Pull yesterday's box scores -> outcomes table
 REM   2. Re-score history with current model -> factor_accuracy.json
 REM   3. Re-export site data with fresh hit/miss results
+REM   3b. Lab-tab per-view L7 hit rates -> lab_accuracy.json
 REM   4. Push refreshed JSON to GitHub (Cloudflare Pages auto-deploys)
 REM
 REM  Logs to logs/outcomes_YYYY-MM-DD.log. Independent of the
@@ -48,6 +49,15 @@ python export_site_data.py >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo  ERROR: Data export failed! >> "%LOGFILE%" 2>&1
     exit /b 1
+)
+
+REM Step 3b: Lab-tab per-view L7 hit rates -> lab_accuracy.json.
+REM Soft-fail: a stale badge beats blocking the deploy. The step-4
+REM `git add mlb_hr_bet_site/data/*.json` picks up the refreshed file.
+echo  [3b/4] Computing Lab hit rates... >> "%LOGFILE%" 2>&1
+python compute_lab_accuracy.py >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo  WARN: compute_lab_accuracy failed -- lab_accuracy.json stale >> "%LOGFILE%" 2>&1
 )
 
 REM Step 4: Push refreshed JSON to GitHub (Cloudflare auto-deploys)
