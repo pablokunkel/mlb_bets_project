@@ -557,6 +557,28 @@
     .lab-stack-head .lab-stack-total {
       color: var(--signal); font-weight: 700;
     }
+    /* L7 hit-rate badge on Lab view headers — populated from
+       lab_accuracy.json (compute_lab_accuracy.py, refreshed by the 1 AM
+       outcomes run). Sits inline after the view title. `.beat` = view at or
+       above the confirmed-starter board baseline, `.lag` = below it. */
+    .lab-view-acc {
+      display: inline-flex; align-items: baseline; gap: 4px;
+      margin-left: 8px; padding: 1px 7px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 0.02em; border-radius: 10px;
+      vertical-align: middle; cursor: help;
+    }
+    .lab-view-acc.beat {
+      color: var(--grass-deep, #2d5a2a);
+      background: rgba(63, 106, 58, 0.16);
+    }
+    .lab-view-acc.lag {
+      color: var(--ink-muted); background: var(--surface-2);
+    }
+    .lab-view-acc .lab-view-acc-n {
+      font-size: 9px; font-weight: 500; opacity: 0.75;
+    }
     @media (max-width: 768px) {
       .lab-row {
         grid-template-columns: 24px 32px 1fr auto auto;
@@ -2771,6 +2793,7 @@
     // Click any row → existing Topps modal (via bindPlayerClicks).
     async function renderLab() {
       const data = await fetchJSON('picks_latest');
+      const labAcc = await fetchJSON('lab_accuracy');  // per-view L7 hit rates; null on older deploys
       const container = document.getElementById('labContent');
       if (!data) {
         container.innerHTML = '<div class="empty">No picks data available yet.</div>';
@@ -2945,7 +2968,9 @@
         </div>`;
       };
 
-      const renderView = (title, formula, sub, rows) => {
+      const renderView = (title, formula, sub, rows, accKey) => {
+        // accKey → append the L7 hit-rate badge to this view's title.
+        if (accKey) title += accBadge(accKey);
         if (!rows.length) {
           return `<div class="lab-view">
             <div class="lab-view-head">
@@ -3002,36 +3027,62 @@
         </div>`;
       };
 
+      // L7 hit-rate badge for a scored view's header. Data comes from
+      // lab_accuracy.json (compute_lab_accuracy.py, refreshed by the 1 AM
+      // outcomes run). Returns '' when the file is absent (older deploy) or
+      // a view has no scored picks in the window, so the Lab tab still
+      // renders. Game Stacks is intentionally not badged.
+      const accBadge = (key) => {
+        const v = labAcc && labAcc.views && labAcc.views[key];
+        if (!v || !v.l7 || !v.l7.picks) return '';
+        const win = labAcc.window_days || 7;
+        const base = labAcc.baseline && labAcc.baseline.l7_rate;
+        const beat = typeof base === 'number' && v.l7.rate >= base;
+        const season = (v.all && v.all.picks)
+          ? ` · season ${v.all.rate}% (${v.all.hits}/${v.all.picks} over ${v.all.days} slates)`
+          : '';
+        const tip = `Last ${win} slates: ${v.l7.hits} of ${v.l7.picks} surfaced batters homered`
+          + (typeof base === 'number' ? ` · board baseline ${base}%` : '') + season;
+        return `<span class="lab-view-acc ${beat ? 'beat' : 'lag'}" title="${tip}">`
+          + `L${win} ${Math.round(v.l7.rate)}%`
+          + `<span class="lab-view-acc-n">${v.l7.hits}/${v.l7.picks}</span></span>`;
+      };
+
       let html = '';
       html += renderView(
         '💣 Homerun Leaders',
         'top 10 by season HR · top 3 by composite − 0.25·power',
         'Anchor on proven HR power, then re-rank within those 10 by everything except power (so we don\'t double-count what got them on the list). Catches Judge-class hitters that the main board\'s 6-factor weighting under-rates.',
         v0,
+        'homerun_leaders',
       );
       html += renderView(
         '⚡ Power × Matchup',
         'power_score × matchup_score / 100',
         'Top-quintile in BOTH dimensions, not just average across the 6 factors. Surfaces batters who stack the two signals that matter most for HRs.',
         v1,
+        'power_matchup',
       );
       html += renderView(
         '🔥 Hot Streak Watch',
         'top 10 by 7-day HRs · sorted by matchup × park × weather',
         'Recently-hot batters (≥1 HR in the last 7 days, top 10 by count) ranked by a favorable game environment for tonight: matchup × park × weather, multiplicative. Multiplicative penalizes one-weak-factor batters harder than the weighted composite would, surfacing only those where ALL THREE environmental signals are aligned with the recent HR surge.',
         v2,
+        'hot_streak',
       );
       html += renderView(
         '🎯 Park × Pitcher Exploit',
         'season_hr ≥ 5 AND park_score ≥ 65 AND matchup_score ≥ 70',
         'Power hitter in HR-friendly park facing a vulnerable arm. Three known lifters stacked → small denominator (~5-15 batters/day).',
         v3,
+        'park_pitcher',
       );
       html += renderView(
         '🎰 Pure Longshots',
         'season_hr < 5 AND composite ≥ 55',
         'High-composite batters who haven\'t yet hit 5 HR — under all floor tiers. The model loves them on matchup/park/form/weather despite no HR-history boost. At +800 book prices, ~12% true hit rate breaks even; we\'re tracking these to measure empirically.',
         v3b,
+        'pure_longshots',
       );
       html += renderStacks(
         '🎲 Game Stacks',
