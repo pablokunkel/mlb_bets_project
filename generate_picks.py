@@ -503,7 +503,7 @@ def fetch_form_data_batch(player_ids: list[tuple[str, int]], season: int) -> dic
     for name, pid in player_ids:
         if not pid or pid < 1000:
             continue
-        log = get_recent_game_log(pid, season, last_n_games=10)
+        log = get_recent_game_log(pid, season)
         if log:
             results[pid] = log
     return results
