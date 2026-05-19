@@ -111,7 +111,7 @@ def main():
                    dp.lineup_score, dp.batting_order, dp.selected,
                    pi.barrel_pct, pi.exit_velo, pi.hr_fb_pct, pi.iso,
                    pi.xwoba_contact, pi.pull_fb_pct,
-                   pi.recent_hr_14d, pi.recent_barrel_pct_14d, pi.ev_trend_14d,
+                   pi.recent_hr_10g, pi.recent_iso_30g, pi.recent_avg_30g,
                    pi.pitcher_hr_per_9, pi.pitcher_era, pi.pitcher_k_per_9,
                    pi.pitcher_fb_pct_allowed,
                    pi.woba_vs_hand, pi.vegas_team_total_pct,
@@ -156,9 +156,9 @@ def main():
                 print(f"    POWER    barrel={fmt(b['barrel_pct'])} ev={fmt(b['exit_velo'])} "
                       f"hr_fb={fmt(b['hr_fb_pct'])} iso={fmt(b['iso'],prec=3)} "
                       f"xwoba={fmt(b['xwoba_contact'],prec=3)} pull_fb={fmt(b['pull_fb_pct'])}")
-                print(f"    FORM     14d_hr={fmt(b['recent_hr_14d'],prec=0)} "
-                      f"14d_barrel={fmt(b['recent_barrel_pct_14d'])} "
-                      f"ev_trend={fmt(b['ev_trend_14d'])}")
+                print(f"    FORM     hr_10g={fmt(b['recent_hr_10g'],prec=0)} "
+                      f"iso_30g={fmt(b['recent_iso_30g'],prec=3)} "
+                      f"avg_30g={fmt(b['recent_avg_30g'],prec=3)}")
                 print(f"    MATCHUP  pit_hr/9={fmt(b['pitcher_hr_per_9'],prec=2)} "
                       f"pit_era={fmt(b['pitcher_era'],prec=2)} pit_k/9={fmt(b['pitcher_k_per_9'],prec=2)} "
                       f"pit_fb%={fmt(b['pitcher_fb_pct_allowed'])} "
