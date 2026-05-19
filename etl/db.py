@@ -388,9 +388,17 @@ def create_tables(conn: sqlite3.Connection):
         pull_fb_pct             REAL,
 
         -- Form inputs
-        recent_hr_14d           REAL,
-        recent_barrel_pct_14d   REAL,
+        recent_hr_14d           REAL,    -- legacy proxies (pre-2026-05-19),
+        recent_barrel_pct_14d   REAL,    -- retained for historical rows only
         ev_trend_14d            REAL,
+        -- Form rebuild 2026-05-19: split game-count windows, honest names.
+        -- recent_barrel_pct_14d was min(25, recent_ISO*100); ev_trend_14d was
+        -- (recent_SLG - season_SLG)*30 -- these new columns replace them.
+        recent_hr_10g           REAL,    -- HR over the last ~10 games
+        recent_iso_30g          REAL,    -- ISO over the last ~30 games
+        recent_avg_30g          REAL,    -- AVG over the last ~30 games
+        recent_window_days      INTEGER, -- calendar span of the 30-game window
+        ev_trend                REAL,    -- real EV trend vs season (Phase 2)
 
         -- Matchup: pitcher inputs
         pitcher_hr_per_9        REAL,
@@ -645,6 +653,31 @@ def create_tables(conn: sqlite3.Connection):
          "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_hr9_21d REAL"),
         ("pitcher_recent_starts_21d",
          "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_starts_21d INTEGER"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
+    # 2026-05-19: Form factor rebuild -- split game-count windows. The old
+    # recent_*_14d columns were mislabeled proxies (recent_barrel_pct_14d was
+    # min(25, recent_ISO*100); ev_trend_14d a SLG delta). New honest columns;
+    # old ones retained for historical rows. NULL-safe additive.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("recent_hr_10g",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_hr_10g REAL"),
+        ("recent_iso_30g",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_iso_30g REAL"),
+        ("recent_avg_30g",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_avg_30g REAL"),
+        ("recent_window_days",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_window_days INTEGER"),
+        ("ev_trend",
+         "ALTER TABLE pick_inputs ADD COLUMN ev_trend REAL"),
     ]:
         if col not in existing_cols:
             try:

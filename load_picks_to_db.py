@@ -120,6 +120,7 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             date, batter_id,
             barrel_pct, exit_velo, hr_fb_pct, iso, xwoba_contact, pull_fb_pct,
             recent_hr_14d, recent_barrel_pct_14d, ev_trend_14d,
+            recent_hr_10g, recent_iso_30g, recent_avg_30g, recent_window_days, ev_trend,
             pitcher_hr_per_9, pitcher_era, pitcher_hh_pct, pitcher_k_per_9, pitcher_fb_pct_allowed,
             pitcher_recent_hr9_21d, pitcher_recent_starts_21d,
             woba_vs_hand, archetype_similarity,
@@ -129,7 +130,7 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?)
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -215,6 +216,11 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     inputs.get("recent_hr_14d"),
                     inputs.get("recent_barrel_pct_14d"),
                     inputs.get("ev_trend_14d"),
+                    inputs.get("recent_hr_10g"),
+                    inputs.get("recent_iso_30g"),
+                    inputs.get("recent_avg_30g"),
+                    inputs.get("recent_window_days"),
+                    inputs.get("ev_trend"),
                     inputs.get("pitcher_hr_per_9"),
                     inputs.get("pitcher_era"),
                     inputs.get("pitcher_hh_pct"),

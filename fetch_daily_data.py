@@ -1057,17 +1057,24 @@ def get_recent_statcast(player_id: int, days: int = 14) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def get_recent_game_log(player_id: int, season: int, last_n_games: int = 10) -> dict:
+def get_recent_game_log(player_id: int, season: int,
+                        hr_window: int = 10, rate_window: int = 30) -> dict:
     """
-    Pull a player's recent game log from the MLB Stats API.
-    Returns a summary dict with recent form metrics computed from the
-    last *last_n_games* games. This is much more reliable than Statcast
-    per-batter calls and gives us real recent performance data.
+    Pull a player's recent game log from the MLB Stats API and summarize it
+    over two windows (Form factor rebuild, 2026-05-19):
 
-    Returns dict with keys:
-        recent_hr_14d, recent_ab, recent_hits, recent_slg, recent_iso,
-        games_played, hot_streak (bool)
-    Or empty dict on failure.
+      - HR count over the last *hr_window* games — HRs are lumpy, so a short
+        window keeps the signal recent.
+      - ISO / AVG / SLG over the last *rate_window* games — rate stats need a
+        bigger sample to stabilize (a 10-game ISO whipsaws wildly).
+
+    Also returns `recent_window_days`: the calendar span of the rate window.
+    A normal 30-game window spans ~36-42 days; a much larger span flags a
+    batter who has missed significant time (IL stint) — score_form's
+    long-rest dampener pulls form toward neutral for those.
+
+    One HTTP call fetches the full season game log; both windows slice from
+    it. Returns {} on failure.
     """
     url = f"{MLB_STATS_API}/people/{player_id}/stats"
     params = {
@@ -1090,36 +1097,57 @@ def get_recent_game_log(player_id: int, season: int, last_n_games: int = 10) -> 
     if not splits:
         return {}
 
-    # Take the last N games
-    recent = splits[-last_n_games:]
-    if not recent:
-        return {}
+    def _agg(game_splits: list) -> dict:
+        """Aggregate a list of game-log splits into counting + rate stats."""
+        ab = sum(g.get("stat", {}).get("atBats", 0) for g in game_splits)
+        hits = sum(g.get("stat", {}).get("hits", 0) for g in game_splits)
+        d2 = sum(g.get("stat", {}).get("doubles", 0) for g in game_splits)
+        d3 = sum(g.get("stat", {}).get("triples", 0) for g in game_splits)
+        hr = sum(g.get("stat", {}).get("homeRuns", 0) for g in game_splits)
+        tb = hits + d2 + d3 * 2 + hr * 3
+        avg = hits / ab if ab else 0.0
+        slg = tb / ab if ab else 0.0
+        return {"ab": ab, "hits": hits, "hr": hr,
+                "avg": avg, "slg": slg, "iso": slg - avg}
 
-    total_hr = sum(g.get("stat", {}).get("homeRuns", 0) for g in recent)
-    total_ab = sum(g.get("stat", {}).get("atBats", 0) for g in recent)
-    total_hits = sum(g.get("stat", {}).get("hits", 0) for g in recent)
-    total_2b = sum(g.get("stat", {}).get("doubles", 0) for g in recent)
-    total_3b = sum(g.get("stat", {}).get("triples", 0) for g in recent)
-    total_tb = total_hits + total_2b + total_3b * 2 + total_hr * 3  # total bases
+    hr_games = splits[-hr_window:]
+    rate_games = splits[-rate_window:]
+    hr_stat = _agg(hr_games)
+    rate_stat = _agg(rate_games)
 
-    recent_avg = total_hits / max(total_ab, 1)
-    recent_slg = total_tb / max(total_ab, 1)
-    recent_iso = recent_slg - recent_avg
+    # Calendar span of the rate window — staleness signal for IL returns.
+    rate_dates = sorted(g["date"] for g in rate_games if g.get("date"))
+    window_days = None
+    if len(rate_dates) >= 2:
+        try:
+            window_days = (datetime.fromisoformat(rate_dates[-1])
+                           - datetime.fromisoformat(rate_dates[0])).days
+        except (ValueError, TypeError):
+            window_days = None
 
-    # Hot streak: HR in at least 2 of last 5 games
-    last_5 = splits[-5:] if len(splits) >= 5 else splits
-    games_with_hr = sum(1 for g in last_5 if g.get("stat", {}).get("homeRuns", 0) > 0)
-    hot_streak = games_with_hr >= 2
+    # Hot streak: HR in at least 2 of last 5 games (kept for back-compat).
+    last_5 = splits[-5:]
+    games_with_hr = sum(1 for g in last_5
+                        if g.get("stat", {}).get("homeRuns", 0) > 0)
 
     return {
-        "recent_hr": total_hr,
-        "recent_ab": total_ab,
-        "recent_hits": total_hits,
-        "recent_slg": round(recent_slg, 3),
-        "recent_iso": round(recent_iso, 3),
-        "recent_avg": round(recent_avg, 3),
-        "games_played": len(recent),
-        "hot_streak": hot_streak,
+        # --- split-window Form inputs (consumed by score_form) ---
+        "recent_hr_10g":        hr_stat["hr"],
+        "recent_iso_30g":       round(rate_stat["iso"], 3),
+        "recent_avg_30g":       round(rate_stat["avg"], 3),
+        "recent_slg_30g":       round(rate_stat["slg"], 3),
+        "recent_window_days":   window_days,
+        "games_in_hr_window":   len(hr_games),
+        "games_in_rate_window": len(rate_games),
+        # --- legacy keys, kept so other consumers keep working ---
+        "recent_hr":    hr_stat["hr"],
+        "recent_ab":    rate_stat["ab"],
+        "recent_hits":  rate_stat["hits"],
+        "recent_slg":   round(rate_stat["slg"], 3),
+        "recent_iso":   round(rate_stat["iso"], 3),
+        "recent_avg":   round(rate_stat["avg"], 3),
+        "games_played": len(rate_games),
+        "hot_streak":   games_with_hr >= 2,
         "games_with_hr_last5": games_with_hr,
     }
 

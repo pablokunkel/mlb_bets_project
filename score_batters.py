@@ -766,34 +766,60 @@ def score_park(
     return min_max_scale(pf, 70, 130)
 
 
+def _layoff_dampener(form: float, window_days) -> float:
+    """
+    Pull a form score toward neutral (50) when the 30-game rate window spans
+    an abnormally long calendar period — i.e. the batter missed significant
+    time (IL stint) and the "recent" stats are actually stale.
+
+    A 30-game window for an everyday player spans ~36-42 days. Below 55 days
+    there is no dampening; from 55d it ramps linearly to a 60% pull toward
+    neutral at 90d+ (a window that long is mostly pre-injury data).
+    """
+    if window_days is None or window_days <= 55:
+        return form
+    pull = min(0.60, (window_days - 55) / 35.0 * 0.60)
+    return form * (1.0 - pull) + 50.0 * pull
+
+
 def score_form(batter: dict) -> float:
     """
-    Factor 4: Recent form (last 14 days).
+    Factor 4: Recent form, on split game-count windows (rebuilt 2026-05-19).
     Returns 0-100.
 
-    None vs 0 distinction:
-      - None  → no game-log data available; signal is SKIPPED (not scored 0)
-      - 0     → real measurement: player did hit 0 HRs / had no EV trend.
-                Scored honestly (low form).
-    Previously every metric defaulted to 0 and was always scored, so a
-    player without 14d game logs got a low form score even if they had
-    a fine season. Now we only score what we actually measured.
+      - recent_hr_10g    HR over the last ~10 games — HRs are lumpy, short window
+      - recent_iso_30g   ISO over the last ~30 games — rate stat, bigger sample
+      - recent_avg_30g   batting AVG over the last ~30 games — contact signal
+      - ev_trend         real exit-velocity trend vs season (mph). Phase 2:
+                         populated by the nightly Statcast ETL; None until then
+                         and simply skipped.
+
+    None vs 0: a None input is SKIPPED (no data); a real 0 is scored honestly.
+    Score is the mean of whatever was measured, then run through the long-rest
+    dampener (stale 30-game window -> blend toward neutral).
     """
     scores = []
 
-    recent_hr = batter.get("recent_hr_14d")
+    recent_hr = batter.get("recent_hr_10g")
     if recent_hr is not None:
         scores.append(min_max_scale(recent_hr, 0, 5))
 
-    recent_barrel = batter.get("recent_barrel_pct_14d")
-    if recent_barrel is not None and recent_barrel > 0:
-        scores.append(min_max_scale(recent_barrel, 0, 25))
+    recent_iso = batter.get("recent_iso_30g")
+    if recent_iso is not None and recent_iso > 0:
+        scores.append(min_max_scale(recent_iso, 0.100, 0.300))
 
-    ev_trend = batter.get("ev_trend_14d")
+    recent_avg = batter.get("recent_avg_30g")
+    if recent_avg is not None and recent_avg > 0:
+        scores.append(min_max_scale(recent_avg, 0.210, 0.330))
+
+    ev_trend = batter.get("ev_trend")
     if ev_trend is not None:
-        scores.append(min_max_scale(ev_trend, -5, 5))
+        scores.append(min_max_scale(ev_trend, -3.0, 3.0))
 
-    return float(np.mean(scores)) if scores else 50.0
+    if not scores:
+        return 50.0
+    form = float(np.mean(scores))
+    return _layoff_dampener(form, batter.get("recent_window_days"))
 
 
 def score_lineup_position(batting_order) -> float:
@@ -1141,10 +1167,12 @@ def compute_composite(
         "iso":                     batter.get("iso"),
         "xwoba_contact":           batter.get("xwoba_contact"),
         "pull_fb_pct":             batter.get("pull_fb_pct"),
-        # Form
-        "recent_hr_14d":           batter.get("recent_hr_14d"),
-        "recent_barrel_pct_14d":   batter.get("recent_barrel_pct_14d"),
-        "ev_trend_14d":            batter.get("ev_trend_14d"),
+        # Form (rebuilt 2026-05-19 — split game-count windows, honest names)
+        "recent_hr_10g":           batter.get("recent_hr_10g"),
+        "recent_iso_30g":          batter.get("recent_iso_30g"),
+        "recent_avg_30g":          batter.get("recent_avg_30g"),
+        "recent_window_days":      batter.get("recent_window_days"),
+        "ev_trend":                batter.get("ev_trend"),
         # Matchup — pitcher
         "pitcher_hr_per_9":        pitcher.get("hr_per_9"),
         "pitcher_era":             pitcher.get("era"),
