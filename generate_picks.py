@@ -1170,19 +1170,9 @@ def score_live_slate(
             "temperature_f": 75, "wind_mph": 5, "wind_direction_deg": 0, "dome": False
         })
 
-        # Use game-log form data (real recent performance!)
-        # No game log → leave the 14d signals as None so score_form skips
-        # them rather than scoring a missing value as "0 HRs in 14 days".
+        # Recent form — split game-count windows from get_recent_game_log.
+        # Missing keys (no game log) -> None -> score_form skips them.
         log = game_logs.get(player_id, {})
-        if log:
-            recent_hr = log.get("recent_hr", 0)
-            recent_barrel_est = min(25, log.get("recent_iso", 0.120) * 100)
-            season_slg_approx = b.get("iso", 0.150) + 0.250
-            ev_proxy = (log.get("recent_slg", season_slg_approx) - season_slg_approx) * 30
-        else:
-            recent_hr = None
-            recent_barrel_est = None
-            ev_proxy = None
 
         # Enrich the live tier dict with season_batting fallback BEFORE
         # building the scoring entry — overwrites zero/missing barrel%,
@@ -1202,9 +1192,12 @@ def score_live_slate(
         entry = {
             **b,
             "player_id": player_id,
-            "recent_hr_14d": recent_hr,
-            "recent_barrel_pct_14d": recent_barrel_est,
-            "ev_trend_14d": ev_proxy,
+            "recent_hr_10g": log.get("recent_hr_10g"),
+            "recent_iso_30g": log.get("recent_iso_30g"),
+            "recent_avg_30g": log.get("recent_avg_30g"),
+            "recent_window_days": log.get("recent_window_days"),
+            # ev_trend: Phase 2 — populated by the nightly Statcast ETL.
+            "ev_trend": b.get("ev_trend"),
         }
         # Layer in advanced Statcast features when available (defaults
         # to neutral if missing — score_power handles None gracefully).
@@ -1390,21 +1383,13 @@ def score_untiered_starters(
         })
 
         log = game_logs.get(pid, {})
-        if log:
-            recent_hr = log.get("recent_hr", 0)
-            recent_barrel_est = min(25, log.get("recent_iso", 0.120) * 100)
-            season_slg_approx = stub.get("iso", 0.150) + 0.250
-            ev_proxy = (log.get("recent_slg", season_slg_approx) - season_slg_approx) * 30
-        else:
-            recent_hr = None
-            recent_barrel_est = None
-            ev_proxy = None
-
         entry = {
             **stub,
-            "recent_hr_14d": recent_hr,
-            "recent_barrel_pct_14d": recent_barrel_est,
-            "ev_trend_14d": ev_proxy,
+            "recent_hr_10g": log.get("recent_hr_10g"),
+            "recent_iso_30g": log.get("recent_iso_30g"),
+            "recent_avg_30g": log.get("recent_avg_30g"),
+            "recent_window_days": log.get("recent_window_days"),
+            "ev_trend": stub.get("ev_trend"),
         }
         adv = batter_adv.get(pid, {})
         if adv.get("xwoba_contact") is not None:
@@ -1494,13 +1479,17 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                 entry = {
                     **b,
                     "player_id": hash(b["name"]) % 1_000_000,
-                    "recent_hr_14d": float(
+                    "recent_hr_10g": float(
                         min(5, max(0, b["hr"] / 25 + rng.normal(0, 0.8)))
                     ),
-                    "recent_barrel_pct_14d": float(
-                        max(0, b.get("barrel_pct", 8) + rng.normal(0, 3))
+                    "recent_iso_30g": float(
+                        max(0.05, b.get("iso", 0.150) + rng.normal(0, 0.03))
                     ),
-                    "ev_trend_14d": float(rng.normal(0, 1.5)),
+                    "recent_avg_30g": float(
+                        max(0.15, b.get("avg", 0.250) + rng.normal(0, 0.025))
+                    ),
+                    "recent_window_days": 38,
+                    "ev_trend": None,
                 }
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,
