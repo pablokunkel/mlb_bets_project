@@ -684,19 +684,12 @@ def score_matchup(
     pitcher_hand = pitcher.get("throws", "R")
     platoon_bonus = 10 if batter_hand != pitcher_hand else 0
 
-    # 2026-05-03 rookie pitcher bonus: pitchers with < 300 career Statcast
-    # pitches (or no pitcher_arsenals row) get LEAGUE_AVG_PITCHER stat
-    # defaults from `fetch_pitcher_stats_mlb`, which scores them as a
-    # middling matchup. Reality: rookie pitchers historically allow ~20%
-    # higher HR/9 than their final career rate as the league learns them.
-    # The Aaron Judge vs Trey Gibson type spot is a HUGE edge — adding a
-    # +15 baseline so batters facing rookies move up the board.
-    # `is_rookie` is stamped on the pitcher dict by
-    # generate_picks.load_rookie_pitcher_ids(). Missing key (False) = veteran.
-    rookie_bonus = ROOKIE_MATCHUP_BONUS if pitcher.get("is_rookie") else 0
-
+    # Rookie-pitcher bonus moved to compute_composite (2026-05-19) so it
+    # applies on BOTH matchup paths. It used to live only here in v1, but
+    # v2 (score_matchup_v2) is the default path whenever archetype data
+    # exists — so the bonus was firing on only a minority of picks.
     base = float(np.mean(scores)) if scores else 50.0
-    return min(100, base + platoon_bonus + rookie_bonus)
+    return min(100, base + platoon_bonus)
 
 
 def score_park(
@@ -1044,6 +1037,15 @@ def compute_composite(
             batter_team=batter_team,
         )
         matchup_version = "v1"
+
+    # Rookie-pitcher bonus — applied uniformly to BOTH matchup paths
+    # (2026-05-19). Rookie pitchers historically allow ~20% more HR/9 than
+    # their settled career rate; `is_rookie` is stamped on the pitcher dict
+    # by generate_picks.load_rookie_pitcher_ids(). Previously this lived
+    # inside score_matchup (v1) only, so it missed every pick scored via
+    # the v2 archetype path (the default whenever archetype data exists).
+    if pitcher.get("is_rookie"):
+        matchup = min(100.0, matchup + ROOKIE_MATCHUP_BONUS)
 
     # Audit HIGH #5: stamp which optional signals were active for this pick.
     # Cross-day stratification matters because availability varies — e.g.,

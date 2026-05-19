@@ -668,6 +668,15 @@ def score_pitcher_vulnerability(
         # K/9 inverse: range ~4–14, higher K = less vulnerable
         scores.append(max(0, min(100, (14 - k9) / 10 * 100)))
 
+    # Fly-ball% allowed (added 2026-05-19). The slate-percentile path in
+    # compute_slate_context already used FB%; this fixed-anchor fallback did
+    # not — so the two vulnerability paths scored the same pitcher off
+    # different input sets. Now both use the same 5 inputs. FB pitchers give
+    # up more HRs at equal HR/9: 25% (GB) -> 0, 45% (FB) -> 100.
+    fb = pitcher_stats.get("fb_pct_allowed")
+    if fb is not None and fb > 0:
+        scores.append(max(0, min(100, (fb - 25) / 20 * 100)))
+
     # IP as a season sample size indicator (don't trust stats on < 10 IP).
     # Only fires when IP is measured + low; missing IP no longer collapses
     # to the league-mean 50 default (was `or 50` previously).
