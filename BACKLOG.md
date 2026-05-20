@@ -1,6 +1,6 @@
 # Backlog
 
-Project queue for MLB HR Bets. Each item is scoped enough that a future session (or future-you on a cold context) can pick it up without re-reading prior conversations. Last updated 2026-05-06.
+Project queue for MLB HR Bets. Each item is scoped enough that a future session (or future-you on a cold context) can pick it up without re-reading prior conversations. Last updated 2026-05-20.
 
 > **For the model behavior, see `How_The_HR_Model_Works.md`. For the deploy / release process, see `DEPLOY.md`. For component map and DB tables, see `ARCHITECTURE.md`. For monthly weight-refit decisions, see `WEIGHT_REFIT_LOG.md`.**
 
@@ -52,25 +52,9 @@ Existing Today's Picks card has the data already; this is a presentation-layer r
 
 **Source.** User-driven design. Confirmed via screenshot mock attached 2026-05-06. Original framing in the audit/handoff conversation 2026-05-05 ("scoreboard overhaul (#44 next)").
 
-### 2. Big Board column expansion + click-to-sort headers
+### 2. ~~Big Board column expansion + click-to-sort headers~~ — SHIPPED PR #62 (2026-05-20)
 
-**Status:** queued. Pairs naturally with #1 — same column set, sortable.
-
-**Why it matters.** Big Board is the full-slate view. It currently shows composite + a few factor scores per row. With the new 6-factor column set from the scoreboard rebuild, the user wants the same columns on Big Board with click-to-sort headers — so you can quickly scan "who's hot on power" or "best park bonus today."
-
-**Spec.**
-- Same columns as the scoreboard view: RANK | BATTER | COMP | POWER | MATCHP | FORM | WEATHR | PARK.
-- Click any header → sort descending on that column. Click again → ascending. Click a third time → reset to default (composite descending).
-- Visible sort indicator (▲ / ▼) on the active header.
-- Default sort: composite descending (matches today).
-- Keep the existing Big Board features (filter chips, expand-row click-to-modal). Only the column set + sort is new.
-
-**Files likely touched.**
-- `mlb_hr_bet_site/index.html` — Big Board rendering. The data is already in `picks_latest.json` `full_board` array.
-
-**Risks.** Low. Pure presentation + JS-side sort. Could ship before #1 if scoreboard is taking longer than expected.
-
-**Source.** Audit/handoff queue 2026-05-05.
+Moved to "Recently shipped" section. Picked up ahead of #1 because #1's design reference (the screenshot mock) wasn't accessible in the implementing session.
 
 ### 3. ~~Slate-driven worker rollover~~ — SHIPPED PR #46 (2026-05-06)
 
@@ -183,6 +167,10 @@ Option A is the smallest change. Option B is the most accurate but doubles the p
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-05-20
+
+- **PR #62** — Big Board: expand to 8 sortable factor columns (RANK · BATTER · COMP · POWER · MATCHP · FORM · WEATHR · PARK). Each numeric header is click-to-sort with a 3-state desc → asc → reset cycle and ▲/▼ indicator. Reuses the existing filter-drawer sort state so headers and drawer stay in lockstep.
 
 ### 2026-05-06
 
