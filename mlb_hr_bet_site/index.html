@@ -245,6 +245,51 @@
     .picks-table tbody tr { transition: background 0.12s ease; }
     .picks-table tbody tr:hover td { background: rgba(196, 106, 58, 0.08); }
 
+    /* Big Board ledger — 8-column factor table with click-to-sort headers
+       (2026-05-19). Extends .picks-table; adds numeric-column alignment, the
+       sortable-header affordance, and the active-sort ▲/▼ indicator. The
+       arrow is a ::after pseudo-element so it stays out of th.textContent
+       (bindMobileTables reads that for the per-cell mobile data-label). */
+    .big-board-table th.num,
+    .big-board-table td.num {
+      text-align: right;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .big-board-table td.bb-comp { font-weight: 700; }
+    .big-board-table td.bb-rank {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--ink-muted);
+    }
+    .big-board-table th.th-sortable {
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+    .big-board-table th.th-sortable:hover,
+    .big-board-table th.th-sortable:focus-visible {
+      background: rgba(196, 106, 58, 0.12);
+      color: var(--signal);
+      outline: none;
+    }
+    .big-board-table th.th-sort-active { color: var(--signal); }
+    .big-board-table .sort-ind {
+      display: inline-block;
+      width: 0.85em;
+      margin-left: 1px;
+      font-size: 9px;
+      vertical-align: middle;
+    }
+    .big-board-table th.th-sort-desc .sort-ind::after { content: '▼'; }
+    .big-board-table th.th-sort-asc  .sort-ind::after { content: '▲'; }
+    .big-board-table .bb-star { color: var(--signal); margin-right: 4px; }
+    .big-board-table .bb-team {
+      margin-left: 5px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--ink-soft);
+    }
+
     .badge {
       display: inline-block; padding: 3px 9px; border-radius: 999px;
       font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
@@ -1827,6 +1872,18 @@
         padding: 6px 8px;
         background: var(--surface-2);
         font-size: 11px;
+      }
+      /* Big Board factor columns collapse on mobile; when a row is tapped
+         open, prefix each revealed factor cell with its column name so the
+         bare 0–100 numbers stay readable without a visible header. */
+      .big-board-table tr.expanded td.hide-mobile[data-label]:before {
+        content: attr(data-label) ' ';
+        color: var(--ink-muted);
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 9px;
+        letter-spacing: 0.05em;
+        margin-right: 4px;
       }
       table.mobile-expandable tbody tr {
         cursor: pointer;
@@ -4423,28 +4480,58 @@
         if (sub) sub.textContent = exp != null ? `Σ across ${board.length} batters` : 'no historical baseline';
       });
 
-      // Statbook ledger table — cream paper styling inherits from .picks-table
-      let html = `<table class="picks-table mobile-expandable">
+      // Statbook ledger table — cream paper styling inherits from .picks-table.
+      // 8-column factor board (2026-05-19): RANK · BATTER · 6 factor scores,
+      // every numeric header doubling as a click-to-sort control. Team and the
+      // selected-★ fold into the BATTER cell so the column set matches the
+      // scoreboard view; vs-Pitcher / batting-order detail lives in the
+      // row-click modal. Sort headers reuse _boardFilters.sortField/sortDir.
+      const BOARD_SORT_COLS = [
+        { field: 'composite',     label: 'Comp'   },
+        { field: 'power_score',   label: 'Power'  },
+        { field: 'matchup_score', label: 'Matchp' },
+        { field: 'form_score',    label: 'Form'   },
+        { field: 'weather_score', label: 'Weathr' },
+        { field: 'park_score',    label: 'Park'   },
+      ];
+      const sortHead = BOARD_SORT_COLS.map(c => {
+        const active = _boardFilters.sortField === c.field;
+        const dirCls = !active ? ''
+          : (_boardFilters.sortDir === 'desc' ? ' th-sort-active th-sort-desc'
+                                              : ' th-sort-active th-sort-asc');
+        const ariaSort = !active ? 'none'
+          : (_boardFilters.sortDir === 'desc' ? 'descending' : 'ascending');
+        // Composite stays visible on mobile (the headline number); the other
+        // five factor columns collapse into the tap-to-expand row.
+        const hm = c.field === 'composite' ? '' : ' hide-mobile';
+        return `<th class="num th-sortable${dirCls}${hm}" data-sort-field="${c.field}"
+          role="button" tabindex="0" aria-sort="${ariaSort}"
+          title="Sort by ${c.label}">${c.label}<span class="sort-ind"></span></th>`;
+      }).join('');
+
+      let html = `<table class="picks-table mobile-expandable big-board-table">
         <thead><tr>
-          <th>#</th><th>★</th><th>Player</th><th>Team</th>
-          <th class="hide-mobile">vs Pitcher</th>
-          <th>Score</th>
-          <th class="hide-mobile">Order</th>
+          <th>Rank</th>
+          <th>Batter</th>
+          ${sortHead}
         </tr></thead><tbody>`;
 
+      const fmtScore = (v) => (v == null ? '–' : (+v).toFixed(1));
       rows.forEach((p, i) => {
-        const star = p.selected ? '★' : '';
-        const starColor = p.selected ? 'var(--signal)' : 'transparent';
         const pid = p.batter_id || p.player_id;
         const name = p.batter_name || p.name || '';
+        const star = p.selected
+          ? '<span class="bb-star" title="Selected — on today\'s 8-pick card">★</span>'
+          : '';
         html += `<tr data-pid="${pid}" class="clickable-row">
-          <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-muted)">${i + 1}</td>
-          <td style="color:${starColor};font-size:14px">${star}</td>
-          <td style="font-weight:600" class="player-link">${name}</td>
-          <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${p.team || ''}</td>
-          <td class="hide-mobile" style="font-style:italic;color:var(--ink-soft);font-size:12px">${p.opp_pitcher || '-'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-weight:700">${(p.composite || 0).toFixed(1)}</td>
-          <td class="hide-mobile">${orderLabel(p.batting_order)}</td>
+          <td class="bb-rank">${i + 1}</td>
+          <td><span class="player-link" style="font-weight:600">${star}${name}</span><span class="bb-team">${p.team || ''}</span></td>
+          <td class="num bb-comp">${(p.composite || 0).toFixed(1)}</td>
+          <td class="num hide-mobile">${fmtScore(p.power_score)}</td>
+          <td class="num hide-mobile">${fmtScore(p.matchup_score)}</td>
+          <td class="num hide-mobile">${fmtScore(p.form_score)}</td>
+          <td class="num hide-mobile">${fmtScore(p.weather_score)}</td>
+          <td class="num hide-mobile">${fmtScore(p.park_score)}</td>
         </tr>`;
       });
       html += '</tbody></table>';
@@ -4577,6 +4664,54 @@
       renderBoard();
     });
     document.getElementById('boardLimit').addEventListener('change', renderBoard);
+
+    // ── Click-to-sort headers (2026-05-19) ────────────────────────
+    // The Big Board ledger headers double as sort controls. They reuse the
+    // same _boardFilters.sortField/sortDir state the filter drawer drives,
+    // so a header click and the drawer's "Sort by" select stay in lockstep.
+    // Per-header cycle: 1st click → desc, 2nd → asc, 3rd → reset to the
+    // composite/desc default. Clicking a different header starts at desc.
+    function applyBoardSort(field, dir) {
+      _boardFilters.sortField = field;
+      _boardFilters.sortDir = dir;
+      // Mirror the new state back into the filter-drawer controls.
+      const sel = document.getElementById('filterSort');
+      if (sel) sel.value = field;
+      const dirBtn = document.getElementById('filterSortDir');
+      if (dirBtn) {
+        dirBtn.textContent = dir === 'desc' ? '↓' : '↑';
+        dirBtn.dataset.dir = dir;
+      }
+      renderBoard();
+    }
+    function cycleBoardSort(field) {
+      if (_boardFilters.sortField !== field) {
+        applyBoardSort(field, 'desc');
+      } else if (_boardFilters.sortDir === 'desc') {
+        applyBoardSort(field, 'asc');
+      } else {
+        applyBoardSort('composite', 'desc');
+      }
+    }
+    // Delegated on the stable #boardTable container — renderBoard() swaps its
+    // innerHTML every pass, so per-th listeners would be lost on each render.
+    {
+      const boardTableEl = document.getElementById('boardTable');
+      if (boardTableEl) {
+        boardTableEl.addEventListener('click', (e) => {
+          const th = e.target.closest('th.th-sortable');
+          if (th && th.dataset.sortField) cycleBoardSort(th.dataset.sortField);
+        });
+        boardTableEl.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          const th = e.target.closest('th.th-sortable');
+          if (th && th.dataset.sortField) {
+            e.preventDefault();
+            cycleBoardSort(th.dataset.sortField);
+          }
+        });
+      }
+    }
 
     // ── Filter drawer wiring (2026-05-12) ─────────────────────────
     // Single popover anchored to ☰ Filters button. Live-apply on every
