@@ -764,6 +764,110 @@ def score_matchup_v2(
 # ---------------------------------------------------------------------------
 # Batch operations for generate_picks.py integration
 # ---------------------------------------------------------------------------
+# Both batch functions are DB-first. etl_nightly already computes the same
+# data from local-only sources (no API calls); r2_sync ships it into the
+# daily picks job. Per-batter Statcast roundtrips here used to dominate
+# the noon runtime (~30s/batter × ~150 batters → 45-min timeout, 2026-05-20).
+
+_DB_PATH = Path(__file__).parent.parent / "data" / "hr_bets.db"
+
+
+def _load_victim_profiles_from_db(season: int) -> dict[int, dict]:
+    """
+    Bulk-load pre-computed victim profiles from SQLite.
+    Returns {batter_id: profile_dict} matching the shape build_victim_profile
+    would return — including the column renames the dict consumers expect
+    (breaking_pct → breaking_usage_pct, etc).
+
+    Empty dict on any failure (missing DB, schema mismatch, IO error) so
+    callers can degrade to the per-batter API path.
+    """
+    if not _DB_PATH.exists():
+        return {}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT batter_id, avg_fb_velo, fb_usage_pct, breaking_pct,
+                   offspeed_pct, hand_r_pct, avg_fb_spin, avg_extension,
+                   hr_count, n_victim_pitchers, confidence
+            FROM victim_profiles
+            WHERE season = ?
+            """,
+            (season,),
+        ).fetchall()
+        conn.close()
+        return {
+            r["batter_id"]: {
+                "avg_fb_velo": r["avg_fb_velo"],
+                "fb_usage_pct": r["fb_usage_pct"],
+                "breaking_usage_pct": r["breaking_pct"],
+                "offspeed_usage_pct": r["offspeed_pct"],
+                "hand_R_pct": r["hand_r_pct"],
+                "avg_fb_spin": r["avg_fb_spin"],
+                "avg_extension": r["avg_extension"],
+                "hr_count": r["hr_count"],
+                "n_victim_pitchers": r["n_victim_pitchers"],
+                "confidence": r["confidence"],
+            }
+            for r in rows
+        }
+    except Exception as e:
+        print(f"  [ARCHETYPE] DB victim_profiles load failed: {e}")
+        return {}
+
+
+def _load_pitcher_arsenals_from_db(season: int) -> dict[int, dict]:
+    """
+    Bulk-load pitcher arsenals from SQLite, keyed by pitcher_id.
+    Skips rows with NULL avg_fb_velo (the most discriminative field —
+    same rule etl_nightly.recompute_victim_profiles uses when consuming
+    this table). Returns the dict shape build_pitcher_profile produces,
+    with confidence derived from `source` to match the existing API path.
+    """
+    if not _DB_PATH.exists():
+        return {}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT pitcher_id, avg_fb_velo, fb_usage_pct, breaking_pct,
+                   offspeed_pct, avg_fb_spin, avg_extension, p_throws,
+                   total_pitches, source
+            FROM pitcher_arsenals
+            WHERE season = ? AND avg_fb_velo IS NOT NULL AND avg_fb_velo > 0
+            """,
+            (season,),
+        ).fetchall()
+        conn.close()
+        out = {}
+        for r in rows:
+            prof = {
+                "avg_fb_velo": r["avg_fb_velo"],
+                "fb_usage_pct": r["fb_usage_pct"] if r["fb_usage_pct"] is not None else 0.53,
+                "breaking_usage_pct": r["breaking_pct"] if r["breaking_pct"] is not None else 0.28,
+                "offspeed_usage_pct": r["offspeed_pct"] if r["offspeed_pct"] is not None else 0.15,
+                "avg_fb_spin": r["avg_fb_spin"] if r["avg_fb_spin"] is not None else 2250.0,
+                "avg_extension": r["avg_extension"] if r["avg_extension"] is not None else 6.2,
+                "p_throws": r["p_throws"] or "R",
+                "total_pitches": r["total_pitches"],
+                "source": r["source"] or "statcast",
+            }
+            # Match build_pitcher_profile's confidence semantics: Statcast
+            # rows leave confidence unset (archetype_similarity defaults to
+            # 1.0), MLB-API estimate rows get 0.5.
+            if r["source"] == "mlb_api_estimate":
+                prof["confidence"] = 0.5
+            out[r["pitcher_id"]] = prof
+        return out
+    except Exception as e:
+        print(f"  [ARCHETYPE] DB pitcher_arsenals load failed: {e}")
+        return {}
+
 
 def build_pitcher_profiles_batch(
     pitcher_ids: dict[str, int],
@@ -771,14 +875,19 @@ def build_pitcher_profiles_batch(
 ) -> dict[str, dict]:
     """
     Build pitcher profiles for all starting pitchers on today's slate.
+    DB-first: bulk-loads pitcher_arsenals, falls back per-pitcher to the
+    Statcast/MLB-API path for any starter not in the table.
+
     pitcher_ids: {pitcher_name: pitcher_id}
     Returns: {pitcher_name: profile_dict}
     """
+    db_arsenals = _load_pitcher_arsenals_from_db(season)
+
     profiles = {}
+    db_hits = 0
+    api_hits = 0
     for name, pid in pitcher_ids.items():
-        if pid and pid > 0:
-            profiles[name] = build_pitcher_profile(pid, season)
-        else:
+        if not (pid and pid > 0):
             profiles[name] = {
                 "avg_fb_velo": 93.5,
                 "fb_usage_pct": 0.53,
@@ -790,6 +899,21 @@ def build_pitcher_profiles_batch(
                 "source": "unknown_pitcher_default",
                 "confidence": 0.1,
             }
+            continue
+
+        if pid in db_arsenals:
+            profiles[name] = db_arsenals[pid]
+            db_hits += 1
+        else:
+            # Rookie / fresh-callup / mid-season trade not yet picked up
+            # by the nightly arsenal sync. Fall through to the slow path
+            # so today's starters still get a real profile.
+            profiles[name] = build_pitcher_profile(pid, season)
+            api_hits += 1
+
+    print(
+        f"  [ARCHETYPE] Pitcher arsenals: {db_hits} from DB, {api_hits} via API"
+    )
     return profiles
 
 
@@ -799,13 +923,55 @@ def build_victim_profiles_batch(
 ) -> dict[int, dict]:
     """
     Build victim profiles for a batch of batters.
+    DB-first: bulk-loads the victim_profiles table (refreshed nightly).
+    Batters absent from the table get a low-confidence LEAGUE_AVG_VICTIM —
+    same outcome the per-batter API path would produce for any batter
+    with <3 HR events, just without spending ~30s/batter to discover that.
+
+    If the DB itself is unreachable (no R2 pull, local dev), falls back
+    to the per-batter API path so this function stays usable in isolation.
+    Existence of the DB file — not the row count for the season — is the
+    signal here: an empty table on a fresh season is a valid DB state,
+    not a reason to bombard Savant.
+
     batter_ids: [(name, player_id), ...]
     Returns: {player_id: victim_profile_dict}
     """
+    if not _DB_PATH.exists():
+        print(
+            f"  [ARCHETYPE] DB not found at {_DB_PATH}, "
+            "falling back to per-batter Statcast"
+        )
+        profiles = {}
+        for _name, pid in batter_ids:
+            if pid and pid > 0:
+                profiles[pid] = build_victim_profile(pid, season)
+        return profiles
+
+    db_profiles = _load_victim_profiles_from_db(season)
+
     profiles = {}
-    for name, pid in batter_ids:
-        if pid and pid > 0:
-            profiles[pid] = build_victim_profile(pid, season)
+    db_hits = 0
+    league_avg_fallback = 0
+    for _name, pid in batter_ids:
+        if not (pid and pid > 0):
+            continue
+        if pid in db_profiles:
+            profiles[pid] = db_profiles[pid]
+            db_hits += 1
+        else:
+            profiles[pid] = {
+                **LEAGUE_AVG_VICTIM,
+                "hr_count": 0,
+                "n_victim_pitchers": 0,
+                "confidence": 0.3,
+            }
+            league_avg_fallback += 1
+
+    print(
+        f"  [ARCHETYPE] Victim profiles: {db_hits} from DB, "
+        f"{league_avg_fallback} league-avg fallback (no HR history yet)"
+    )
     return profiles
 
 
