@@ -883,8 +883,21 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
             "windspeed_unit": "mph",
             "timezone": tz_name,  # Align hourly array to venue-local time
         }
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
+        # Open-Meteo's free tier appears to deprioritize GitHub Actions
+        # egress IPs — 10s read timeouts were producing 5-8 venue failures
+        # per noon run. 30s + one retry on transient errors clears most
+        # of them without changing behavior for healthy responses.
+        resp = None
+        for attempt in range(2):
+            try:
+                resp = requests.get(url, params=params, timeout=30)
+                resp.raise_for_status()
+                break
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt == 0:
+                    time.sleep(1.5)
+                    continue
+                raise
         hourly = resp.json().get("hourly", {})
 
         temps = hourly.get("temperature_2m", []) or [68]
