@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -352,14 +353,26 @@ def fetch_weather(conn, games: list[dict], date_str: str):
             game_date = dt_local.strftime("%Y-%m-%d")
             game_hour = dt_local.hour
 
-            resp = requests.get("https://api.open-meteo.com/v1/forecast", params={
-                "latitude": lat, "longitude": lon,
-                "hourly": "temperature_2m,windspeed_10m,winddirection_10m,relativehumidity_2m",
-                "start_date": game_date, "end_date": game_date,
-                "temperature_unit": "fahrenheit", "windspeed_unit": "mph",
-                "timezone": tz_name,
-            }, timeout=10)
-            resp.raise_for_status()
+            # 30s timeout + one retry on transient errors. Open-Meteo's free
+            # tier appears to deprioritize GitHub Actions egress IPs; 10s was
+            # causing 5-8 venue failures per run (see fetch_daily_data.get_weather).
+            resp = None
+            for attempt in range(2):
+                try:
+                    resp = requests.get("https://api.open-meteo.com/v1/forecast", params={
+                        "latitude": lat, "longitude": lon,
+                        "hourly": "temperature_2m,windspeed_10m,winddirection_10m,relativehumidity_2m",
+                        "start_date": game_date, "end_date": game_date,
+                        "temperature_unit": "fahrenheit", "windspeed_unit": "mph",
+                        "timezone": tz_name,
+                    }, timeout=30)
+                    resp.raise_for_status()
+                    break
+                except (requests.Timeout, requests.ConnectionError):
+                    if attempt == 0:
+                        time.sleep(1.5)
+                        continue
+                    raise
             hourly = resp.json().get("hourly", {})
 
             temps = hourly.get("temperature_2m", []) or [68]
