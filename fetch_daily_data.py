@@ -666,23 +666,34 @@ def build_live_tiers(
     t1_floor: int = 10,
     t2_floor: int = 15,
     t3_floor: int = 15,
+    lineup_player_ids: set[int] | None = None,
 ) -> dict | None:
     """
     Build live tiers using a **rolling game window** that crosses season
-    boundaries.  Ranks by HR/PA rate (not raw HR count).
+    boundaries.  Ranks by HR/PA rate descending.
 
     Strategy:
     1. Pull current-season batting stats (start of season → date_str).
     2. If a player has fewer than *window_games* in the current season,
        backfill from the end of the prior season so every player has up to
        *window_games* of data to be evaluated on.
-    3. Qualify any batter with ≥ *min_games* games played across the window.
+    3. Qualify any batter who BOTH:
+         (a) has ≥ *min_games* games played across the window AND ≥ 1 HR
+         (b) has at least one game in the CURRENT season OR appears in
+             today's lineup (`lineup_player_ids`). This excludes prior-
+             season-only ghosts (B5 — e.g., Blaine Crim's 2025 line on a
+             2026 slate) while still admitting true rookies and IL
+             returnees the moment they're penciled into a lineup.
     4. Rank by HR/PA rate descending.
     5. Adaptive tier sizing:
        - T1 (Chalk):    top *t1_pct* of qualified pool, min *t1_floor*
        - T2 (Mid):      next *t2_pct*, min *t2_floor*
        - T3 (Longshot): next *t3_pct*, min *t3_floor*
        - Bottom 25% = untiered (not eligible for picks)
+
+    `lineup_player_ids` is optional for backwards compatibility — callers
+    that don't pass it get pre-B5 behavior (no current-season requirement).
+    Real production callers should pass the set from today's `lineups`.
 
     Returns {1: [...], 2: [...], 3: [...]} or None on failure.
     """
@@ -768,7 +779,22 @@ def build_live_tiers(
             merged.append(prior)
 
     # ── Step 4: qualify and rank ──────────────────────────────────────
-    qualified = [b for b in merged if b["games"] >= min_games and b["hr"] >= 1]
+    # B5 (2026-05-20): a player must EITHER have appeared in the current
+    # season (any 2026 games at all — `cur_by_id` membership) OR be in
+    # today's lineup. This filters prior-season-only ghosts (Blaine Crim
+    # had 0 games in 2026 but his 2025 line was qualifying him) while
+    # admitting rookies and IL-returnees the moment they're in a lineup.
+    # When lineup_player_ids is None (older callers), this collapses to
+    # the pre-B5 behavior.
+    lineup_ids = lineup_player_ids if lineup_player_ids is not None else None
+    def _qualifies(b):
+        if b["games"] < min_games or b["hr"] < 1:
+            return False
+        if lineup_ids is None:
+            return True  # legacy behavior — no current-season requirement
+        return (b["player_id"] in cur_by_id) or (b["player_id"] in lineup_ids)
+
+    qualified = [b for b in merged if _qualifies(b)]
     qualified.sort(key=lambda x: x["hr_per_pa"], reverse=True)
 
     n = len(qualified)
@@ -776,7 +802,8 @@ def build_live_tiers(
         print(f"  [TIERS] Only {n} qualified batters — not enough for tiers")
         return None
 
-    print(f"  [TIERS] {n} qualified batters (≥{min_games} games, ≥1 HR), ranked by HR/PA")
+    print(f"  [TIERS] {n} qualified batters (≥{min_games} games, ≥1 HR, "
+          f"current-season OR in-lineup), ranked by HR/PA")
 
     # ── Step 5: adaptive tier sizing with floors ──────────────────────
     t1_size = max(t1_floor, round(n * t1_pct))

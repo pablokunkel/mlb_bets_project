@@ -973,7 +973,18 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         status.warn("Vegas Implied Totals", f"Failed: {e}")
 
     # ── Live tiers (rolling window) ───────────────────────────────────
-    live_tiers = build_live_tiers(date_str)
+    # B5 (2026-05-20): pass today's lineup player_ids so build_live_tiers
+    # can exclude prior-season-only ghosts (Crim) while still admitting
+    # rookies and IL-returnees who appear in any posted/recent/fallback
+    # lineup tier.
+    lineup_player_ids: set[int] = set()
+    for _gpk, _lu in lineups.items():
+        for _side in ("home", "away"):
+            for _p in _lu.get(_side, []):
+                _pid = _p.get("player_id")
+                if _pid:
+                    lineup_player_ids.add(_pid)
+    live_tiers = build_live_tiers(date_str, lineup_player_ids=lineup_player_ids)
     if live_tiers:
         tier_sizes = {t: len(v) for t, v in live_tiers.items()}
         status.ok("Live Tier Build", f"T1={tier_sizes.get(1,0)} T2={tier_sizes.get(2,0)} T3={tier_sizes.get(3,0)}")
