@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +64,7 @@ CACHE_DIR = Path(__file__).parent.parent / "data" / "cache" / "features_v2"
 TTL_BATTER_ADV = 86400
 TTL_PITCHER_BB = 86400
 TTL_VEGAS = 3600
+TTL_RECENT_STATCAST = 86400  # 24h; cache key includes as_of_date so backfill targets aren't poisoned by noon runs
 
 
 def _cache_path(namespace: str, key: str) -> Path:
@@ -348,6 +349,178 @@ def fetch_pitcher_fb_bulk(season: int) -> dict[int, float]:
 
 
 # ---------------------------------------------------------------------------
+# B6a recent quality-contact bulk fetcher (2026-05-21)
+# ---------------------------------------------------------------------------
+# Pulls 14 days of pitch-level Statcast in ONE bulk call (no per-player
+# fan-out -- that path hung the noon run 2026-04-29). Aggregates per-batter
+# to three rolling 14d quality-contact metrics that feed score_power when
+# USE_RECENT_STATCAST_BLEND is on:
+#
+#   recent_barrel_real_14d  : real barrel events / batted balls (%)
+#                              (launch_speed_angle == 6 is the Statcast
+#                              "barrel" classification — exact, not synthetic)
+#   recent_xwoba_contact_14d: mean estimated_woba_using_speedangle over
+#                              contact events (PA-ending batted balls)
+#   recent_iso_14d          : (TB - H) / AB in window, where AB excludes
+#                              walks/HBP/SF/SH
+#
+# As-of-date-aware: the cache key includes the date so the 2025-season
+# backfill can target historical dates without colliding with daily
+# noon-run cache. The 14d window is [as_of_date - 14d, as_of_date) --
+# strictly before as_of_date, so games played on that date itself are
+# excluded (matches B4's pitcher-recency window semantics and prevents
+# look-ahead bias when reconstructing historical predictions).
+
+# Statcast events that count as plate-appearance-ending. Used to compute
+# AB / H / TB for recent_iso_14d. Walks, HBP, sac flies, sac bunts, and
+# catcher interference do NOT count as ABs.
+_PA_AB_EVENTS = {
+    "single", "double", "triple", "home_run",
+    "field_out", "strikeout", "force_out",
+    "grounded_into_double_play", "fielders_choice",
+    "fielders_choice_out", "double_play", "triple_play",
+    "field_error", "strikeout_double_play",
+    # Hit-into-play outs that are sometimes labeled separately
+    "sac_fly_double_play",   # batter gets credited an AB on this rare combo
+}
+_HIT_EVENTS = {"single", "double", "triple", "home_run"}
+_TB_PER_HIT = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+
+
+def _aggregate_recent_statcast(df, min_batted_balls: int = 10) -> dict[int, dict]:
+    """Aggregate a pitch-level Statcast DataFrame to per-batter 14d metrics.
+
+    Filters to PA-ending events and computes:
+      - recent_barrel_real_14d  : (launch_speed_angle == 6) count / batted_balls
+      - recent_xwoba_contact_14d: mean(estimated_woba_using_speedangle) on contact
+      - recent_iso_14d          : (TB - H) / AB
+
+    Pure-function so backfill can call it with any historical date's
+    DataFrame; no caching here (caller manages cache).
+    """
+    if df is None or df.empty:
+        return {}
+
+    import pandas as pd
+
+    # Per-pitch rows -> PA-ending rows. `events` is the terminal event for
+    # the at-bat; non-terminal pitches (balls, called strikes, fouls) have
+    # events == NaN. Keep only PA-terminal rows.
+    if "events" not in df.columns or "batter" not in df.columns:
+        return {}
+    pa = df.dropna(subset=["events", "batter"]).copy()
+    if pa.empty:
+        return {}
+
+    # Normalize batter id to int (statcast returns float in some rows).
+    pa["batter"] = pa["batter"].astype("int64", errors="ignore")
+
+    out: dict[int, dict] = {}
+    for bid, grp in pa.groupby("batter"):
+        bid = int(bid)
+        events = grp["events"]
+
+        # Batted-ball events = anything with a non-null bb_type, OR any
+        # hit event (covers a few corner cases like inside-the-park HRs).
+        if "bb_type" in grp.columns:
+            bb_mask = grp["bb_type"].notna()
+        else:
+            bb_mask = events.isin(_HIT_EVENTS)
+        n_bb = int(bb_mask.sum())
+
+        ab_mask = events.isin(_PA_AB_EVENTS)
+        n_ab = int(ab_mask.sum())
+
+        if n_bb < min_batted_balls and n_ab < min_batted_balls:
+            continue
+
+        entry: dict = {}
+
+        # Barrel%: launch_speed_angle classification 6 = "barrel" (Statcast's
+        # canonical exact barrel definition). Denominator is batted balls.
+        if "launch_speed_angle" in grp.columns and n_bb > 0:
+            n_barrel = int(((grp["launch_speed_angle"] == 6) & bb_mask).sum())
+            entry["recent_barrel_real_14d"] = round(n_barrel / n_bb * 100.0, 2)
+
+        # xwOBA on contact: mean of estimated_woba_using_speedangle on
+        # batted-ball events. (Statcast computes this column from launch
+        # speed + angle, NaN for non-contact pitches.)
+        if "estimated_woba_using_speedangle" in grp.columns:
+            xwoba_series = grp["estimated_woba_using_speedangle"].dropna()
+            if len(xwoba_series) >= min_batted_balls:
+                entry["recent_xwoba_contact_14d"] = round(float(xwoba_series.mean()), 3)
+
+        # ISO over the window: SLG - AVG, computed cleanly as (TB - H) / AB.
+        # Skip when AB sample is too thin (avoids ISO inflation from a tiny
+        # sample with one HR).
+        if n_ab >= min_batted_balls:
+            n_hits = int(events.isin(_HIT_EVENTS).sum())
+            tb = sum(_TB_PER_HIT.get(e, 0) for e in events)
+            iso = (tb - n_hits) / n_ab if n_ab > 0 else None
+            if iso is not None and iso >= 0:
+                entry["recent_iso_14d"] = round(iso, 3)
+
+        if entry:
+            out[bid] = entry
+
+    return out
+
+
+def fetch_batter_recent_statcast_14d(
+    as_of_date: str | None = None,
+    window_days: int = 14,
+    min_batted_balls: int = 10,
+) -> dict[int, dict]:
+    """Bulk-pull 14d of pitch-level Statcast and aggregate per-batter.
+
+    Returns {player_id: {recent_barrel_real_14d, recent_xwoba_contact_14d, recent_iso_14d}}.
+
+    *as_of_date*  — YYYY-MM-DD; window is [as_of_date - window_days, as_of_date)
+                    so games played ON as_of_date are excluded. Defaults to today.
+    *window_days* — calendar-day window length. Default 14 per B6a spec.
+    *min_batted_balls* — per-batter sample threshold below which we drop the
+                    entry rather than report a noisy aggregate.
+
+    Cache key includes as_of_date so the 2025 backfill can target historical
+    dates without colliding with the daily noon-run cache. 24h TTL.
+
+    Returns {} on any failure (so callers can treat as "no recent data" and
+    skip-on-missing through score_power).
+    """
+    end_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        print(f"  [features_v2] bad as_of_date {end_date!r}; using today")
+        end_dt = datetime.now()
+        end_date = end_dt.strftime("%Y-%m-%d")
+    # Window is [start_dt, end_dt - 1 day] inclusive — pybaseball.statcast()
+    # is inclusive on both ends. end_dt is the noon-run date itself; we
+    # exclude it so today's in-progress games can't bias the rolling stat.
+    last_completed = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    start_dt = (end_dt - timedelta(days=window_days)).strftime("%Y-%m-%d")
+
+    cache_key = f"recent_statcast_{window_days}d_{end_date}"
+    cached = _cache_get("bulk_savant", cache_key, TTL_RECENT_STATCAST)
+    if cached is not None:
+        return {int(k): v for k, v in cached.items()}
+
+    try:
+        from pybaseball import statcast
+        df = statcast(start_dt=start_dt, end_dt=last_completed, verbose=False)
+    except Exception as e:
+        print(f"  [features_v2] bulk recent Statcast fetch failed "
+              f"({start_dt}..{last_completed}): {e}")
+        return {}
+
+    out = _aggregate_recent_statcast(df, min_batted_balls=min_batted_balls)
+
+    if out:
+        _cache_set("bulk_savant", cache_key, {str(k): v for k, v in out.items()})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Vegas implied team totals (the-odds-api.com)
 # ---------------------------------------------------------------------------
 
@@ -484,6 +657,8 @@ if __name__ == "__main__":
     parser.add_argument("--pitcher", type=int)
     parser.add_argument("--vegas", action="store_true")
     parser.add_argument("--bulk", action="store_true", help="Test bulk fetchers")
+    parser.add_argument("--recent", action="store_true", help="Test recent 14d Statcast bulk fetch")
+    parser.add_argument("--as-of-date", default=None, help="YYYY-MM-DD for --recent (default: today)")
     parser.add_argument("--season", type=int, default=2026)
     args = parser.parse_args()
     if args.batter:
@@ -498,3 +673,9 @@ if __name__ == "__main__":
         p = fetch_pitcher_fb_bulk(args.season)
         print(f"bulk batter xwoba: {len(b)} entries")
         print(f"bulk pitcher fb%:  {len(p)} entries")
+    if args.recent:
+        r = fetch_batter_recent_statcast_14d(as_of_date=args.as_of_date)
+        print(f"recent 14d Statcast (as_of={args.as_of_date or 'today'}): {len(r)} batters")
+        # Show a few sample rows so the smoke test of this is visible
+        for pid, vals in list(r.items())[:5]:
+            print(f"  {pid}: {vals}")

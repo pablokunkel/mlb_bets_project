@@ -77,6 +77,7 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
             pi.xwoba_contact, pi.pull_fb_pct,
             pi.recent_hr_10g, pi.recent_iso_30g, pi.recent_avg_30g,
             pi.recent_window_days, pi.ev_trend,
+            pi.recent_barrel_real_14d, pi.recent_xwoba_contact_14d, pi.recent_iso_14d,
             pi.pitcher_hr_per_9, pi.pitcher_era, pi.pitcher_hh_pct,
             pi.pitcher_k_per_9, pi.pitcher_fb_pct_allowed,
             pi.woba_vs_hand, pi.archetype_similarity, pi.vegas_team_total_pct,
@@ -126,6 +127,13 @@ def rescore_row(row: pd.Series) -> dict:
         "recent_avg_30g": row.get("recent_avg_30g"),
         "recent_window_days": row.get("recent_window_days"),
         "ev_trend": row.get("ev_trend"),
+        # B6a (2026-05-21): rolling 14d quality-contact. NULL for rows
+        # older than the migration; score_power skips through. When
+        # USE_RECENT_STATCAST_BLEND is on, score_power blends these
+        # alongside the season inputs.
+        "recent_barrel_real_14d": row.get("recent_barrel_real_14d"),
+        "recent_xwoba_contact_14d": row.get("recent_xwoba_contact_14d"),
+        "recent_iso_14d": row.get("recent_iso_14d"),
         "woba_vs_hand": row.get("woba_vs_hand"),
         "bats": "R",  # not stored; platoon advantage flag captures the diff
         # B8 (2026-05-20): outcomes-cumulative season HR drives the

@@ -39,6 +39,7 @@ from pitcher_profile import (
 from features_v2 import (
     fetch_batter_xwoba_bulk,
     fetch_pitcher_fb_bulk,
+    fetch_batter_recent_statcast_14d,
 )
 
 
@@ -58,6 +59,17 @@ def main():
         print(f"  bulk pitcher FB%:  {len(p)} entries")
     except Exception as e:
         print(f"  WARN: bulk fetch failed: {e}")
+
+    # ---- B6a: 14d quality-contact rolling Statcast (one bulk call) ------
+    # Cache key uses tomorrow's date so noon's fetch_live_slate hits it.
+    # 24h TTL; the daily run will overwrite this anyway, but pre-warming
+    # means the noon hit costs ~ms instead of the ~30-60s bulk pitch pull.
+    t = time.time()
+    try:
+        r = fetch_batter_recent_statcast_14d(as_of_date=tomorrow)
+        print(f"  bulk recent 14d Statcast: {len(r)} batters ({time.time()-t:.1f}s)")
+    except Exception as e:
+        print(f"  WARN: recent 14d Statcast fetch failed: {e}")
 
     # ---- Tomorrow's probable starters (pitcher archetype warmup) --------
     print(f"\n[PREWARM] Pitcher archetypes for {tomorrow}...")
