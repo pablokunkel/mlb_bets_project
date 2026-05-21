@@ -6,6 +6,49 @@ Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr
 
 ---
 
+## 2026-05-13 — 14d refit (scheduled task: `mlb-hr-refit-weights-14d`)
+
+**Status: no change shipped.** First post-v2 checkpoint (v2 features shipped 2026-04-29). New weights are within ±0.001 of current default; backtest lift is +0.62 pp, below the +1.0 pp shipping threshold. Vegas signal could not be validated this run — same infra blocker that was open on 2026-05-01.
+
+### Ran
+
+- `python backfill_features_v2_bulk.py --season 2026` — refreshed Savant columns. `xwoba_contact` 5196/5196, `fb_pct_allowed` 5175/5196, `pull_fb_pct` still 0/5196 (bulk path can't fetch).
+- `python refit_weights.py` — DB path resolved to `Projects/data/hr_bets.db` but that directory is not mounted in the scheduled-task sandbox (only `MLB HR Bets/` is). Fell back to `--csv raw_data_v2.csv`.
+
+### Coefficients (this refit → current default)
+
+Bucketed: `power 0.249 (0.250) · matchup 0.263 (0.264) · park 0.000 (0.000) · form 0.279 (0.279) · weather 0.058 (0.057) · lineup 0.150 (0.150)`. All deltas ≤ 0.001 — refit-noise scale.
+
+Standardized: form +0.495, matchup +0.462, power +0.347, weather +0.104, xwoba +0.096, park −0.011, **fb_pct_allowed +0.005**.
+
+### Sign flip — `fb_pct_allowed` (−0.023 on 2026-05-01 → +0.005 here)
+
+Magnitude tiny in both runs; same 5,196-row training window in both cases (2026-03-27 → 2026-04-15) so the flip happened with *no new data* — only Savant FBLD% re-pulls changed between runs. Univariate r = 0.028, p = 0.04 — barely significant on n = 5,175. Both runs' matchup bucket nets strongly positive (matchup_score is +0.46 standardized) so the bucket-level signal is fine. **Verdict: noise around zero, not actionable.** Worth a re-check once `implied_total_pct` enters the training set — the matchup bucket may decompose differently with Vegas co-present.
+
+### Vegas signal — UNEVALUATED
+
+`raw_data_v2.csv` has no `implied_total_pct` column (it's only persisted to the DB, populated daily by `generate_picks.py` since 2026-04-29). The DB-mode code path of `refit_weights.py` threw `FileNotFoundError` from this sandbox. So the +1-3 pp lift estimated at v2 ship for Vegas remains untested.
+
+### Backtest top-8 hit rate (CSV window 2026-03-27 → 2026-04-15)
+
+- `legacy_csv_composite`: 36.04%
+- `current_default` (shipped): 34.79%
+- `new_learned` (this refit): 35.42%
+- Lift vs current: **+0.62 pp** (< +1.0 pp threshold → don't ship)
+
+Note: `current_default` backtesting at 34.79% on this CSV — *below* legacy's 36.04% — contradicts the v2-ship narrative in `score_batters.py` WEIGHT_CONFIGS docstring (36.04% → 38.75% → 40.00%). Two likely reasons: (a) bulk-mode `pull_fb_pct` is null in this CSV, so v2's power bucket is missing one of its sub-features here; (b) the 40.00% number was backtested on a different (post-v2) window, not this 2026-03-27 → 2026-04-15 one. Apples-to-oranges; the +0.62 pp delta between configs is the only number that matters for shipping logic.
+
+### Still-open action items (same as 2026-05-01 / 2026-05-03)
+
+1. **Append daily outcomes into `raw_data_v2.csv` (or mount `Projects/data/` in the refit sandbox).** Without this, every monthly/14-day refit will hit the same 2026-03-27 → 2026-04-15 window and produce the same coefficients to within rounding. The Vegas signal will stay untested for the same reason.
+2. **`pull_fb_pct`** is still bulk-uncrawlable. Only the live `features_v2.py` per-player path populates it (to the DB). Same fix-path as #1.
+
+**Verification:** `score_batters.py` and `generate_picks.py` untouched; no production-side changes this cycle.
+
+Full diagnostic: `diagnostics/refit_2026-05-13_summary.md`.
+
+---
+
 ## 2026-05-03 — score-curve & scoring-flag changes (PR #25, harness-driven)
 
 **Status: shipped.** Three changes landed together as a batched scoring tweak; weights themselves unchanged.
