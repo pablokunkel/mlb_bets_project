@@ -865,6 +865,127 @@ def pin_score_pitcher_vulnerability_recency_lifts_score() -> Result:
     )
 
 
+def pin_filter_before_drops_after_date() -> Result:
+    """PR 3 (as-of-date infra): _filter_before drops rows on/after as_of_date.
+
+    Three rows dated 04-01, 04-15, 05-01. as_of_date=2026-04-15 should keep
+    only the 04-01 row (strictly before, not on-or-after).
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("filter_before (pandas missing)", Result.INFO)
+    from pitcher_profile import _filter_before
+    df = pd.DataFrame({
+        "game_date": ["2026-04-01", "2026-04-15", "2026-05-01"],
+        "foo": [1, 2, 3],
+    })
+    res = _filter_before(df, "2026-04-15")
+    if len(res) == 1 and res["game_date"].iloc[0] == "2026-04-01":
+        return Result(
+            "_filter_before drops rows >= as_of_date (strict before)", Result.PASS
+        )
+    return Result(
+        "_filter_before strict-before semantics", Result.HALT,
+        f"expected 1 row dated 2026-04-01, got {len(res)}: "
+        f"{res['game_date'].tolist() if len(res) else '[]'}",
+    )
+
+
+def pin_filter_before_none_is_noop() -> Result:
+    """PR 3: as_of_date=None returns the df unchanged (production behavior)."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("filter_before noop (pandas missing)", Result.INFO)
+    from pitcher_profile import _filter_before
+    df = pd.DataFrame({"game_date": ["2026-04-01", "2026-05-01"], "foo": [1, 2]})
+    res = _filter_before(df, None)
+    if len(res) == 2:
+        return Result("_filter_before(None) is a no-op", Result.PASS)
+    return Result(
+        "_filter_before(None) no-op", Result.HALT,
+        f"expected 2 rows unchanged, got {len(res)}",
+    )
+
+
+def pin_filter_before_empty_safe() -> Result:
+    """PR 3: _filter_before handles None / empty / missing-column gracefully."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("filter_before empty-safe (pandas missing)", Result.INFO)
+    from pitcher_profile import _filter_before
+    failures = []
+    if _filter_before(None, "2026-01-01") is not None:
+        failures.append("None input did not pass through")
+    empty = pd.DataFrame()
+    if not _filter_before(empty, "2026-01-01").empty:
+        failures.append("empty df was not preserved")
+    no_col = pd.DataFrame({"other": [1, 2]})
+    if len(_filter_before(no_col, "2026-01-01")) != 2:
+        failures.append("df without game_date column should pass through")
+    if not failures:
+        return Result(
+            "_filter_before(None / empty / no game_date col) is safe", Result.PASS
+        )
+    return Result("_filter_before edge cases", Result.HALT, "; ".join(failures))
+
+
+def pin_as_of_date_signatures_present() -> Result:
+    """PR 3: every public profile fn accepts as_of_date kwarg with default None."""
+    import inspect
+    from pitcher_profile import (
+        _fetch_batter_hr_events, _fetch_pitcher_arsenal_statcast,
+        build_victim_profile, build_pitcher_profile,
+        build_pitcher_profiles_batch, build_victim_profiles_batch,
+    )
+    failures = []
+    for fn in (_fetch_batter_hr_events, _fetch_pitcher_arsenal_statcast,
+               build_victim_profile, build_pitcher_profile,
+               build_pitcher_profiles_batch, build_victim_profiles_batch):
+        sig = inspect.signature(fn)
+        if "as_of_date" not in sig.parameters:
+            failures.append(f"{fn.__name__} missing as_of_date param")
+            continue
+        param = sig.parameters["as_of_date"]
+        if param.default is not None:
+            failures.append(f"{fn.__name__}.as_of_date default is {param.default!r}, expected None")
+        if param.kind not in (inspect.Parameter.KEYWORD_ONLY,
+                              inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            failures.append(f"{fn.__name__}.as_of_date kind = {param.kind}")
+    if not failures:
+        return Result(
+            "as_of_date kwarg present on all 6 profile fns (default None)",
+            Result.PASS,
+        )
+    return Result("as_of_date signatures", Result.HALT, "; ".join(failures))
+
+
+def pin_weather_archive_threshold_present() -> Result:
+    """PR 3: get_weather has the archive-endpoint threshold constant set
+    to a non-trivial value (5+ days), and both endpoint URLs are defined.
+    """
+    import fetch_daily_data as fdd
+    failures = []
+    for name in ("_OPEN_METEO_FORECAST_URL", "_OPEN_METEO_ARCHIVE_URL",
+                 "_OPEN_METEO_ARCHIVE_THRESHOLD_DAYS"):
+        if not hasattr(fdd, name):
+            failures.append(f"missing module attr {name}")
+    if hasattr(fdd, "_OPEN_METEO_ARCHIVE_THRESHOLD_DAYS"):
+        t = fdd._OPEN_METEO_ARCHIVE_THRESHOLD_DAYS
+        if not (isinstance(t, int) and 3 <= t <= 14):
+            failures.append(f"threshold {t!r} outside sane [3, 14] range")
+    if hasattr(fdd, "_OPEN_METEO_ARCHIVE_URL"):
+        if "archive-api.open-meteo.com" not in fdd._OPEN_METEO_ARCHIVE_URL:
+            failures.append(f"archive URL is {fdd._OPEN_METEO_ARCHIVE_URL!r}")
+    if not failures:
+        return Result(
+            "get_weather archive-endpoint routing wired", Result.PASS
+        )
+    return Result("get_weather archive wiring", Result.HALT, "; ".join(failures))
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -905,6 +1026,12 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_effective_blend_min_starts_gate,
     pin_pitcher_recent_window_defaults,
     pin_score_pitcher_vulnerability_era_recency_lifts_score,
+    # 2026-05-21: PR 3 — as-of-date infrastructure
+    pin_filter_before_drops_after_date,
+    pin_filter_before_none_is_noop,
+    pin_filter_before_empty_safe,
+    pin_as_of_date_signatures_present,
+    pin_weather_archive_threshold_present,
 ]
 
 
