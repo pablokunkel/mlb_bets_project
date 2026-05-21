@@ -493,6 +493,19 @@ USE_SEASON_HR_FLOOR = True   # 2026-05-03: flipped on after 14d harness showed
                               # the Drake Baldwin pattern (8 HR, ranked #97)
                               # confirmed the qualitative case.
 
+
+# B6a (2026-05-21): blend rolling-14d Statcast quality-contact metrics into
+# score_power alongside the season inputs. OFF by default — flip True after
+# (1) backfilling 2025 + 2026 with the new columns populated, and (2)
+# documenting the backtest comparison vs season-only in WEIGHT_REFIT_LOG.md.
+#
+# When on, three new inputs (recent_barrel_real_14d, recent_xwoba_contact_14d,
+# recent_iso_14d) join the season-level inputs in score_power's mean, with the
+# same skip-on-missing semantics. The intent is that a slow-starter-now-hot
+# hitter (Bohm-class: 4 HR season but elite contact last 2 weeks) gets credit
+# for the recent quality before the season aggregate catches up.
+USE_RECENT_STATCAST_BLEND = False
+
 # (season_hr_threshold, power_score_floor_when_qualified)
 # Calibrated on 2026-05-02 HR data:
 #   - 5 HR  → 50  (a guy with 5 HR shouldn't score below league average)
@@ -633,6 +646,31 @@ def score_power(batter: dict) -> float:
         if pull_fb < 1:
             pull_fb *= 100
         scores.append(min_max_scale(pull_fb, 8, 22))
+
+    # B6a (2026-05-21): rolling 14d quality-contact inputs. Gated by
+    # USE_RECENT_STATCAST_BLEND (default False) — when off, these inputs
+    # are stored on the batter dict for backfill / refit observation but
+    # not consumed here, so the season-only score is unchanged. When on,
+    # they join the season inputs in the same mean with skip-on-missing.
+    #
+    # Anchors:
+    #   recent_barrel_real_14d   8-18   (vs season 5-15 — tighter for a
+    #                                    higher-variance shorter window;
+    #                                    league avg ~10%, elite ~18%+)
+    #   recent_xwoba_contact_14d 0.330-0.450  (same as season)
+    #   recent_iso_14d           0.100-0.300  (mirrors Form's recent_iso_30g)
+    if USE_RECENT_STATCAST_BLEND:
+        rb = batter.get("recent_barrel_real_14d")
+        if rb is not None and rb > 0:
+            scores.append(min_max_scale(rb, 8, 18))
+
+        rx = batter.get("recent_xwoba_contact_14d")
+        if rx is not None and rx > 0:
+            scores.append(min_max_scale(rx, 0.330, 0.450))
+
+        ri = batter.get("recent_iso_14d")
+        if ri is not None and ri > 0:
+            scores.append(min_max_scale(ri, 0.100, 0.300))
 
     base_score = float(np.mean(scores)) if scores else 50.0
 
@@ -1216,6 +1254,12 @@ def compute_composite(
         "iso":                     batter.get("iso"),
         "xwoba_contact":           batter.get("xwoba_contact"),
         "pull_fb_pct":             batter.get("pull_fb_pct"),
+        # B6a (2026-05-21): rolling 14d quality-contact. Persisted to
+        # pick_inputs regardless of USE_RECENT_STATCAST_BLEND so backfills
+        # and refits can use them.
+        "recent_barrel_real_14d":  batter.get("recent_barrel_real_14d"),
+        "recent_xwoba_contact_14d": batter.get("recent_xwoba_contact_14d"),
+        "recent_iso_14d":          batter.get("recent_iso_14d"),
         # Form (rebuilt 2026-05-19 — split game-count windows, honest names)
         "recent_hr_10g":           batter.get("recent_hr_10g"),
         "recent_iso_30g":          batter.get("recent_iso_30g"),

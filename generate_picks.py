@@ -1228,6 +1228,14 @@ def score_live_slate(
     # bulk endpoint for it. Defaults to 50/neutral in score_power. Re-enable
     # via per-player fetch_batter_advanced_batch by setting USE_PER_PLAYER_STATCAST=True.
 
+    # B6a (2026-05-21): rolling 14d quality-contact metrics from bulk
+    # Statcast. Slate-level so all 3 tiers share the same pre-aggregated
+    # pull. score_power skips on missing values (USE_RECENT_STATCAST_BLEND
+    # flag in score_batters gates whether they participate in the average).
+    bulk_recent_statcast = slate.get("bulk_recent_statcast", {})
+    recent_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in bulk_recent_statcast)
+    print(f"  [RECENT-14d] {recent_hit}/{len(eligible_batters)} T{tier} batters")
+
     # Build victim profiles for archetype matching (v2 matchup scoring).
     # Only runs when USE_PER_PLAYER_STATCAST=True — otherwise the third
     # source of per-player Statcast hangs. With it off, score_matchup_v2
@@ -1307,6 +1315,17 @@ def score_live_slate(
             entry["xwoba_contact"] = adv["xwoba_contact"]
         if adv.get("pull_fb_pct") is not None:
             entry["pull_fb_pct"] = adv["pull_fb_pct"]
+
+        # B6a (2026-05-21): rolling 14d quality-contact inputs. score_power
+        # ignores these unless USE_RECENT_STATCAST_BLEND is on; either way
+        # we attach so they persist to pick_inputs for backfill / refit.
+        recent14 = bulk_recent_statcast.get(player_id, {})
+        if recent14.get("recent_barrel_real_14d") is not None:
+            entry["recent_barrel_real_14d"] = recent14["recent_barrel_real_14d"]
+        if recent14.get("recent_xwoba_contact_14d") is not None:
+            entry["recent_xwoba_contact_14d"] = recent14["recent_xwoba_contact_14d"]
+        if recent14.get("recent_iso_14d") is not None:
+            entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         # Get archetype profiles for v2 matchup scoring
         vp = victim_profiles.get(player_id)
@@ -1486,6 +1505,8 @@ def score_untiered_starters(
     # Reuse the slate-level bulk xwOBA pull
     bulk_xwoba = slate.get("bulk_batter_xwoba", {})
     batter_adv = {pid: {"xwoba_contact": v} for pid, v in bulk_xwoba.items()}
+    # B6a (2026-05-21): same bulk recent-14d Statcast that T1/T2/T3 use
+    bulk_recent_statcast = slate.get("bulk_recent_statcast", {})
 
     for stub, game, batting_order, side in stubs:
         gpk = game["game_pk"]
@@ -1518,6 +1539,17 @@ def score_untiered_starters(
         adv = batter_adv.get(pid, {})
         if adv.get("xwoba_contact") is not None:
             entry["xwoba_contact"] = adv["xwoba_contact"]
+        # B6a (2026-05-21): rolling 14d quality-contact for T4 batters.
+        # Many T4 batters are rookies / IL returnees with thin recent
+        # samples — _aggregate_recent_statcast's min_batted_balls=10
+        # threshold drops them, which is correct (score_power skips).
+        recent14 = bulk_recent_statcast.get(pid, {})
+        if recent14.get("recent_barrel_real_14d") is not None:
+            entry["recent_barrel_real_14d"] = recent14["recent_barrel_real_14d"]
+        if recent14.get("recent_xwoba_contact_14d") is not None:
+            entry["recent_xwoba_contact_14d"] = recent14["recent_xwoba_contact_14d"]
+        if recent14.get("recent_iso_14d") is not None:
+            entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         pp = pitcher_profiles.get(opp_pitcher_name)
 
@@ -1620,6 +1652,13 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                     # ground-truth season HR (sourced from mlb_2025_tiers),
                     # without the MLB-API lag that affects the live path.
                     "season_hr": int(b.get("hr", 0) or 0),
+                    # B6a (2026-05-21): offline sim has no Statcast pull;
+                    # leave as None so score_power skips them. With
+                    # USE_RECENT_STATCAST_BLEND off these are ignored
+                    # anyway; with it on, season anchors carry the score.
+                    "recent_barrel_real_14d": None,
+                    "recent_xwoba_contact_14d": None,
+                    "recent_iso_14d": None,
                 }
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,

@@ -375,6 +375,91 @@ def pin_compute_season_hr_floor_tiers() -> Result:
     )
 
 
+def pin_use_recent_statcast_blend_default_off() -> Result:
+    """USE_RECENT_STATCAST_BLEND must stay off until backtest validates the blend."""
+    from score_batters import USE_RECENT_STATCAST_BLEND
+    if USE_RECENT_STATCAST_BLEND is False:
+        return Result(
+            "USE_RECENT_STATCAST_BLEND default = False (pre-backtest)", Result.PASS
+        )
+    return Result(
+        "USE_RECENT_STATCAST_BLEND default = False",
+        Result.HALT,
+        f"got {USE_RECENT_STATCAST_BLEND}; flipping the recent-Statcast blend on "
+        "requires a documented refit + backtest decision in WEIGHT_REFIT_LOG.md.",
+    )
+
+
+def pin_score_power_recent_blend_flag_off_no_op() -> Result:
+    """With flag off, recent_* inputs on the batter dict are IGNORED by score_power."""
+    import score_batters as sb
+    # Same season-only inputs in both cases; only the recent_* fields differ.
+    base_inputs = {
+        "barrel_pct": 10.0, "exit_velo": 90.0, "hr_fb_pct": 14.0, "iso": 0.200,
+    }
+    season_only = sb.score_power(base_inputs)
+    with_recents = sb.score_power({
+        **base_inputs,
+        "recent_barrel_real_14d": 20.0,        # extreme value
+        "recent_xwoba_contact_14d": 0.500,
+        "recent_iso_14d": 0.400,
+    })
+    if abs(with_recents - season_only) < 0.01:
+        return Result(
+            f"score_power(recents) ignored when flag off ({season_only:.1f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_power flag-off no-op",
+        Result.HALT,
+        f"season_only={season_only}, with_recents={with_recents}; the recent_* "
+        "inputs leaked into the score with USE_RECENT_STATCAST_BLEND=False",
+    )
+
+
+def pin_score_power_recent_blend_flag_on_lifts_score() -> Result:
+    """With flag on, elite recent_* inputs lift the score above season-only."""
+    import score_batters as sb
+    prev = sb.USE_RECENT_STATCAST_BLEND
+    sb.USE_RECENT_STATCAST_BLEND = True
+    try:
+        # Bohm-class scenario: weakish season inputs, elite recent values.
+        base_inputs = {
+            "barrel_pct": 7.0, "exit_velo": 87.0, "hr_fb_pct": 9.0, "iso": 0.140,
+        }
+        season_only_score = sb.score_power(base_inputs)
+        # Mutex flag toggle inside the function so we re-run with same off behavior
+        sb.USE_RECENT_STATCAST_BLEND = False
+        cold_baseline = sb.score_power(base_inputs)
+        sb.USE_RECENT_STATCAST_BLEND = True
+        with_hot_recent = sb.score_power({
+            **base_inputs,
+            "recent_barrel_real_14d": 17.0,           # elite (anchor 8-18)
+            "recent_xwoba_contact_14d": 0.450,        # elite (anchor .330-.450)
+            "recent_iso_14d": 0.290,                  # near elite (anchor .100-.300)
+        })
+    finally:
+        sb.USE_RECENT_STATCAST_BLEND = prev
+    # Sanity: season_only with flag on should still match flag off when recents are absent
+    if abs(season_only_score - cold_baseline) > 0.01:
+        return Result(
+            "score_power flag-on no-recents == flag-off",
+            Result.HALT,
+            f"flag-on no-recents={season_only_score:.1f}, flag-off={cold_baseline:.1f}",
+        )
+    if with_hot_recent <= season_only_score + 5:
+        return Result(
+            "score_power flag-on with hot recents lifts score",
+            Result.HALT,
+            f"season_only={season_only_score:.1f}, with_hot_recent={with_hot_recent:.1f} "
+            f"(expected lift >= +5)",
+        )
+    return Result(
+        f"score_power(Bohm-class hot recents): {season_only_score:.1f} -> {with_hot_recent:.1f}",
+        Result.PASS,
+    )
+
+
 def pin_compute_season_hr_floor_smooth() -> Result:
     """B6b smooth log curve: floor(hr) = 26.5 * ln(hr + 1), with 18 HR pinned at 78."""
     from score_batters import compute_season_hr_floor, SMOOTH_HR_FLOOR_C
@@ -697,6 +782,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_compute_season_hr_floor_tiers,
     pin_compute_season_hr_floor_smooth,
     pin_use_smooth_hr_floor_default_off,
+    pin_use_recent_statcast_blend_default_off,
+    pin_score_power_recent_blend_flag_off_no_op,
+    pin_score_power_recent_blend_flag_on_lifts_score,
     pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
