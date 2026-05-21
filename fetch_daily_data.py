@@ -863,6 +863,14 @@ def build_live_tiers(
 # Weather via Open-Meteo
 # ---------------------------------------------------------------------------
 
+_OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+# Open-Meteo: forecast endpoint covers ~today − 5d through future; archive
+# covers 1940 through ~today − 5d. The seam is fuzzy; we route by date age
+# with a 5-day buffer to stay safely on the side that has the data.
+_OPEN_METEO_ARCHIVE_THRESHOLD_DAYS = 5
+
+
 def get_weather(venue_name: str, game_time_iso: str) -> dict:
     """
     Fetch weather for a venue at game time using Open-Meteo.
@@ -877,8 +885,14 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
     downstream consumers can stratify by data quality:
       - 'dome_default'              indoor venue, fixed indoor weather
       - 'coords_missing_default'    venue not in VENUE_COORDS, neutral fallback
-      - 'open_meteo'                real API fetch
+      - 'open_meteo'                forecast endpoint (present/future games)
+      - 'open_meteo_archive'        archive endpoint (games older than ~5 days)
       - 'api_failed_default'        API call raised, neutral fallback
+
+    PR 3 (2026-05-21): for historical reconstruction (game_time_iso more
+    than 5 days in the past), the function automatically routes to the
+    Open-Meteo archive endpoint — same shape, different URL. Production
+    callers pass current game_time_iso and continue hitting forecast.
     """
     if venue_name in DOME_STADIUMS:
         return {"temperature_f": 72, "wind_mph": 0, "wind_direction_deg": 0,
@@ -899,7 +913,14 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
         date_str = dt_local.strftime("%Y-%m-%d")  # LOCAL date at first pitch
         game_hour = dt_local.hour                 # LOCAL hour of first pitch
 
-        url = "https://api.open-meteo.com/v1/forecast"
+        # Route to archive endpoint for historical dates. We compare in
+        # UTC since "5 days ago" is fuzzy across timezones; the threshold
+        # is conservative enough that a few hours of slop don't matter.
+        age_days = (datetime.now(dt_utc.tzinfo) - dt_utc).days
+        use_archive = age_days >= _OPEN_METEO_ARCHIVE_THRESHOLD_DAYS
+        url = _OPEN_METEO_ARCHIVE_URL if use_archive else _OPEN_METEO_FORECAST_URL
+        source_tag = "open_meteo_archive" if use_archive else "open_meteo"
+
         params = {
             "latitude": lat,
             "longitude": lon,
@@ -943,7 +964,7 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
             "dome": False,
             "tz": tz_name,
             "local_hour": game_hour,
-            "_source": "open_meteo",
+            "_source": source_tag,
         }
     except Exception as e:
         print(f"  [WEATHER] {venue_name}: fetch failed ({e}), using neutral defaults")
