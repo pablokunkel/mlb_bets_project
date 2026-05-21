@@ -1080,6 +1080,38 @@ def pin_backfill_parse_duration() -> Result:
     return Result("parse_duration", Result.HALT, "; ".join(failures))
 
 
+def pin_run_backfill_local_wrapper_present() -> Result:
+    """PR 4: the run_backfill_local.py wrapper is present, importable, and
+    exposes the documented entry points (pull / push / run_orchestrator / main)."""
+    from pathlib import Path
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    wrapper = repo / "run_backfill_local.py"
+    if not wrapper.exists():
+        return Result("run_backfill_local.py present", Result.HALT,
+                      f"missing at {wrapper}")
+    # Import as a module so we can poke its functions without spawning subprocs
+    spec = importlib.util.spec_from_file_location("run_backfill_local", wrapper)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    failures = []
+    for name in ("pull", "push", "run_orchestrator", "main", "_load_dotenv"):
+        if not hasattr(mod, name):
+            failures.append(f"missing {name}")
+    # Verify the .bat shim exists alongside (Windows convention)
+    bat = repo / "run_backfill_2025.bat"
+    if not bat.exists():
+        failures.append(f"run_backfill_2025.bat shim missing at {bat}")
+    if not failures:
+        return Result(
+            "run_backfill_local.py + run_backfill_2025.bat shim present",
+            Result.PASS,
+        )
+    return Result(
+        "run_backfill_local.py wrapper", Result.HALT, "; ".join(failures),
+    )
+
+
 def pin_backfill_window_accepts_chunk_flags() -> Result:
     """PR 4 chunk flags: backfill_window has max_dates + max_runtime_s kwargs."""
     import inspect
@@ -1203,6 +1235,7 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_fetch_live_slate_accepts_as_of_date,
     pin_backfill_parse_duration,
     pin_backfill_window_accepts_chunk_flags,
+    pin_run_backfill_local_wrapper_present,
 ]
 
 
