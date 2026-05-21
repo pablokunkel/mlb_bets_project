@@ -163,13 +163,21 @@ def load_season_batting_lookup(season: int) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT player_id, player_name, games,
+            SELECT player_id, player_name, games, hr, bats,
                    barrel_pct, exit_velo, hr_fb_pct, iso, woba
             FROM season_batting
             WHERE season = ?
             """,
             (season,),
         ).fetchall()
+        # 2026-05-20 (B9): added `hr` and `bats` to the SELECT. T4
+        # untiered stubs (score_untiered_starters) had no `bats` key on
+        # the batter dict — compute_composite defaulted to "R" silently,
+        # so every LHB and switch-hitter on T4 got wrong park-handedness
+        # skew and wrong platoon bonus. `hr` is included for parity with
+        # the live-tier path (display, debugging) — score_power's floor
+        # lookup uses `season_hr` from B8 (authoritative outcomes-cumulative),
+        # not this `hr` column which is the lagging-API season_batting value.
         conn.close()
         # 2026-05-04: added player_name + games to the SELECT.
         # PR #24's T4 display fix relied on sb_row["player_name"] to
@@ -182,6 +190,52 @@ def load_season_batting_lookup(season: int) -> dict:
         return {r["player_id"]: dict(r) for r in rows if r["player_id"]}
     except Exception as e:
         print(f"  [SEASON-BATTING] Could not load fallback ({e}) — continuing without it")
+        return {}
+
+
+def load_season_hr_lookup(date_str: str) -> dict[int, int]:
+    """
+    Cumulative season HR per batter through (but not including) `date_str`,
+    sourced from `outcomes`.
+
+    Why this exists: `score_power`'s SEASON_HR_FLOOR_TIERS lookup needs the
+    batter's true season HR count. The live-tier path was reading `b["hr"]`
+    from `_splits_to_batters`, which gets it from the MLB Stats API
+    `byDateRange` endpoint — which **lags HR aggregation by ~3 days** even
+    though the games count updates immediately. Direct API replay on
+    2026-05-20 confirmed: Burger had 8 season HR per `outcomes` but the
+    byDateRange endpoint returned 7 for him through 5/19. Floor fired as
+    50 (5-HR tier) instead of 60 (8-HR tier). Same pattern hit Aranda,
+    Dingler, and several 5-HR batters whose floor didn't fire at all.
+
+    `outcomes` is authoritative because it's populated from `hr_events`
+    (Statcast pitch-level) by the morning ETL — no API lag.
+
+    Returns {} on any error so callers can degrade gracefully (the
+    `score_power` fallback `batter.get("hr")` then kicks in, which is
+    just the pre-B8 behavior).
+    """
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        if not db_path.exists():
+            return {}
+        season = int(date_str[:4])
+        season_start = f"{season}-01-01"
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            """
+            SELECT batter_id, COALESCE(SUM(hr_count), 0) AS season_hr
+            FROM outcomes
+            WHERE date >= ? AND date < ?
+            GROUP BY batter_id
+            """,
+            (season_start, date_str),
+        ).fetchall()
+        conn.close()
+        return {bid: int(hr) for bid, hr in rows if bid is not None and hr is not None}
+    except Exception as e:
+        print(f"  [SEASON-HR] Could not load outcomes-cumulative ({e}) — continuing without it")
         return {}
 
 
@@ -927,7 +981,18 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         status.warn("Vegas Implied Totals", f"Failed: {e}")
 
     # ── Live tiers (rolling window) ───────────────────────────────────
-    live_tiers = build_live_tiers(date_str)
+    # B5 (2026-05-20): pass today's lineup player_ids so build_live_tiers
+    # can exclude prior-season-only ghosts (Crim) while still admitting
+    # rookies and IL-returnees who appear in any posted/recent/fallback
+    # lineup tier.
+    lineup_player_ids: set[int] = set()
+    for _gpk, _lu in lineups.items():
+        for _side in ("home", "away"):
+            for _p in _lu.get(_side, []):
+                _pid = _p.get("player_id")
+                if _pid:
+                    lineup_player_ids.add(_pid)
+    live_tiers = build_live_tiers(date_str, lineup_player_ids=lineup_player_ids)
     if live_tiers:
         tier_sizes = {t: len(v) for t, v in live_tiers.items()}
         status.ok("Live Tier Build", f"T1={tier_sizes.get(1,0)} T2={tier_sizes.get(2,0)} T3={tier_sizes.get(3,0)}")
@@ -1049,6 +1114,13 @@ def score_live_slate(
     season_lookup = load_season_batting_lookup(season)
     if season_lookup:
         print(f"  [SEASON-BATTING] Loaded {len(season_lookup)} rows for season {season} fallback")
+
+    # B8 (2026-05-20): outcomes-cumulative season HR per batter, used by
+    # score_power's HR-floor lookup. Replaces the MLB-API-derived b["hr"]
+    # which lags actuals by ~3 days. See load_season_hr_lookup docstring.
+    season_hr_lookup = load_season_hr_lookup(date_str)
+    if season_hr_lookup:
+        print(f"  [SEASON-HR] Loaded outcomes-cumulative HR for {len(season_hr_lookup)} batters through {date_str}")
 
     # Career-prior shrinkage data (only loaded when the feature flag is on).
     # When off (default), this stays empty and enrich_with_career_prior
@@ -1198,6 +1270,11 @@ def score_live_slate(
             "recent_window_days": log.get("recent_window_days"),
             # ev_trend: Phase 2 — populated by the nightly Statcast ETL.
             "ev_trend": b.get("ev_trend"),
+            # B8 (2026-05-20): outcomes-cumulative season HR — authoritative
+            # source for score_power's SEASON_HR_FLOOR_TIERS lookup. Replaces
+            # the MLB-API-lagged b["hr"]. 0 when batter has no outcomes rows
+            # (true rookies, etc.) which correctly skips the floor.
+            "season_hr": season_hr_lookup.get(player_id, 0),
         }
         # Layer in advanced Statcast features when available (defaults
         # to neutral if missing — score_power handles None gracefully).
@@ -1269,6 +1346,12 @@ def score_untiered_starters(
     untiered = []
     season = int(date_str[:4])
     season_lookup = load_season_batting_lookup(season) or {}
+    # B8 (2026-05-20): outcomes-cumulative HR for the floor lookup.
+    # Without this, T4 batters never had `hr`/`season_hr` set at all and
+    # the floor never fired (Kurtz 8 HR scored 33.5, Rooker 7 HR scored
+    # 26.3 on 2026-05-20). Setting season_hr from outcomes lets the floor
+    # apply to T4 the same way it does to T1/T2/T3.
+    season_hr_lookup = load_season_hr_lookup(date_str)
     # Career-prior shrinkage data (no-op when USE_CAREER_PRIOR is False).
     import score_batters as _sb
     career_lookup = load_career_lookup() if _sb.USE_CAREER_PRIOR else {}
@@ -1330,6 +1413,12 @@ def score_untiered_starters(
                     # (the source comes from the same lineup payload p
                     # that we're enumerating).
                     "_lineup_source": p.get("lineup_source"),
+                    # B8 (2026-05-20): outcomes-cumulative season HR. 0 for
+                    # true rookies (no prior outcomes rows). The floor in
+                    # score_power skips when season_hr <= 0, so 0-default
+                    # correctly no-ops for rookies; for real T4 starters
+                    # with HRs, the floor now fires.
+                    "season_hr": season_hr_lookup.get(pid, 0),
                 }
                 if season_lookup:
                     stub = enrich_with_season_batting(stub, season_lookup)
@@ -1338,9 +1427,20 @@ def score_untiered_starters(
                     # play_rate. Without this, T4 batters would always read
                     # `games`=None and skip dampening — exactly the cohort
                     # most likely to be platoon hitters.
+                    # 2026-05-20 (B9): also attach `bats` (handedness) and
+                    # `hr` (parity with live-tier shape). Without `bats`,
+                    # compute_composite line ~1076 defaulted to "R" so
+                    # every LHB and switch-hitter on T4 got the wrong park-
+                    # handedness skew and wrong platoon advantage. `hr` is
+                    # informational only — score_power's floor reads
+                    # `season_hr` (B8) from outcomes-cumulative.
                     sb_row = season_lookup.get(pid) or {}
                     if sb_row.get("games") is not None:
                         stub["games"] = sb_row["games"]
+                    if sb_row.get("bats"):
+                        stub["bats"] = sb_row["bats"]
+                    if sb_row.get("hr") is not None:
+                        stub["hr"] = sb_row["hr"]
                 if career_lookup:
                     stub = enrich_with_career_prior(stub, career_lookup)
                 stubs.append((stub, game, i, side))
@@ -1490,6 +1590,12 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                     ),
                     "recent_window_days": 38,
                     "ev_trend": None,
+                    # B8 (2026-05-20): offline sim doesn't have an outcomes
+                    # table to compute outcomes-cumulative HR from, so use
+                    # b["hr"] directly. b["hr"] in offline mode IS the
+                    # ground-truth season HR (sourced from mlb_2025_tiers),
+                    # without the MLB-API lag that affects the live path.
+                    "season_hr": int(b.get("hr", 0) or 0),
                 }
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,
