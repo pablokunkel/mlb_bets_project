@@ -115,6 +115,10 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     # 2026-05-03 (PR #21): vegas_implied_total -> vegas_team_total_pct rename,
     #                       vegas_team_total_raw added (was previously JSON-only)
     # 2026-05-04 (PR #34): lineup_source — flags posted / recent:DATE / roster_fallback
+    # 2026-05-20 (B8): season_hr added — outcomes-cumulative HR count
+    # entering the date, used by score_power's HR-floor lookup and by
+    # backtest_factors.rescore_row so backtests can apply the same floor
+    # that production does.
     pick_inputs_sql = """
         INSERT OR REPLACE INTO pick_inputs (
             date, batter_id,
@@ -129,8 +133,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             hr_park_factor,
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
-            bats, throws, weather_source, barrel_pct_source, lineup_source
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?)
+            bats, throws, weather_source, barrel_pct_source, lineup_source,
+            season_hr
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -250,6 +255,12 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     inputs.get("weather_source"),
                     inputs.get("barrel_pct_source"),
                     inputs.get("lineup_source"),
+                    # B8 (2026-05-20): outcomes-cumulative HR. Defaults to
+                    # None for older row payloads (pre-B8 picks_history JSON
+                    # files); load is still successful, column stays NULL,
+                    # and backtest_factors.rescore_row falls through to its
+                    # legacy behavior for those rows.
+                    inputs.get("season_hr"),
                 ))
                 n_inputs += 1
             except Exception:

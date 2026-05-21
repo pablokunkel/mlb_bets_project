@@ -111,6 +111,326 @@ Option A is the smallest change. Option B is the most accurate but doubles the p
 
 ---
 
+## Model factor review & heatmap (2026-05-19/20 sessions)
+
+A factor-by-factor audit of the 6-factor composite, plus tooling/data carry-forwards. **Form** and **Matchup** are done — PRs **#56** (`form-factor-rebuild`) and **#57** (`matchup-vulnerability-fix`). The 2026-05-20 scoring audit (`docs/scoring_audit_2026-05-20.md`) added B8/B9/B10 — see those entries for the audit findings they wrap.
+
+**Sequencing (post-2026-05-20):**
+- **Phase 1 (must land first):** B8 (outcomes-cumulative season_hr + pick_inputs column).
+- **Phase 2 (independent, parallel-shippable):** B5, B7, B9, B10.
+- **Phase 3 (depends on B8):** B6 (Power rebuild), B4 (pitcher recency tighten — parallel-ok).
+- **Phase 4 (depends on all above):** A1 (weight refit).
+- **A1–A4 are gated** as documented per-entry; A1 specifically requires B6 + B8 + B9 (not just #56/#57 anymore).
+- **B1–B3 and C1–C3 are independent** — self-contained branches; can run in parallel in separate chats.
+
+Background context: `CLAUDE.md` ("Current work" section), the #56/#57 PR descriptions, `docs/scoring_audit_2026-05-20.md`, and the diagnostic tool `diagnostics/batter_ab_heatmap.py`. The earlier "recent singles/doubles" idea is already folded into the rebuilt `score_form` (the 30-game AVG term) — no separate item.
+
+> Method note for the factor reviews (B1–B3): same approach that worked for Form and Matchup — decompose every input the factor uses, trace where each value actually comes from, check for proxies / hard caps / mislabels / paths that disagree, verify it recalculates and matches the DB, then write findings + a fix PR.
+
+### A1. Refit composite weights after the Form + Matchup changes
+
+**Status.** Gated — blocked until **B6 + B8 + B9 land** AND ~1–2 weeks of pipeline runs accrue on the new code. Previously gated on #56 + #57 only; widened 2026-05-20 after the scoring audit (`docs/scoring_audit_2026-05-20.md`) revealed that `backtest_factors.rescore_row` has never been able to apply the season-HR floor (no `hr` column in `pick_inputs` — finding #3). That means every refit since 2026-05-03 (when the floor went on) was calibrated against backtest data that scored *without* the floor while production *has* it. Refitting now would inherit the same divergence.
+
+**Why it matters.** `WEIGHT_CONFIGS["default"]` (power 0.250, matchup 0.264, park 0.000, form 0.279, weather 0.057, lineup 0.150) was logistic-regression-fit on the *old* Form and Matchup inputs **and** on backtest data that under-applied Power. #56 replaced Form's inputs wholesale (recent HR/ISO/AVG on new game-count windows, vs the old capped-barrel + SLG-delta proxies); #57 changed Matchup's vulnerability input set (added FB%) and redistributed the rookie bonus; B6 will rebuild Power (recent quality-contact + smooth floor curve). The 0.279 / 0.264 / 0.250 coefficients now sit on inputs that are about to change again. The composite is mis-weighted until refit.
+
+**Working assumption (2026-05-20).** Do **not** assume the current weights are "approximately right." Backtest-vs-production divergence on the floor means we cannot estimate the bias without first removing that divergence (B8 finding 2). Treat the refit as a from-scratch calibration on clean data.
+
+**Spec.** Refit via `refit_weights.py`. Prerequisites in this file's Open Action Items: (#1/#5) `raw_data.csv` does not auto-extend — wire the nightly CSV append, or refit directly off `pick_inputs` in the DB; (#2) `refit_weights.py`'s hardcoded baseline is stale. Resolve those first or as part of this. The refit needs post-B6/B8/B9 `pick_inputs` rows with the new columns populated — hence the data-accrual gate.
+
+**Files.** `refit_weights.py`, `score_batters.py` (WEIGHT_CONFIGS), `WEIGHT_REFIT_LOG.md`, possibly `run_outcomes.bat`.
+
+**Done when.** New weights fit on post-change data, logged in `WEIGHT_REFIT_LOG.md`, `WEIGHT_CONFIGS["default"]` updated.
+
+### A2. Phase 2 — real exit-velocity trend (nightly Statcast ETL)
+
+**Status.** Gated on #56 (needs the `ev_trend` column it adds).
+
+**Why it matters.** #56's `score_form` has a 4th input slot — `ev_trend`, a real exit-velocity trend — wired with skip-on-missing and currently always None. Real EV is contact-quality signal that recent ISO/AVG don't fully capture. The model once had a real EV path (`try_fetch_statcast_recent` in `generate_picks.py`) but it is dead code: per-player `statcast_batter` calls hung the noon run (the 2026-04-29 incident). The current game-log feed is box-score only — no EV.
+
+**Spec.** Compute rolling EV in the **nightly** ETL (it already runs 15–25 min of Statcast, off the noon critical path) — not at noon. Per batter: pull recent batted-ball Statcast (`launch_speed`), average it over a window (~last 10–15 games), store it; the trend = recent EV − season EV. Populate `pick_inputs.ev_trend`; `score_form` activates the term automatically once it is non-NULL. Revisit the `min_max_scale(ev_trend, -3, 3)` anchor in `score_form` against real data.
+
+**Files.** `etl/etl_nightly.py`, `etl/db.py` (rolling-EV store), `generate_picks.py` (enrich `ev_trend` onto the batter dict), `score_batters.py` (anchor).
+
+**Done when.** `ev_trend` is non-NULL on new `pick_inputs` rows and reflects recent-vs-season EV; the 4-input `score_form` is live.
+
+### A3. Form-rename consumer cleanup
+
+**Status.** Gated on #56.
+
+**Why it matters.** #56 added honest new `pick_inputs` columns and stopped writing the old `recent_*_14d` proxies. Two consumers still read the old columns and go NULL/stale for new rows: `export_site_data.py` (the Form factor-decomposition input list + the column→factor map, plus a Big Board `recent_hr_14d` field feeding a dashboard filter) and `factor_diagnostics.py` (which *re-implements* the old proxy — `min(25, recent_iso_est*100)` — so it needs a logic rework, not just a rename).
+
+**Spec.** `export_site_data.py`: swap `recent_hr_14d / recent_barrel_pct_14d / ev_trend_14d` → `recent_hr_10g / recent_iso_30g / recent_avg_30g` in `factor_inputs["form"]` (~line 672) and the column→factor map (~line 889); for the Big Board field (~line 178) decide whether to keep the JSON key (renaming ripples to `index.html`'s filter). `factor_diagnostics.py`: rework its form section to the new windows, or import `score_form` directly.
+
+**Files.** `export_site_data.py`, `diagnostics/factor_diagnostics.py`, possibly `mlb_hr_bet_site/index.html`.
+
+**Done when.** Dashboard Form decomposition reads the new columns; `factor_diagnostics` reflects the rebuilt form.
+
+### A4. Matchup v1 consolidation
+
+**Status.** Gated on #57.
+
+**Why it matters.** Two loose ends from the Matchup decomposition not fixed in #57. (1) v1 `score_matchup` keeps its own inline vulnerability fallback — only hr9 + hh, a 2-input third path beyond the slate-percentile path and the now-5-input `score_pitcher_vulnerability`. (2) v1 adds a flat +10 platoon bonus for opposite handedness; v2 adds 0 (intentional — handedness is inside archetype similarity), so v1- and v2-scored batters aren't on the same scale.
+
+**Spec.** Make v1 `score_matchup` call `score_pitcher_vulnerability` instead of its inline 2-input block — one vulnerability function across both versions. For platoon: v1's `woba_vs_hand` already carries handedness; decide if the +10 is double-counting and should be removed to match v2 (likely yes).
+
+**Files.** `score_batters.py` (`score_matchup`), possibly `pitcher_profile.py`.
+
+**Done when.** One shared vulnerability function for v1/v2; consistent platoon handling.
+
+### B1. Power factor review
+
+**Status.** Ready to start — independent.
+
+**Why it matters.** Next factor in the sweep (weight 0.250). Strong prior suspicion: `barrel_pct` / `exit_velo` from `season_batting` are *synthetic estimates* (`barrel ≈ hr_per_pa×200`, `ev ≈ 82 + slg×15`) — `barrel_pct_source` is only ever `synthetic_hr_per_pa` / `season_batting_fallback` / None, never `statcast`. So Power may run on synthetic contact-quality data exactly as Form did. `pull_fb_pct` is known-NULL on the daily path. The season-HR floor (5→50, 8→60, 12→70, 18→78, 25→85) keys off `season_batting.hr`, which the heatmap showed undercounts vs `outcomes` (Buxton 11 stored vs 13 actual) → mis-tiers hitters.
+
+**Spec.** Decompose every Power input — barrel%, exit velo, HR/FB%, ISO, xwOBA-on-contact, pull-FB% — plus the season-HR floor: trace each value's source, real vs synthetic, caps/proxies, whether it recalculates daily. Verify against the DB. Findings + a fix PR.
+
+**Files (review).** `score_batters.py` (`score_power`, `compute_season_hr_floor`), `etl/etl_nightly.py` (`sync_season_batting`), `generate_picks.py` (`enrich_with_season_batting`), `fetch_daily_data.py`, `features_v2.py`.
+
+**Done when.** Every Power input graded real/synthetic/bug; fixes specced or PR'd.
+
+### B2. Weather factor review + empirical correlation decomposition
+
+**Status.** Ready to start — independent.
+
+**Why it matters.** Weather (weight 0.057) — flagged (with Park) as a poor predictor. The explicit question: does any weather input we pull (temperature, wind, humidity, dome) actually correlate with HR, or are we pulling stats that don't carry HR signal? Two hypotheses — bad ingestion (believed working) vs the stats genuinely not mattering as wired.
+
+**Spec.** (1) Decompose `score_weather` — the temperature piecewise curve, the handedness-aware wind logic (cosine of wind-to-CF angle × speed), humidity, dome handling. (2) Empirical decomposition: bucket every game-cell by temperature band / wind band / humidity band / dome, compute the actual HR rate per bucket — from `pick_inputs` weather columns ⨝ `outcomes`, and/or the `historical_calibration` table (2024–25 weather backfill, bigger sample). Grade each input: does HR rate move across its buckets? A flat input is dead weight.
+
+**Files (review).** `score_batters.py` (`score_weather`, `score_temperature`, wind logic), `etl/wind_utils.py`, `etl/etl_morning.py`, `etl/historical_calibration.py`. The dashboard's existing Temp×Humidity / Wind diagnostics and the heatmap tool are useful references.
+
+**Done when.** Each weather input graded against empirical HR rate; a keep / re-source / drop recommendation per input.
+
+### B3. Park + Lineup factor review
+
+**Status.** Ready to start — independent.
+
+**Why it matters.** The two remaining small factors. Park (0.000 in the weighted average + a 0.05 additive bonus) — flagged weak; the `park_factors` table is a hardcoded seed, never refreshed live. Lineup (0.150) — the batting-order→score curve (1→85 … 9→38) and how often `batting_order` is NULL / `roster_fallback`.
+
+**Spec.** Decompose `score_park` + `score_lineup_position`. Park: is the seed park-factor data accurate / worth refreshing from Savant? Does the additive +0.05 bonus behave as intended? Lineup: are the AB-per-position assumptions current; how often does `batting_order` fall back. Findings + any fix.
+
+**Files (review).** `score_batters.py` (`score_park`, `score_lineup_position`), `etl/park_factors_seed.py`, `etl/etl_nightly.py` (`sync_park_factors`).
+
+**Done when.** Both decomposed, data verified, fixes specced.
+
+### B4. Tighten pitcher-recency window in Matchup
+
+**Status.** Ready to start — independent (depends on `pitcher_recent` ETL output already wired into Phase 1 Matchup).
+
+**Why it matters.** Surfaced during the 2026-05-20 low-score diagnosis. Burger faced Kyle Freeland on 5/20 with `pitcher_hr_per_9 = 1.9` (season) but `recent_hr9_21d = 3.46` (recent — 83% spike). The current Phase 1 implementation blends `RECENT_HR9_BLEND_WEIGHT = 0.60` against the season number, giving an effective HR/9 of ~2.8 — directional but smoothed. Matchup score still only 67.9; the hitter went yard. The 21-day window pulls in starts that are already stale once a pitcher has clearly turned. User's framing: **"recency bias for matchups"** — go further than the current blend.
+
+**Spec.** Replace the fixed 21-day pitcher window with a **last-N-starts** window (N=5 candidate; test N=3, 7). Re-weight the blend (current 60/40 → candidate 70/30 or pure-recent when N starts present). Look at whether to apply the same logic to `pitcher_era_recent` and `pitcher_k9_recent`, not just HR/9. Backtest deltas before shipping. Probably feature-flagged.
+
+**Files.** `etl/pitcher_recent.py` (window definition), `pitcher_profile.py` (`score_pitcher_vulnerability` + `compute_slate_context`), `score_batters.py::RECENT_HR9_BLEND_WEIGHT`.
+
+**Done when.** Last-N-starts window implemented behind a flag, backtest run on the last 30 days vs current 21d/60-40 blend, decision documented in `WEIGHT_REFIT_LOG.md`.
+
+### B5. Tier qualification filter — `2026 games > 0 OR in today's lineup`
+
+**Status.** Ready to start — independent. Small PR.
+
+**Why it matters.** Surfaced 2026-05-20: Blaine Crim ranked #6 by Power with bo=bench despite having zero 2026 games (released by his team). `build_live_tiers` in `fetch_daily_data.py:659` falls back to a 2025 backfill window and qualifies any player with `games ≥ 5 AND hr ≥ 1` regardless of season. Crim qualified on his 2025 line (20 g / 5 HR) and got pulled into today's slate scoring.
+
+A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-returnees on their first day back. The user's framing: **combined filter.** Keep a player in the qualification pool if EITHER condition holds:
+- has `season_batting season=2026 games > 0`, OR
+- appears in today's `daily_lineup` (any tier — posted, recent, or roster fallback)
+
+**Spec.** Modify `build_live_tiers` to apply the combined filter when selecting which players enter the tier ranking. Players who pass on the "in_lineup" branch but have no 2026 history will likely score low (no inputs) — that's fine and intended; the IL/scratch filter (B7) catches the inverse case where they have history but aren't playing.
+
+**Files.** `fetch_daily_data.py::build_live_tiers`, possibly `generate_picks.py::main` if the lineup lookup needs to happen before tier build.
+
+**Done when.** Crim and analogous prior-season-only players disappear from 2026 slates; a confirmed rookie or recently-activated player still appears the moment their name posts in `daily_lineup`.
+
+### B6. Power Phase 1 rebuild — recent quality-contact blend + smooth HR-floor curve
+
+**Status.** Gated on B8 — the floor curve must read `season_hr` from outcomes (not from the lagging MLB API). Mirrors the Form rebuild shape (PR #56).
+
+**Note (2026-05-20).** B6c (the original "off-by-one" sub-finding) is resolved by B8: the Burger 8-HR-floor bug was not a tier-loop off-by-one but the MLB API HR lag flowing through `b["hr"]`. Once B8 wires `season_hr` from `outcomes` into the batter dict, the existing `compute_season_hr_floor` works correctly; B6 just replaces the cliff with a smooth curve.
+
+**Why it matters.** Surfaced 2026-05-20 low-score diagnosis. Two problems hit at once:
+
+1. **`score_power` has no recent quality-contact input.** It reads season-aggregate `barrel_pct`, `exit_velo`, `hr_fb_pct`, `iso`, `xwoba_contact`, `pull_fb_pct` from `season_batting`. A slow-starter-now-hot hitter (Alec Bohm: 4 HR season, but hot last 2 weeks) gets dragged by his stale season aggregate. Bohm scored Power=4.0 on 5/20 with real recent production the model is blind to.
+2. **The Season-HR floor is a 5-step cliff with a calibration off-by-one.** `SEASON_HR_FLOOR_TIERS` in `score_batters.py:505` defines floors at 5/8/12/18/25 HR. Burger (8 HR) showed Power=50.0 on 5/20 — should be 60 (the 8-HR floor). Either `season_hr` isn't reaching `score_power` correctly for the live tier path, or there's an off-by-one in the tier selection. The cliff structure also means a 7-HR hitter gets 50 and an 8-HR hitter would get 60 (10pt jump for one extra HR) — discrete, not smooth.
+
+**Spec (two sub-changes, ship together behind a feature flag, backtest before flipping on):**
+
+**B6a — Recent quality-contact blend.** Add `recent_barrel_pct_14d`, `recent_xwoba_contact_14d`, `recent_iso_14d` to the inputs available to `score_power`. Same skip-on-missing pattern as the Form `ev_trend` slot — if absent, the season inputs carry the score; if present, they participate in the mean. Wire a real (cached, batched) Statcast pull through `etl/etl_nightly.py` or `etl/etl_morning.py` to populate the new columns on `pick_inputs`. **Do not** revive the per-player `statcast_batter()` calls that hung the noon pipeline on 2026-04-29; use a single bulk Savant fetch per slate, same pattern as `fetch_daily_data._fetch_season_batting_splits`.
+
+**B6b — Smooth HR-floor curve.** Replace the 5-step `SEASON_HR_FLOOR_TIERS` with a continuous curve. **Default candidate: log-based, no cap** — `floor = c * ln(season_hr + 1)`, with `c` calibrated so 18 HR → 78 (matches current Schwarber outcome). At c=26.5 this gives ~43 at 4 HR (Bohm), ~58 at 8 HR (Burger fix), ~78 at 18 HR, ~91 at 30 HR. Backtest a `sqrt`-based variant as comparator. Whichever wins on 30-day rank-correlation-with-HR backtest data ships; document the call in `WEIGHT_REFIT_LOG.md`.
+
+**B6c — Investigate the 8-HR floor mismatch.** While the floor logic is being rewritten, trace why Burger's 8 HR didn't trigger the 60-tier floor on 2026-05-20 — is `season_hr` being read from `batter.get("season_hr")` or `batter.get("hr")`, and does the live-tier path populate either? This may or may not survive the B6b rewrite, but document the root cause.
+
+**Files.** `score_batters.py` (`score_power`, `SEASON_HR_FLOOR_TIERS`, `compute_season_hr_floor`), `etl/etl_nightly.py` or `etl/etl_morning.py` (recent Statcast pull), `etl/db.py` (new `pick_inputs` columns), `load_picks_to_db.py`, `generate_picks.py` (assemble recent stats into the batter dict in all 3 paths: tiered live, untiered, offline sim — mirror the PR #56 fix that missed `fetch_form_data_batch`).
+
+**Done when.** Bohm-class slow-starter-now-hot hitters get Power > 30 when their recent Statcast supports it. Burger's 8 HR floors cleanly to ~58 (log) without a cliff. Schwarber sits near current 78 (log calibration preserved). Backtest deltas documented; flag flipped on after WEIGHT_REFIT_LOG decision.
+
+### B7. IL / scratch filter — replace lineup-fallback rows with roster-status data
+
+**Status.** Ready to start — scoped in detail during 2026-05-20 session. 2–3 hour build estimate.
+
+**Why it matters.** Surfaced 2026-05-20: Ryan Jeffers ranked #2 by Form on 5/20 despite being placed on the IL before 5/19's game. Daily lineup fell back to "recent:2026-05-19" (when he was active) and the model had no way to know he wouldn't play. The posted-lineup feed catches every absence once posted, but ~60% of the 5/20 slate (229 of 392 batters) was on fallback lineups before posting — the residual window where IL'd / suspended players slip through.
+
+**Spec (V1, expected to ship as one PR):**
+
+1. **DB migration** (`etl/db.py`):
+   - Add `lineup_source TEXT` column to `daily_lineup` (already computed in `fetch_daily_data.py:283` but never persisted — see `etl/etl_morning.py:291` INSERT).
+   - New table `daily_player_status (date, player_id, status_code, status_description, is_likely_out INTEGER, source, fetched_at)`.
+
+2. **New fetcher** in `fetch_daily_data.py`: `fetch_team_roster_status(team_id, date_str)` — calls `/teams/{team_id}/roster?rosterType=fullRoster&date={d}`, returns `{player_id: {status_code, status_description}}`. ~30 calls per slate (one per team). Use the `home_team_id`/`away_team_id` already returned by the lineup hydrate (currently thrown away after the fallback decision; persist into `daily_slate` and we're set).
+
+3. **New ETL step** (`etl/etl_morning.py` Step 2.5, after lineups): walk `daily_lineup`, for each Tier 2/Tier 3 fallback-sourced row look up the player's status, write to `daily_player_status` with `is_likely_out = (status_code != 'A')`. Posted-lineup rows (Tier 1) are not overridden — the team posted them, trust it.
+
+4. **Filter in `generate_picks.py`**: when assembling `eligible_batters` (~line 1114), keep `is_likely_out=1` rows in the scored output but set `selected=0`. Preserves the diagnostic record (Jeffers stays on the big board with his Form=82.1 + an `IL` badge); top-8 promotes ranks 9+. **Do not zero out composite** — that would break the "composite ≈ HR probability" invariant.
+
+5. **Site changes**:
+   - Big board: add a small status badge column reading `status_description` ("10-day IL", "Bereavement", etc.) wired from `daily_player_status`.
+   - Top-8 card: filters `is_likely_out=1` rows out of the eligible pool before the rank-8 cut.
+   - Heatmap (`diagnostics/batter_ab_heatmap.py` and the future tab in C1): same badge, no behavior change to the cells themselves.
+
+**Decisions baked into V1 (all confirmed):**
+- Filter scope: **Tier 2/3 fallback rows only.** Don't override a posted lineup.
+- Status threshold: **`status_code != 'A'`.** Covers IL + Paternity + Bereavement + Suspended + Restricted with one rule.
+- Top-8 handling: **omit (`selected=0`), don't zero composite.** Diagnostic record preserved.
+- Late same-day scratches (1pm injury news after a 9am picks publish): **out of scope for V1.** Manual-scratch dashboard button + late-afternoon rerun parked for V2.
+
+**Optional enhancement to consider during the build.** When the filter promotes a rank-9+ player into the top-8, log it (e.g., `daily_picks.promoted_due_to='il_filter'`). This is *not* to validate the filter itself (filtering an IL'd player is strictly ≥ keeping them — they have 0 ABs). It's a **calibration audit** lever: did the promoted player hit at a comparable rate to original top-8 picks, or does the model's rank 8↔9 boundary capture less signal than we think? Useful retrospectively, doesn't change V1 behavior either way.
+
+**Files.** `etl/db.py`, `fetch_daily_data.py` (new `fetch_team_roster_status`), `etl/etl_morning.py` (new Step 2.5), `generate_picks.py` (eligibility filter), `load_picks_to_db.py`, `export_site_data.py`, `mlb_hr_bet_site/index.html` (badge column), `diagnostics/batter_ab_heatmap.py` (badge).
+
+**Done when.** Jeffers and analogous IL'd players appear on the big board with an `IL` badge but don't make the top-8 card. Bench/IL detection works on the day-of for any player whose status the MLB roster API reflects by morning.
+
+### B8. Pre-B6 prereqs — outcomes-cumulative `season_hr` + `pick_inputs.season_hr` column
+
+**Status.** Ready to start — must land before B6. From the 2026-05-20 scoring audit (`docs/scoring_audit_2026-05-20.md`, findings #1 + #3).
+
+**Why it matters.** Two convergent problems both fix here:
+
+1. **MLB API HR-aggregate lag.** `fetch_daily_data._fetch_season_batting_splits` calls `/api/v1/stats?stats=byDateRange` (line 537-548). The endpoint **lags HR totals by ~3 days** while updating the games count immediately. Direct API replay on 2026-05-20 confirmed: `endDate=2026-05-17/18/19` all returned Burger HR=7, even though he hit his 8th on 5/17 and `outcomes` recorded the event. `endDate=2026-05-20` finally returned HR=8. That lagged HR count flows `_splits_to_batters.b["hr"]` → batter dict → `score_power`'s `season_hr` lookup → `compute_season_hr_floor` lands one tier too low. On 2026-05-20: Burger (8 HR) scored Power=50 instead of 60. Aranda, Dingler same. Jacob Young (5 HR) scored 4.0 — floor didn't fire at all. Two 12-HR batters scored 60 (should be ≥70).
+
+2. **`backtest_factors.rescore_row` can never apply the floor** because `pick_inputs` has no `hr` or `season_hr` column (verified via `PRAGMA table_info(pick_inputs)`). Every backtest re-score returns `base_score`, while production has the floor applied. This is a silent backtest-vs-live divergence affecting **every weight refit since 2026-05-03** when `USE_SEASON_HR_FLOOR` flipped on. A1 cannot refit cleanly until this is fixed.
+
+**Spec.**
+
+1. **DB migration** (`etl/db.py`): add `season_hr INTEGER` column to `pick_inputs`. Idempotent ALTER TABLE in the migration block (same pattern PR #56 used for the new Form columns).
+
+2. **Cumulative-HR helper.** In `generate_picks.py` (or a small utility module), add a function that takes a list of `batter_id`s + a date string and returns `{batter_id: int_hr_total}` via a single batched query:
+   ```sql
+   SELECT batter_id, SUM(hr_count) AS season_hr
+   FROM outcomes
+   WHERE date >= ? AND date < ?
+   GROUP BY batter_id
+   ```
+   Where the lower bound is the season opener (`2026-03-27` or detect-from-data) and the upper bound is the scoring date (strict-less-than: cumulative through yesterday). Reuse the pattern from `compute_lab_accuracy.py:120`. Batters not in the result default to 0.
+
+3. **Wire into all three batter-dict assembly paths in `generate_picks.py`**:
+   - Live tiered (~line 1192-1208): set `entry["season_hr"] = season_hr_lookup.get(player_id, 0)`.
+   - T4 untiered (~line 1324-1346): set `stub["season_hr"] = season_hr_lookup.get(player_id, 0)`.
+   - Offline sim (~line 1479-1493): set `entry["season_hr"] = season_hr_lookup.get(player_id, 0)`.
+
+4. **Make `score_power` prefer `season_hr` over `hr`.** Currently (`score_batters.py:603-605`):
+   ```python
+   season_hr = batter.get("season_hr")
+   if season_hr is None:
+       season_hr = batter.get("hr")
+   ```
+   This already falls back correctly. **Verify** that once `season_hr` is set on the dict, the fallback path is no longer exercised. Optionally remove the `hr` fallback after a week of confidence.
+
+5. **Persist `season_hr` to `pick_inputs`.** `load_picks_to_db.py` INSERT needs to include the new column. Source: the same `season_hr` value already on the batter dict (don't re-compute).
+
+6. **Update `backtest_factors.rescore_row`** to read `season_hr` from the `pick_inputs` row and set it on the rebuilt batter dict. Once this lands, set `USE_SEASON_HR_FLOOR=True` is consistent across backtest and live.
+
+**Files.** `etl/db.py`, `generate_picks.py` (helper + 3 assembly paths + load_picks call site), `load_picks_to_db.py`, `backtest_factors.py`, `score_batters.py` (verify only, optional cleanup).
+
+**Done when.**
+- `pick_inputs.season_hr` exists and is populated nightly.
+- Burger / Aranda / Dingler score Power=60 instead of 50 on a fresh run (assuming season_hr ≥ 8).
+- `backtest_factors.rescore_row` produces the same Power score as the live `score_power` for the same `pick_inputs` row.
+- The MLB-API-lag dependency is severed from the floor logic.
+
+### B9. T4 untiered stub enrichment — `hr`, `bats`, real `games`
+
+**Status.** Ready to start — independent of B8 mechanically but conceptually paired (both about making the batter dict complete before scoring). From the 2026-05-20 audit (findings #2, #4, #5).
+
+**Why it matters.** `score_untiered_starters` (`generate_picks.py:1324-1346`) builds T4 stubs with only `name, team, player_id, _lineup_source`. `enrich_with_season_batting` writes Statcast proxies but not `hr`, not `bats`, and only writes `games` when the `season_batting` row has it. Three downstream bugs:
+
+1. **`hr` never set** → `score_power` floor never fires for T4. Evidence on 2026-05-20: Kurtz (8 HR, T4) scored Power=33.5; Rooker (7 HR, T4) scored 26.3; Greene (4 HR, T4) scored 21.9. None lifted to their qualifying floor.
+2. **`bats` never set** → `compute_composite` (`score_batters.py:1076`) defaults to `"R"` → every LHB or switch T4 batter gets wrong park handedness skew and wrong platoon bonus.
+3. **`games=None` when no season_batting row** (true rookies, just-recalled minors) → `_platoon_dampener(games, None)` returns 1.0 → true rookies get the **full daily-starter multiplier** while real platoon hitters with 30 games get dampened. Inverse of intent.
+
+**Spec.**
+- Extend `load_season_batting_lookup` in `generate_picks.py:164-172` to SELECT `hr`, `bats`, `games` in addition to current columns.
+- In `score_untiered_starters` stub assembly (~line 1324-1346), copy these into the stub: `stub["hr"]`, `stub["bats"]`, `stub["games"]` (None if absent).
+- After B8 lands: also set `stub["season_hr"]` via the same outcomes-cumulative lookup B8 introduces — this is the correct fix for T4 floor application, regardless of `season_batting.hr`.
+- Confirm `_platoon_dampener` treats `games=None` consistently — if it should no-op (current behavior), that's fine; if it should treat None as "untiered, assume sub-platoon," adjust.
+
+**Files.** `generate_picks.py::load_season_batting_lookup`, `generate_picks.py::score_untiered_starters`, possibly `score_batters.py::_platoon_dampener` for None handling.
+
+**Done when.** T4 batters with ≥5 season HR floor cleanly. Every T4 LHB / switch hitter has `bats` from `season_batting` (or carries `None` rather than silently-defaulted `"R"`). `games` is populated wherever possible and explicit-None where not.
+
+### B10. Audit cleanups — TBD pitcher, weather fallback, smaller items
+
+**Status.** Ready to start — independent. Bundle of low-effort fixes from the 2026-05-20 audit (findings #6, #10, plus the deferred small items).
+
+**Why it matters.** Each item alone is small; bundled they're a clean PR. None blocks B6 but all are real bugs.
+
+**Sub-items.**
+
+1. **"TBD" pitcher silently becomes `LEAGUE_AVG_PITCHER`.** `generate_picks.py:1165-1167` — if `slate["pitchers"].get(team)` is the literal string `"TBD"` (or missing), the matchup gets scored against a league-average synthetic pitcher with no provenance flag. Batters facing an unannounced starter get league-average credit that may be far from reality. **Fix:** detect `"TBD"` (and missing) → mark `selected=0` and stamp `_pitcher_source="tbd"`; don't score the batter against the league-avg synthetic.
+
+2. **Two weather scoring paths can disagree** on partial weather dicts. `compute_slate_context:217-220` requires `temp + wind + humidity` all non-None to enter the slate `weather_pct`. But `score_weather`'s fallback path (`score_batters.py:991-998`) imputes missing fields (`weather.get("temperature_f", 68)`, etc.) and produces a score regardless. A game with only `temp+wind` (humidity NULL) skips the slate percentile but gets fallback-scored on imputed humidity. **Fix:** make `score_weather` skip-on-missing — if any of `temp/wind/humidity` is None, return 50 with `_weather_source="partial"` rather than imputing.
+
+3. **`score_matchup` v1 `min(100, base + bonuses)` truncates the rookie bonus** when base is already 90+. `score_batters.py:699` and `pitcher_profile.py:761`. Rookie bonus (+15) and platoon (+10) become non-additive at the ceiling. **Fix:** apply bonuses BEFORE the final scale, not as additive at the end. Or accept and document — the comment trail is missing either way.
+
+4. **`LEAGUE_AVG_PITCHER.hr_per_9 = 1.2` vs comment "real 2026 ~1.27"** (`score_batters.py:455-464`). One-line update + comment refresh.
+
+5. **`PARK_CF_BEARING.get(venue, 0)` defaults to 0° for non-mapped venues** (`score_batters.py:59-91`). Add a defensive log/raise if a new venue surfaces; don't silently score wind against centerfield-bearing-of-due-north.
+
+6. **`score_lineup_position` None=35 vs "bench"=15** — 20pt gap on the absence-vs-bench boundary (`score_batters.py:840, 843`). Low production impact (None is rare on the live path) but consistency improvement: make None=15 or both=25 — pick one.
+
+**Files.** Per sub-item above; mostly `score_batters.py` + `generate_picks.py`.
+
+**Done when.** TBD pitcher games visibly flagged and not scored against synthetic. Weather scoring skips on partial data. Smaller items resolved and documented.
+
+### C1. Heatmap as a dashboard tab — replace the Hitters tab
+
+**Status.** Ready to start — independent.
+
+**Why it matters.** The batter × game heatmap built this session (`diagnostics/batter_ab_heatmap.py`) is a strict superset of what the dashboard's **Hitters tab** already does — the Hitters tab carries a basic 14-day HR-hitter × day scoreboard (`.hitters-innings-table`, fed by `hr_leaderboard.json`). The heatmap adds every batter (not just recent HR hitters), the full season, heat-shading by composite / board rank / any factor / rank-within-game, result glyphs, click-through to full per-game model detail (every input), row grouping, a date filter, and headline calibration cards. Putting it on the public dashboard gives it the same diagnostic lens used all session.
+
+**Spec.** Replace the Hitters tab's body with the heatmap (keep the tab; consider renaming it "Heatmap"). The standalone tool embeds its whole dataset inline in one generated HTML — for the site it must be **pipeline-fed**: (a) add a `heatmap.json` export to `export_site_data.py`, reusing the query logic in `batter_ab_heatmap.py:build_dataset()` (batters / dates / cells); (b) port the heatmap's CSS + JS into `index.html` as the Hitters-tab panel, reading `heatmap.json`; (c) delete the old Hitters scoreboard; (d) watch payload size — the standalone HTML is ~4.8 MB; trim the per-cell `in` / `hrs` detail or lazy-load the modal data if the JSON is too heavy for a web tab. `diagnostics/batter_ab_heatmap.py` stays as the standalone diagnostic / reference implementation.
+
+**Files.** `mlb_hr_bet_site/index.html` (new tab panel + CSS + JS), `export_site_data.py` (`heatmap.json` export), the daily export step.
+
+**Done when.** The dashboard's Hitters tab shows the live heatmap, refreshed daily by the pipeline.
+
+**Note.** `diagnostics/batter_ab_heatmap.py` + `.html` are currently uncommitted (in the worktree and the main checkout). Decide whether to also commit / PR the standalone tool — it's a useful diagnostic regardless of the tab work.
+
+### C2. Data hygiene — '???' teams and duplicate `daily_picks` identities
+
+**Status.** Ready to start — independent.
+
+**Why it matters.** Surfaced while building the heatmap. (1) `season_batting.team = '???'` for ~20 Athletics players (Langeliers, Kurtz, Rooker, …) — the team didn't resolve in `sync_season_batting`. `daily_picks` has the correct `OAK`; the live dashboard isn't affected (export reads team from `daily_picks`); but the source data is wrong. (2) `daily_picks` has stray rows where a player appears under a `"Lastname, F"` name with a full-name team (e.g. `"Butler, L"` / `"Athletics"` next to `"Lawrence Butler"` / `"OAK"`) — a fallback ingestion path creating duplicate identities. Neither breaks scoring (team is not a scoring input) but both pollute joins and diagnostics.
+
+**Spec.** Trace `sync_season_batting`'s team resolution — likely an abbreviation-map miss for the Athletics' current code; fix the map. Trace the `"Lastname, F"` rows to the ingestion path that emits them (a roster fallback) and dedupe / normalize names there.
+
+**Files.** `etl/etl_nightly.py` (`sync_season_batting`), `normalize_team_names.py`, `fetch_daily_data.py` (lineup/roster fallback); possibly a one-off cleanup of existing rows.
+
+**Done when.** No `'???'` teams in `season_batting`; no duplicate player identities in `daily_picks`.
+
+### C3. Investigate the Apr 17–26 model scoring blackout
+
+**Status.** Ready to start — independent.
+
+**Why it matters.** The heatmap shows a ~10-day band (2026-04-17 → 2026-04-26) with **no model scores at all** — `daily_picks` has zero rows for those dates, though games were played and HRs were hit. ~485 of the analysis window's HRs landed on un-scored days, a large share of them in this blackout. A pipeline that can silently emit zero output for 10 days is a real reliability gap.
+
+**Spec.** Determine what happened 4/17–4/26 — pipeline not running (this pre-dates the GitHub Actions migration?), a crash, a data-source outage. Check `etl_log`, the `.github/workflows` git history, any run logs. Then add a guard: the pipeline should fail loudly — not silently no-op — when it produces zero picks on a day that has games.
+
+**Files.** Investigation: `etl_log`, `.github/workflows/`, `generate_picks.py`. Fix: a zero-picks guard in `generate_picks.py` or a workflow check.
+
+**Done when.** Root cause documented; a loud-failure guard exists.
+
+---
+
 ## Parked
 
 ### Platoon detection (vs the soft dampener already shipped)

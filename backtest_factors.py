@@ -85,6 +85,7 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
             pi.temperature_f, pi.wind_mph, pi.wind_direction_deg,
             pi.humidity_pct, pi.is_dome,
             pi.batting_order,
+            pi.season_hr,
             dp.batter_name, dp.team AS batter_team, dp.game_pk,
             ds.venue AS game_venue,
             CASE WHEN o.hr_count > 0 THEN 1 ELSE 0 END AS hit_hr
@@ -127,6 +128,15 @@ def rescore_row(row: pd.Series) -> dict:
         "ev_trend": row.get("ev_trend"),
         "woba_vs_hand": row.get("woba_vs_hand"),
         "bats": "R",  # not stored; platoon advantage flag captures the diff
+        # B8 (2026-05-20): outcomes-cumulative season HR drives the
+        # SEASON_HR_FLOOR_TIERS lookup in score_power. Pre-B8, pick_inputs
+        # had no hr/season_hr column so this re-score path silently never
+        # applied the floor — backtest rank correlations were on
+        # floor-less scores while production was floor-applied since
+        # 2026-05-03. NULL for rows older than the B8 migration; floor
+        # falls through to no-op there (matches the pre-B8 backtest
+        # behavior, so old rows remain comparable).
+        "season_hr": row.get("season_hr"),
     }
     # Audit LOW: drop the `1.2` / `35` league-mean defaults so missing
     # pitcher_hr_per_9 / pitcher_hh_pct skip-on-missing through the v1

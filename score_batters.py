@@ -599,10 +599,18 @@ def score_power(batter: dict) -> float:
     # Hard floor based on the batter's accumulated season HR count.
     # Only ELEVATES the score; never pulls a good score down.
     # See SEASON_HR_FLOOR_TIERS comment block above for tier rationale.
+    #
+    # As of B8 (2026-05-20) `season_hr` is sourced from outcomes-cumulative
+    # in generate_picks.load_season_hr_lookup — authoritative because it
+    # comes from hr_events (Statcast pitch-level) via the morning ETL, not
+    # the MLB API byDateRange endpoint which lags HR aggregation by ~3 days.
+    # The `hr` fallback below is retained for callers (backtests, ad-hoc)
+    # that haven't been wired through B8; safe to remove once all callers
+    # are confirmed migrated.
     if USE_SEASON_HR_FLOOR:
         season_hr = batter.get("season_hr")
         if season_hr is None:
-            season_hr = batter.get("hr")  # live tier dict carries it as `hr`
+            season_hr = batter.get("hr")  # legacy fallback (live tier dict)
         floor = compute_season_hr_floor(season_hr)
         if floor > base_score:
             return floor
@@ -1229,6 +1237,11 @@ def compute_composite(
         # badge when source is "recent:*", so we know when to discount
         # the lineup-derived signals (lineup_score, score_lineup_position).
         "lineup_source":           batter.get("_lineup_source"),
+        # B8 (2026-05-20): outcomes-cumulative season HR. Authoritative
+        # source for score_power's SEASON_HR_FLOOR_TIERS lookup. Set on the
+        # batter dict by generate_picks.load_season_hr_lookup; persisted
+        # here so backtest_factors.rescore_row can apply the same floor.
+        "season_hr":               batter.get("season_hr"),
     }
 
     return {

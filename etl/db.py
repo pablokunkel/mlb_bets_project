@@ -685,6 +685,26 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
+    # 2026-05-20: B8 -- season-HR floor decoupled from MLB-API lag.
+    # The /api/v1/stats?byDateRange endpoint that _fetch_season_batting_splits
+    # uses lags HR aggregation by ~3 days while updating games count
+    # immediately. Producing wrong floor tiers (Burger 8 HR scored
+    # power_score=50 instead of 60 on 2026-05-20). Source the floor from
+    # outcomes-cumulative HR instead, and persist into pick_inputs so
+    # backtest_factors.rescore_row can apply the floor consistently.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("season_hr",
+         "ALTER TABLE pick_inputs ADD COLUMN season_hr INTEGER"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
     conn.commit()
 
 
