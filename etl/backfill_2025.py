@@ -30,14 +30,22 @@ the existing B8 helper works unchanged.
 
 Usage
 -----
-    # Default: walk full 2025 regular season
+    # Default: walk full 2025 regular season (~6-12 hours single-machine)
     python -m etl.backfill_2025
 
-    # Sub-window for testing
-    python -m etl.backfill_2025 --start 2025-04-01 --end 2025-04-15
+    # Sub-window for testing one date
+    python -m etl.backfill_2025 --start 2025-04-15 --end 2025-04-15
 
-    # Skip dates that already have pick_inputs rows (default behavior)
-    python -m etl.backfill_2025 --resume
+    # Chunk by date count — e.g. "do 30 dates tonight, stop, resume tomorrow"
+    python -m etl.backfill_2025 --max-dates 30
+    python -m etl.backfill_2025 --max-dates 30   # re-run picks up where it left off
+
+    # Chunk by wall-clock time — e.g. "fit into a 3-hour evening window"
+    python -m etl.backfill_2025 --max-runtime 3h
+    python -m etl.backfill_2025 --max-runtime 90m
+
+    # Combine: 3 hours OR 40 dates, whichever fires first
+    python -m etl.backfill_2025 --max-dates 40 --max-runtime 3h
 
     # Force re-run of dates that already exist
     python -m etl.backfill_2025 --force
@@ -52,10 +60,26 @@ roundtrips. The PR 4 perf fix makes pybaseball's HTTP cache hit across
 backfill dates (one pull per player for the whole season), so dates 2-N
 are much faster than date 1. Estimated full-season runtime: 6-12 hours.
 
+Chunking
+--------
+Two budget knobs let you split the run across sessions without babysitting:
+  --max-dates N    : stop after N dates have been processed (skipped dates
+                     don't count toward the budget — they're free).
+  --max-runtime D  : stop after wall-clock budget D elapses. Accepts
+                     '3h', '90m', '1h30m', or seconds-as-int. Checked
+                     between dates so actual stop can overrun by one
+                     date's worth of work.
+
+Either flag triggers a graceful stop: the in-flight date completes and
+commits, then the run prints a resume hint with the exact command to
+continue. Default resume mode picks up at the next unfinished date.
+
 Idempotence
 -----------
 Re-running a date deletes-and-replaces its daily_picks + pick_inputs rows.
-Safe to interrupt + resume.
+Safe to interrupt with Ctrl+C — each date commits to DB inside
+backfill_one_date, so a SIGINT in the middle of date N loses only that
+date's in-flight work; dates 1..N-1 are persisted.
 """
 
 from __future__ import annotations
@@ -245,17 +269,82 @@ def backfill_one_date(date_str: str, db_path: Path | None = None) -> dict:
             "elapsed_s": elapsed, "mode": mode}
 
 
+def parse_duration(s: str | None) -> float | None:
+    """Parse a duration string like '3h', '90m', '1h30m', '7200' into seconds.
+
+    Returns None when s is None / empty. Raises ValueError on malformed input
+    so the CLI surfaces the typo rather than treating it as no limit.
+    """
+    if s is None:
+        return None
+    s = s.strip().lower()
+    if not s:
+        return None
+    if s.isdigit():
+        return float(s)
+    total = 0.0
+    rest = s
+    # Greedy parse of `<num><unit>` pairs in any order: '1h30m', '30m15s', etc.
+    units = {"h": 3600, "m": 60, "s": 1}
+    while rest:
+        # Find the next unit letter
+        idx = next((i for i, c in enumerate(rest) if c in units), None)
+        if idx is None or idx == 0:
+            raise ValueError(f"bad duration {s!r}; expected forms like '3h', '90m', '1h30m'")
+        num_str, unit_char, rest = rest[:idx], rest[idx], rest[idx + 1:]
+        try:
+            total += float(num_str) * units[unit_char]
+        except ValueError:
+            raise ValueError(f"bad duration {s!r}; '{num_str}' is not a number") from None
+    return total
+
+
+def _hms(seconds: float) -> str:
+    """Format seconds as a short hh:mm:ss / mm:ss string."""
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
+
+
+def _print_resume_hint(start: str, end: str, last_done: str | None) -> None:
+    """Print the exact command the user would run to pick up where this run
+    stopped. Goes to stdout so it's the last thing they see in their log."""
+    print()
+    print("=" * 70)
+    if last_done:
+        print(f"  Last date COMPLETED: {last_done}")
+        # Suggest resuming with the same window — resume mode (default) will
+        # skip the already-done dates and start at the next unfinished one.
+        print(f"  Resume with: python -m etl.backfill_2025 --start {start} --end {end}")
+    else:
+        print("  No dates completed this run.")
+    print("=" * 70)
+
+
 def backfill_window(
     start: str = DEFAULT_START,
     end: str = DEFAULT_END,
     resume: bool = True,
     force: bool = False,
     db_path: Path | None = None,
+    *,
+    max_dates: int | None = None,
+    max_runtime_s: float | None = None,
 ) -> dict:
     """Walk every date in [start, end] and call backfill_one_date.
 
     *resume* (default True) — skip dates that already have pick_inputs rows.
     *force* — re-run every date, deleting+re-inserting (overrides resume).
+    *max_dates* — stop after N dates have been RUN (skipped dates don't count
+        toward the budget — they're free). None = no limit.
+    *max_runtime_s* — stop after the wall-clock budget elapses. Checked
+        between dates, not mid-date, so the actual stop time can overrun by
+        one date's worth of work (5-15 min). None = no limit.
+
+    Both budget knobs can be set together; whichever fires first stops the
+    run. The dates already persisted stay persisted (each date commits to
+    DB inside backfill_one_date), so resume on next invocation picks up
+    cleanly.
     """
     conn = get_db(db_path)
     create_tables(conn)
@@ -265,12 +354,28 @@ def backfill_window(
         "start": start, "end": end,
         "dates_run": 0, "dates_skipped": 0, "dates_failed": 0,
         "total_rows": 0,
+        "stopped_reason": "completed",
+        "last_completed": None,
     }
+    t_window_start = time.time()
 
     try:
         ensure_2025_outcomes(conn)
 
         for date_str in _date_range(start, end):
+            # Budget check — happens BEFORE force/resume gating so a stop
+            # decision is independent of the per-date short-circuits.
+            if max_dates is not None and summary["dates_run"] >= max_dates:
+                summary["stopped_reason"] = f"max_dates={max_dates} reached"
+                print(f"\n  [STOP] {summary['stopped_reason']}")
+                break
+            if max_runtime_s is not None and (time.time() - t_window_start) >= max_runtime_s:
+                summary["stopped_reason"] = (
+                    f"max_runtime={_hms(max_runtime_s)} elapsed"
+                )
+                print(f"\n  [STOP] {summary['stopped_reason']}")
+                break
+
             if force:
                 _purge_date(conn, date_str)
             elif resume and _already_done(conn, date_str):
@@ -286,9 +391,11 @@ def backfill_window(
                 else:
                     summary["dates_run"] += 1
                     summary["total_rows"] += r.get("rows", 0)
+                    summary["last_completed"] = date_str
             except KeyboardInterrupt:
+                summary["stopped_reason"] = "user interrupt"
                 print(f"\n  [INTERRUPT] stopped at {date_str}. "
-                      "Re-run with --resume to continue.")
+                      "Re-run with the same command to continue.")
                 raise
             except Exception as e:
                 print(f"  [ERROR] {date_str}: {type(e).__name__}: {e}")
@@ -318,7 +425,13 @@ def backfill_window(
 # ---------------------------------------------------------------------------
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description=(
+            "Backfill historical pick_inputs rows for the 2025 season. "
+            "Resume-safe — interrupt with Ctrl+C or use --max-dates / "
+            "--max-runtime to fit a chunk into a known time budget."
+        ),
+    )
     ap.add_argument("--start", default=DEFAULT_START)
     ap.add_argument("--end", default=DEFAULT_END)
     ap.add_argument("--resume", action="store_true", default=True,
@@ -327,6 +440,13 @@ def main():
                     help="Re-run every date, deleting + re-inserting")
     ap.add_argument("--outcomes-only", action="store_true",
                     help="Run Phase 0 (outcomes prereq) and exit")
+    ap.add_argument("--max-dates", type=int, default=None, metavar="N",
+                    help="Stop after N dates have been processed (skipped dates "
+                         "don't count). Useful for chunking the backfill across "
+                         "multiple sessions.")
+    ap.add_argument("--max-runtime", type=str, default=None, metavar="DURATION",
+                    help="Stop after a wall-clock budget elapses. Formats: "
+                         "'3h', '90m', '1h30m', or seconds as int.")
     ap.add_argument("--db", default=None,
                     help="Optional alternate DB path")
     args = ap.parse_args()
@@ -340,10 +460,14 @@ def main():
         conn.close()
         return
 
+    max_runtime_s = parse_duration(args.max_runtime)
+
     summary = backfill_window(
         start=args.start, end=args.end,
         resume=args.resume, force=args.force,
         db_path=db_path,
+        max_dates=args.max_dates,
+        max_runtime_s=max_runtime_s,
     )
 
     print()
@@ -351,7 +475,8 @@ def main():
     print("  2025 BACKFILL SUMMARY")
     print("=" * 70)
     for k, v in summary.items():
-        print(f"  {k:<16}  {v}")
+        print(f"  {k:<18}  {v}")
+    _print_resume_hint(args.start, args.end, summary.get("last_completed"))
 
 
 if __name__ == "__main__":

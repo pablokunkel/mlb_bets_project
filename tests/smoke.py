@@ -1039,6 +1039,68 @@ def pin_generate_card_accepts_as_of_date() -> Result:
     )
 
 
+def pin_backfill_parse_duration() -> Result:
+    """PR 4 chunk flags: parse_duration handles the documented forms.
+
+    Verifies '3h', '90m', '1h30m', '7200' (int as seconds), and rejects
+    malformed input with ValueError.
+    """
+    from etl.backfill_2025 import parse_duration
+    cases = [
+        (None,       None),
+        ("",         None),
+        ("3h",       3 * 3600),
+        ("90m",      90 * 60),
+        ("1h30m",    3600 + 30 * 60),
+        ("30m15s",   30 * 60 + 15),
+        ("7200",     7200.0),
+    ]
+    failures = []
+    for inp, want in cases:
+        got = parse_duration(inp)
+        if got != want and not (got is None and want is None):
+            failures.append(f"parse_duration({inp!r}) -> {got}, want {want}")
+    # Malformed inputs should raise
+    raised = False
+    try:
+        parse_duration("3xyz")
+    except ValueError:
+        raised = True
+    if not raised:
+        failures.append("parse_duration('3xyz') did not raise ValueError")
+    raised = False
+    try:
+        parse_duration("h")  # unit without a number
+    except ValueError:
+        raised = True
+    if not raised:
+        failures.append("parse_duration('h') did not raise ValueError")
+    if not failures:
+        return Result("parse_duration handles '3h' / '90m' / '1h30m' / int", Result.PASS)
+    return Result("parse_duration", Result.HALT, "; ".join(failures))
+
+
+def pin_backfill_window_accepts_chunk_flags() -> Result:
+    """PR 4 chunk flags: backfill_window has max_dates + max_runtime_s kwargs."""
+    import inspect
+    from etl.backfill_2025 import backfill_window
+    sig = inspect.signature(backfill_window)
+    failures = []
+    for name in ("max_dates", "max_runtime_s"):
+        if name not in sig.parameters:
+            failures.append(f"missing {name}")
+            continue
+        p = sig.parameters[name]
+        if p.default is not None:
+            failures.append(f"{name} default = {p.default!r}, want None")
+    if not failures:
+        return Result(
+            "backfill_window accepts max_dates + max_runtime_s (default None)",
+            Result.PASS,
+        )
+    return Result("backfill_window chunk kwargs", Result.HALT, "; ".join(failures))
+
+
 def pin_fetch_live_slate_accepts_as_of_date() -> Result:
     """PR 4: fetch_live_slate + score_live_slate + score_untiered_starters
     all accept as_of_date with default None."""
@@ -1139,6 +1201,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_backfill_default_window_full_season,
     pin_generate_card_accepts_as_of_date,
     pin_fetch_live_slate_accepts_as_of_date,
+    pin_backfill_parse_duration,
+    pin_backfill_window_accepts_chunk_flags,
 ]
 
 
