@@ -28,6 +28,27 @@ load_season_hr_lookup reads from the `outcomes` table. If `outcomes` has no
 into `historical_batter_games`, then bridges those rows into `outcomes` so
 the existing B8 helper works unchanged.
 
+Where to run it
+---------------
+**Production: trigger the `Backfill 2025 season` GitHub Actions workflow.**
+The workflow pulls hr_bets.db from R2 at job start, runs this orchestrator,
+and pushes the updated DB back to R2 at the end. R2 is the source of truth
+since the 2026-05-12 cutover — any LOCAL run on the laptop writes to a DB
+that gets overwritten by the next scheduled job (daily-picks, outcomes-
+refresh, nightly-refresh).
+
+The workflow chunks via `--max-runtime` so each invocation fits inside the
+GH Actions 6h hard cap. Re-trigger with the same window inputs to continue;
+resume mode (default) skips dates already in pick_inputs.
+
+**Failover (GH Actions down): laptop run, bookended by manual R2 sync.**
+    python infra/r2_sync.py pull        # local DB := R2 source of truth
+    python -m etl.backfill_2025 <args>  # write to local DB
+    python infra/r2_sync.py push        # push back so the next job sees it
+
+If you run this orchestrator locally without the bookends, expect your
+backfill to vanish on the next scheduled GH Actions run.
+
 Usage
 -----
     # Default: walk full 2025 regular season (~6-12 hours single-machine)

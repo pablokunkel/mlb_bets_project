@@ -1,8 +1,12 @@
 # Hosting runbook — moving the daily pipeline off Pablo's laptop
 
-**Status:** Scaffolded 2026-05-11. Not yet enabled. The three scheduled workflows are present but their `schedule:` blocks are commented out — they only fire on `workflow_dispatch` until we cut over.
+**Status (2026-05-21): LIVE.** All three scheduled workflows are active and have been running cleanly since the 2026-05-12 cutover (`daily-picks` at 13:07 UTC, `outcomes-refresh` at 06:00 UTC, `nightly-refresh` at 08:00 UTC — see Actions tab for recent runs). **Cloudflare R2 is the source of truth for `hr_bets.db`**; the laptop / OneDrive copy is no longer authoritative. Any local DB write that doesn't go through the R2 push/pull cycle (e.g., `python -m etl.backfill_2025` run on the laptop) is doomed — the next scheduled job pulls R2's copy and overwrites the local file.
 
-This doc walks through migrating `run_daily.bat` / `run_outcomes.bat` / `run_nightly.bat` from Windows Task Scheduler on the laptop to GitHub Actions, with Cloudflare R2 as the durable home for `hr_bets.db`.
+If you need to mutate the production DB outside the scheduled jobs, the right paths are:
+- **Run via a workflow** — preferred. Add a new `workflow_dispatch` job that mirrors the daily/outcomes/nightly pattern (R2 pull → run → R2 push). See `.github/workflows/backfill-2025.yml` for the canonical template.
+- **Failover path** — laptop run, but bookended by manual R2 sync. See "Failover" section below. Use this only when GH Actions is down.
+
+This doc walks through the migration that already happened (kept for reference / re-doing on a new repo) and the failover path.
 
 ---
 

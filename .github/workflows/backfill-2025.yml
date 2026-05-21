@@ -1,0 +1,175 @@
+# =============================================================================
+# backfill-2025.yml — Reconstruct historical 2025-season pick_inputs rows.
+#
+# Runs the etl/backfill_2025.py orchestrator inside the same R2 pull / run /
+# push pattern the daily/outcomes/nightly workflows use. R2 is the source of
+# truth — any local DB written by a laptop run would be overwritten on the
+# next scheduled job. This workflow is the correct way to actually produce
+# durable backfill rows.
+#
+# Manual trigger only (workflow_dispatch). The full 2025 season is 6-12
+# hours of work; GH Actions free runners cap at 6h hard. We chunk by
+# passing --max-runtime to the orchestrator (graceful stop ~30 min before
+# the hard cap so the final R2 push happens cleanly).
+#
+# Resume model:
+#   - Each chunk pulls the current DB from R2, runs the orchestrator with
+#     --resume (default — skips dates already in pick_inputs), commits any
+#     completed dates to local DB, then pushes the updated DB back to R2.
+#   - Trigger the workflow again with the same inputs to continue. The
+#     orchestrator skips done dates automatically; you just keep clicking
+#     "Run workflow" until the full window is covered.
+#
+# Concurrency:
+#   Pinned to `hr-bets-db` so this serializes with daily-picks /
+#   outcomes-refresh / nightly-refresh. If a scheduled job fires while a
+#   backfill chunk is mid-flight, it waits politely; same on the way back.
+# =============================================================================
+
+name: Backfill 2025 season
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: First date to backfill (YYYY-MM-DD). Default = 2025 opening day.
+        required: false
+        default: "2025-03-27"
+      end:
+        description: Last date to backfill (YYYY-MM-DD). Default = 2025 regular-season end.
+        required: false
+        default: "2025-09-30"
+      max_dates:
+        description: |
+          Max dates to process this run. 0 = no cap (the wall-clock cap
+          and the workflow timeout still apply). Use this when you know
+          roughly how many dates fit a chunk.
+        required: false
+        default: "0"
+      max_runtime:
+        description: |
+          Wall-clock budget for the orchestrator. '3h', '90m', '1h30m',
+          or seconds-as-int. Leave blank for no budget. Recommended
+          default keeps you ~30 min under the GH Actions 6h hard cap so
+          the post-run R2 push has time to complete cleanly.
+        required: false
+        default: "5h"
+      force:
+        description: Re-run dates already in pick_inputs (purge + re-insert). USE WITH CARE.
+        type: boolean
+        required: false
+        default: false
+      outcomes_only:
+        description: Run Phase 0 (outcomes prereq) and exit. Useful for a fast first-pass.
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: hr-bets-db
+  cancel-in-progress: false
+
+permissions:
+  contents: read   # backfill writes to DB only; nothing to commit to git
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+
+    # GH Actions free-tier hard cap is 6h. We bias toward 5h30m to give
+    # the post-run R2 push + cache write time. Pair this with the
+    # `--max-runtime` input set to ~5h so the orchestrator stops itself
+    # well before the runner does — graceful stops produce a clean R2
+    # snapshot; hard kills can leave the DB mid-write.
+    timeout-minutes: 330
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up env + pull DB
+        uses: ./.github/actions/setup-mlb-env
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+
+      # ─── Build the orchestrator command from the inputs ─────────────────
+      # Done in a separate step so the args show up clearly in the run log.
+      - name: Build backfill command
+        id: cmd
+        shell: bash
+        run: |
+          set -euo pipefail
+          args="--start ${{ inputs.start }} --end ${{ inputs.end }}"
+          if [[ "${{ inputs.max_dates }}" != "0" && -n "${{ inputs.max_dates }}" ]]; then
+            args="$args --max-dates ${{ inputs.max_dates }}"
+          fi
+          if [[ -n "${{ inputs.max_runtime }}" ]]; then
+            args="$args --max-runtime ${{ inputs.max_runtime }}"
+          fi
+          if [[ "${{ inputs.force }}" == "true" ]]; then
+            args="$args --force"
+          fi
+          if [[ "${{ inputs.outcomes_only }}" == "true" ]]; then
+            args="$args --outcomes-only"
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "Resolved: python -m etl.backfill_2025 $args"
+
+      - name: Run backfill orchestrator
+        run: python -m etl.backfill_2025 ${{ steps.cmd.outputs.args }}
+
+      # ─── Push DB back to R2 ─────────────────────────────────────────────
+      # `if: always()` — even if the orchestrator hit a hard error mid-run,
+      # we want to persist whatever dates DID complete. Each date commits
+      # to local DB inside backfill_one_date(), so the partial state is
+      # a valid, queryable snapshot. The next chunk's resume mode skips
+      # already-done dates and continues from where this one stopped.
+      #
+      # The `r2_sync.push` itself does a WAL checkpoint + atomic staging
+      # rename, so an in-flight write at the moment of push doesn't
+      # produce a torn upload (it'd error and leave the prior R2 state
+      # intact — see infra/r2_sync.py docstring).
+      - name: Push hr_bets.db back to R2
+        if: always()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python infra/r2_sync.py push
+
+      # ─── Progress summary in the run output ─────────────────────────────
+      # Pull row counts straight from the freshly-pushed DB so the next
+      # chunk's operator can eyeball "how many dates remain."
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sqlite3, sys
+          from pathlib import Path
+          sys.path.insert(0, ".")
+          from etl.db import DB_PATH
+          conn = sqlite3.connect(str(DB_PATH))
+          n_2025 = conn.execute(
+              "SELECT COUNT(DISTINCT date) FROM pick_inputs WHERE date LIKE '2025-%'"
+          ).fetchone()[0]
+          n_rows = conn.execute(
+              "SELECT COUNT(*) FROM pick_inputs WHERE date LIKE '2025-%'"
+          ).fetchone()[0]
+          conn.close()
+          print(f"2025 backfill progress: {n_2025} distinct dates, {n_rows} pick_inputs rows")
+          PY
