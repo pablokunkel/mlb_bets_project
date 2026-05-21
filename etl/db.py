@@ -422,8 +422,17 @@ def create_tables(conn: sqlite3.Connection):
         -- here so the next refit can learn its own coefficient instead of
         -- inheriting season HR/9's standardized weight (form 0.496,
         -- matchup 0.468 from the 2026-05-01 refit baseline).
-        pitcher_recent_hr9_21d  REAL,
+        --
+        -- B4 (2026-05-21): the _21d suffix is retained for backward compat
+        -- with the prior schema. The value reflects the *configured*
+        -- recency window (pitcher_profile.PITCHER_RECENT_WINDOW_TYPE +
+        -- PITCHER_RECENT_WINDOW_N), which may be last-N-starts post-
+        -- backtest. recent_era + recent_k9 added — same gameLog payload,
+        -- aligns the whole pitcher pipeline on consistent recent windows.
+        pitcher_recent_hr9_21d    REAL,
         pitcher_recent_starts_21d INTEGER,
+        pitcher_recent_era_21d    REAL,
+        pitcher_recent_k9_21d     REAL,
 
         -- Matchup: batter + game inputs
         woba_vs_hand            REAL,
@@ -655,6 +664,10 @@ def create_tables(conn: sqlite3.Connection):
     # count from MLB API gameLog. NULL-safe additive; older rows stay NULL
     # until rerun against the new pipeline. See pick_inputs CREATE block
     # comment for the blend semantics.
+    #
+    # B4 (2026-05-21): added recent_era + recent_k9. The _21d suffix is
+    # retained for backward compat; the actual window is configurable via
+    # pitcher_profile.PITCHER_RECENT_WINDOW_TYPE + PITCHER_RECENT_WINDOW_N.
     existing_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
     }
@@ -663,6 +676,10 @@ def create_tables(conn: sqlite3.Connection):
          "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_hr9_21d REAL"),
         ("pitcher_recent_starts_21d",
          "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_starts_21d INTEGER"),
+        ("pitcher_recent_era_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_era_21d REAL"),
+        ("pitcher_recent_k9_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_k9_21d REAL"),
     ]:
         if col not in existing_cols:
             try:

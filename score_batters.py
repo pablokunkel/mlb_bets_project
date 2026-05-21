@@ -239,7 +239,7 @@ def compute_slate_context(
     # the v1 path (which is also fixed below).
     # Lazy import to keep the module-load graph simple (mirrors the
     # `from pitcher_profile import score_matchup_v2` pattern at line 995).
-    from pitcher_profile import effective_hr9
+    from pitcher_profile import effective_hr9, effective_era, effective_k9
 
     pitcher_vuln_raw = {}
     for pname, p in (pitcher_stats_by_name or {}).items():
@@ -251,6 +251,8 @@ def compute_slate_context(
         # below then orders pitchers by their blended vulnerability — fixes
         # the "season HR/9 lags recent collapse" gap that left Brady Singer
         # ranked below Mikolas on the 2026-05-12 slate.
+        # B4 (2026-05-21): same blend for ERA + K/9 when recent values
+        # arrive — keeps the whole pitcher pipeline on consistent windows.
         hr9 = effective_hr9(
             p.get("hr_per_9"),
             p.get("recent_hr9_21d"),
@@ -258,13 +260,21 @@ def compute_slate_context(
         )
         if hr9 is not None and hr9 > 0:
             components.append(hr9 * 30.0)
-        era = p.get("era")
+        era = effective_era(
+            p.get("era"),
+            p.get("recent_era_21d"),
+            p.get("recent_starts_21d"),
+        )
         if era is not None and era > 0:
             components.append(era * 5.0)
         hh = p.get("hard_hit_pct_allowed")
         if hh is not None and hh > 0:
             components.append(hh * 0.6)
-        k9 = p.get("k_per_9")
+        k9 = effective_k9(
+            p.get("k_per_9"),
+            p.get("recent_k9_21d"),
+            p.get("recent_starts_21d"),
+        )
         if k9 is not None and k9 > 0:
             components.append(-k9 * 2.0)
         fb_pct_allowed = p.get("fb_pct_allowed")
@@ -1276,8 +1286,11 @@ def compute_composite(
         # pitcher_hr_per_9 inside score_pitcher_vulnerability when
         # recent_starts_21d >= 2. Persisted as its own input column so the
         # next refit can learn an independent coefficient.
+        # B4 (2026-05-21): + recent ERA + recent K/9 (same gameLog payload).
         "pitcher_recent_hr9_21d":     pitcher.get("recent_hr9_21d"),
         "pitcher_recent_starts_21d":  pitcher.get("recent_starts_21d"),
+        "pitcher_recent_era_21d":     pitcher.get("recent_era_21d"),
+        "pitcher_recent_k9_21d":      pitcher.get("recent_k9_21d"),
         # Matchup — batter / game
         # NOTE on woba_vs_hand: this can be a synthetic estimate when the
         # batter dict came from MLB Stats API splits via _splits_to_batters

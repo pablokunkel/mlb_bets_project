@@ -80,6 +80,8 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
             pi.recent_barrel_real_14d, pi.recent_xwoba_contact_14d, pi.recent_iso_14d,
             pi.pitcher_hr_per_9, pi.pitcher_era, pi.pitcher_hh_pct,
             pi.pitcher_k_per_9, pi.pitcher_fb_pct_allowed,
+            pi.pitcher_recent_hr9_21d, pi.pitcher_recent_starts_21d,
+            pi.pitcher_recent_era_21d, pi.pitcher_recent_k9_21d,
             pi.woba_vs_hand, pi.archetype_similarity, pi.vegas_team_total_pct,
             pi.platoon_advantage,
             pi.hr_park_factor,
@@ -163,7 +165,20 @@ def rescore_row(row: pd.Series) -> dict:
     # accurate on handedness too.
     pitcher = {
         "hr_per_9": row.get("pitcher_hr_per_9"),
+        "era": row.get("pitcher_era"),
+        "k_per_9": row.get("pitcher_k_per_9"),
         "hard_hit_pct_allowed": row.get("pitcher_hh_pct"),
+        "fb_pct_allowed": row.get("pitcher_fb_pct_allowed"),
+        # B4 (2026-05-21): persisted recent pitcher signals enable the
+        # backtest harness to compare blend behavior under a candidate
+        # window (last-N-starts) against the production baseline (21d).
+        # score_pitcher_vulnerability honors these via effective_*().
+        # NULL for rows older than the B4 migration; the blend falls
+        # through to season-only there (matches pre-B4 behavior).
+        "recent_hr9_21d": row.get("pitcher_recent_hr9_21d"),
+        "recent_starts_21d": row.get("pitcher_recent_starts_21d"),
+        "recent_era_21d": row.get("pitcher_recent_era_21d"),
+        "recent_k9_21d": row.get("pitcher_recent_k9_21d"),
         "throws": "R",   # see comment above
     }
     weather = {

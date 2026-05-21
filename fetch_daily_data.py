@@ -1197,25 +1197,52 @@ def get_recent_pitcher_game_log(
     season: int,
     today_str: str | None = None,
     days: int = 21,
+    *,
+    window_type: str = "days",
+    window_n: int | None = None,
 ) -> dict:
     """
     Pull a pitcher's recent game log from the MLB Stats API and aggregate
-    HR allowed + IP over the last *days* days BEFORE *today_str* (exclusive).
+    HR / ER / K + IP over a recent window BEFORE *today_str* (exclusive).
 
     Mirrors get_recent_game_log() but for pitchers. Adds the "pitcher
     recency" signal that score_pitcher_vulnerability() needed —
-    season-aggregate HR/9 lags 3-4 bad starts, so a pitcher whose recent
+    season-aggregate stats lag 3-4 bad starts, so a pitcher whose recent
     stretch has collapsed (e.g., Brady Singer on 2026-05-12: 9 HR allowed
     over 4 starts vs. season HR/9 of 1.89) was invisible to the model.
 
+    Window selection:
+      window_type='days' (default): last *window_n* (or *days*) calendar
+        days strictly BEFORE today_str. Legacy behavior preserved for
+        backward-compat callers.
+      window_type='starts': last *window_n* games_started strictly BEFORE
+        today_str. Sample-size-aware (avoids stale calendar windows for
+        starters with off days; avoids over-counting for high-rest spots).
+
+    B4 (2026-05-21): added window_type='starts' and ER + K aggregation
+    (recent_era, recent_k_per_9). ER + K were already in the same gameLog
+    payload, so this is free.
+
     Returns dict with keys:
         recent_hr_count   — HRs allowed in window
+        recent_er_count   — earned runs in window
+        recent_k_count    — strikeouts in window
         recent_ip         — innings pitched in window (parsed from "5.2" =
                             5 IP + 2 outs format MLB API uses)
         recent_starts     — count of games started in window
         recent_hr_per_9   — HR * 9 / IP, or None if IP < 1.0
+        recent_era        — ER * 9 / IP, or None if IP < 1.0
+        recent_k_per_9    — K * 9 / IP, or None if IP < 1.0
     Empty dict on API failure (caller treats as missing signal).
     """
+    # Legacy callers pass days=N positionally; map to window_n when
+    # window_type defaults to 'days' so we don't break existing call sites.
+    if window_n is None:
+        window_n = days
+
+    if window_type not in ("days", "starts"):
+        raise ValueError(f"window_type must be 'days' or 'starts', got {window_type!r}")
+
     url = f"{MLB_STATS_API}/people/{pitcher_id}/stats"
     params = {
         "stats": "gameLog",
@@ -1237,8 +1264,6 @@ def get_recent_pitcher_game_log(
     if not splits:
         return {}
 
-    # Window: [today - days, today). today_str excluded — we're scoring
-    # games yet to be played, recent form is what came BEFORE today.
     if today_str:
         try:
             today_dt = datetime.strptime(today_str, "%Y-%m-%d")
@@ -1246,15 +1271,48 @@ def get_recent_pitcher_game_log(
             today_dt = datetime.now()
     else:
         today_dt = datetime.now()
-    cutoff_str = (today_dt - timedelta(days=days)).strftime("%Y-%m-%d")
     today_iso = today_dt.strftime("%Y-%m-%d")
 
+    if window_type == "days":
+        # Window: [today - window_n, today). today_str excluded — we're
+        # scoring games yet to be played; recent form is what came BEFORE.
+        cutoff_str = (today_dt - timedelta(days=window_n)).strftime("%Y-%m-%d")
+
+        def in_window(gdate: str) -> bool:
+            return cutoff_str <= gdate < today_iso
+
+        candidate_games = splits
+    else:
+        # window_type == 'starts': walk the gameLog newest-first, collect
+        # up to window_n games_started strictly before today_iso, ignoring
+        # the calendar window. MLB API returns splits oldest-first, so we
+        # iterate reversed and take the first window_n starts found.
+        starts_seen = 0
+        kept = []
+        for g in reversed(splits):
+            gdate = g.get("date") or ""
+            if not gdate or gdate >= today_iso:
+                continue
+            s = g.get("stat", {}) or {}
+            if int(s.get("gamesStarted", 0) or 0) == 0:
+                continue
+            kept.append(g)
+            starts_seen += 1
+            if starts_seen >= window_n:
+                break
+        candidate_games = kept
+
+        def in_window(gdate: str) -> bool:  # already filtered above
+            return True
+
     recent_hr = 0
+    recent_er = 0
+    recent_k = 0
     recent_outs = 0     # 1 IP = 3 outs; lets us add "5.2" + "4.1" precisely
     recent_starts = 0
-    for g in splits:
+    for g in candidate_games:
         gdate = g.get("date") or ""
-        if gdate < cutoff_str or gdate >= today_iso:
+        if not in_window(gdate):
             continue
         s = g.get("stat", {}) or {}
         # inningsPitched format: "5.2" = 5 IP + 2 outs (i.e. 5 2/3 IP).
@@ -1271,27 +1329,39 @@ def get_recent_pitcher_game_log(
         if games_started == 0 and outs == 0:
             continue
         recent_hr += int(s.get("homeRuns", 0) or 0)
+        recent_er += int(s.get("earnedRuns", 0) or 0)
+        recent_k += int(s.get("strikeOuts", 0) or 0)
         recent_outs += outs
         recent_starts += games_started
 
     recent_ip = recent_outs / 3.0
     if recent_ip < 1.0:
-        # Below 1 IP in 21 days isn't a usable rate — return counts but
-        # let recent_hr_per_9 be None so the blend falls back to season.
+        # Below 1 IP in window isn't a usable rate — return counts but
+        # let the rate stats be None so blends fall back to season.
         return {
             "recent_hr_count": recent_hr,
-            "recent_ip": round(recent_ip, 1),
-            "recent_starts": recent_starts,
+            "recent_er_count": recent_er,
+            "recent_k_count":  recent_k,
+            "recent_ip":       round(recent_ip, 1),
+            "recent_starts":   recent_starts,
             "recent_hr_per_9": None,
+            "recent_era":      None,
+            "recent_k_per_9":  None,
         }
 
     recent_hr_per_9 = recent_hr * 9.0 / recent_ip
+    recent_era      = recent_er * 9.0 / recent_ip
+    recent_k_per_9  = recent_k * 9.0 / recent_ip
 
     return {
         "recent_hr_count": recent_hr,
-        "recent_ip": round(recent_ip, 1),
-        "recent_starts": recent_starts,
+        "recent_er_count": recent_er,
+        "recent_k_count":  recent_k,
+        "recent_ip":       round(recent_ip, 1),
+        "recent_starts":   recent_starts,
         "recent_hr_per_9": round(recent_hr_per_9, 2),
+        "recent_era":      round(recent_era, 2),
+        "recent_k_per_9":  round(recent_k_per_9, 2),
     }
 
 
