@@ -75,6 +75,7 @@ from features_v2 import (
     fetch_vegas_implied_totals,
     fetch_batter_xwoba_bulk,
     fetch_pitcher_fb_bulk,
+    fetch_batter_recent_statcast_14d,
 )
 
 # Toggle for the slow per-player Statcast paths (archetype profiles +
@@ -969,6 +970,28 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
     except Exception as e:
         status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
 
+    # ── B6a: rolling 14d quality-contact Statcast (one bulk pull) ──────
+    # Aggregated per-batter to {recent_barrel_real_14d,
+    # recent_xwoba_contact_14d, recent_iso_14d}. as_of_date is the slate
+    # date so the cache key matches what prewarm_cache wrote at 2 AM.
+    # Empty dict -> score_power falls through to season aggregates
+    # (skip-on-missing). Gated by USE_RECENT_STATCAST_BLEND in score_power.
+    bulk_recent_statcast: dict = {}
+    try:
+        bulk_recent_statcast = fetch_batter_recent_statcast_14d(as_of_date=date_str)
+        if bulk_recent_statcast:
+            status.ok(
+                "Batter Recent 14d (bulk)",
+                f"{len(bulk_recent_statcast)} batters via Statcast",
+            )
+        else:
+            status.warn(
+                "Batter Recent 14d (bulk)",
+                "No data — power score uses season-only inputs",
+            )
+    except Exception as e:
+        status.warn("Batter Recent 14d (bulk)", f"Bulk fetch failed: {e}")
+
     # ── Vegas implied team totals ──────────────────────────────────────
     implied_totals: dict = {}
     try:
@@ -1008,6 +1031,7 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         "live_tiers": live_tiers,
         "implied_totals": implied_totals,
         "bulk_batter_xwoba": bulk_batter_xwoba,
+        "bulk_recent_statcast": bulk_recent_statcast,
     }
 
 

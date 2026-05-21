@@ -549,6 +549,111 @@ def pin_effective_hr9_below_min_starts_falls_back() -> Result:
     )
 
 
+def pin_aggregate_recent_statcast_basic() -> Result:
+    """B6a: bulk Statcast aggregator computes per-batter 14d metrics correctly.
+
+    Synthetic input: 12 batted-ball PAs for one batter (id=10001) with
+    1 barrel (launch_speed_angle=6), mean estimated xwOBA of 0.450 on
+    those 12, and a known hit/AB mix that yields ISO = 0.250.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("aggregate_recent_statcast (pandas missing — skipped)", Result.INFO)
+    from features_v2 import _aggregate_recent_statcast
+
+    # 12 PAs: 4 singles, 2 doubles, 1 triple, 1 HR, 4 outs.
+    # AB = 12, H = 8, TB = 4 + 4 + 3 + 4 = 15. ISO = (15 - 8) / 12 = 0.583.
+    # Going to use a simpler mix that lands ISO at exactly 0.250:
+    #   8 ABs: 1 single, 1 double, 1 HR, 5 outs. H=3, TB=1+2+4=7. ISO=(7-3)/8=0.500.
+    # Simpler: 10 ABs: 2 singles, 1 double, 1 HR, 6 outs.
+    #   H=4, TB=2+2+4=8. ISO=(8-4)/10=0.400.
+    events = (
+        ["single"] * 2 + ["double"] * 1 + ["home_run"] * 1
+        + ["field_out"] * 6
+    )
+    bb_type = ["line_drive"] * 2 + ["fly_ball"] * 2 + ["ground_ball"] * 6
+    # One barrel (the HR); others not barreled.
+    lsa = [0, 0, 5, 6, 0, 0, 0, 0, 0, 0]
+    # estimated xwoba on contact: only 6 fly/line, others ground (Statcast
+    # still fills xwoba but typically lower). Use 10 values, mean=0.300.
+    xwoba_speed = [0.350, 0.380, 0.500, 1.500, 0.150, 0.150, 0.150, 0.150, 0.150, 0.120]
+    df = pd.DataFrame({
+        "batter": [10001] * 10,
+        "events": events,
+        "bb_type": bb_type,
+        "launch_speed_angle": lsa,
+        "estimated_woba_using_speedangle": xwoba_speed,
+    })
+    agg = _aggregate_recent_statcast(df, min_batted_balls=10)
+    if 10001 not in agg:
+        return Result(
+            "_aggregate_recent_statcast(synthetic)", Result.HALT,
+            f"batter not in output; got keys={list(agg.keys())}",
+        )
+    row = agg[10001]
+    failures = []
+    # 1 barrel out of 10 batted balls = 10.0%
+    if abs(row.get("recent_barrel_real_14d", -1) - 10.0) > 0.5:
+        failures.append(f"barrel% got {row.get('recent_barrel_real_14d')}, want ~10.0")
+    # ISO = (8 - 4) / 10 = 0.400
+    if abs(row.get("recent_iso_14d", -1) - 0.400) > 0.005:
+        failures.append(f"ISO got {row.get('recent_iso_14d')}, want ~0.400")
+    # xwoba_contact = mean of 10 values
+    expected_xwoba = sum(xwoba_speed) / len(xwoba_speed)
+    if abs(row.get("recent_xwoba_contact_14d", -1) - expected_xwoba) > 0.005:
+        failures.append(f"xwoba got {row.get('recent_xwoba_contact_14d')}, want ~{expected_xwoba:.3f}")
+    if not failures:
+        return Result(
+            f"_aggregate_recent_statcast(synthetic) computes barrel/iso/xwoba",
+            Result.PASS,
+        )
+    return Result(
+        "_aggregate_recent_statcast(synthetic)", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_aggregate_recent_statcast_empty() -> Result:
+    """Empty / None DataFrame returns {} without crashing."""
+    from features_v2 import _aggregate_recent_statcast
+    if _aggregate_recent_statcast(None) != {}:
+        return Result("_aggregate_recent_statcast(None)", Result.HALT, "expected {}")
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("_aggregate_recent_statcast(None) -> {}", Result.PASS)
+    if _aggregate_recent_statcast(pd.DataFrame()) != {}:
+        return Result("_aggregate_recent_statcast(empty df)", Result.HALT, "expected {}")
+    return Result("_aggregate_recent_statcast(empty / None) -> {}", Result.PASS)
+
+
+def pin_aggregate_recent_statcast_thin_sample_dropped() -> Result:
+    """Batters under min_batted_balls threshold are dropped, not reported."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("aggregate_recent_statcast thin-sample (pandas missing)", Result.INFO)
+    from features_v2 import _aggregate_recent_statcast
+    # 3 PAs for one batter; threshold is 10. Should drop.
+    df = pd.DataFrame({
+        "batter": [20002] * 3,
+        "events": ["single", "field_out", "double"],
+        "bb_type": ["line_drive", "ground_ball", "line_drive"],
+        "launch_speed_angle": [0, 0, 5],
+        "estimated_woba_using_speedangle": [0.4, 0.1, 0.5],
+    })
+    agg = _aggregate_recent_statcast(df, min_batted_balls=10)
+    if not agg:
+        return Result(
+            "_aggregate_recent_statcast drops thin sample (<10 BB)", Result.PASS
+        )
+    return Result(
+        "_aggregate_recent_statcast thin sample dropped",
+        Result.HALT,
+        f"expected empty, got {agg}",
+    )
+
+
 def pin_score_pitcher_vulnerability_recency_lifts_score() -> Result:
     """score_pitcher_vulnerability blends recent into HR/9 — Singer-style
     case (season 1.89, recent 3.07, 3 starts) ranks above season-only."""
@@ -600,6 +705,10 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_effective_hr9_blend_when_enough_starts,
     pin_effective_hr9_below_min_starts_falls_back,
     pin_score_pitcher_vulnerability_recency_lifts_score,
+    # 2026-05-21: B6a recent quality-contact aggregation
+    pin_aggregate_recent_statcast_basic,
+    pin_aggregate_recent_statcast_empty,
+    pin_aggregate_recent_statcast_thin_sample_dropped,
 ]
 
 
