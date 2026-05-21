@@ -138,25 +138,73 @@ LEAGUE_AVG_VICTIM = {
 
 
 # ---------------------------------------------------------------------------
-# Pitcher recency blend (added 2026-05-13)
+# Pitcher recency blend (added 2026-05-13, extended 2026-05-21 for B4)
 # ---------------------------------------------------------------------------
-# Season HR/9 lags 3-4 bad starts — a pitcher whose recent stretch has
-# collapsed (Brady Singer on 2026-05-12: 9 HR over 4 starts vs. season
-# 1.89 HR/9) was invisible to the model. The pitcher recency signal
-# (rolling 21-day HR/9 from MLB API gameLog) is blended into the effective
-# HR/9 used by score_pitcher_vulnerability and compute_slate_context.
+# Season-aggregate pitcher stats lag 3-4 bad starts — a pitcher whose recent
+# stretch has collapsed (Brady Singer on 2026-05-12: 9 HR over 4 starts vs.
+# season 1.89 HR/9) was invisible to the model. The pitcher-recency signal
+# is blended into the effective HR/9 / ERA / K/9 used by
+# score_pitcher_vulnerability and compute_slate_context.
 #
-# Tune these two constants together; the refit will be able to learn
-# coefficients on pitcher_recent_hr9_21d as its own column once it's
-# persisted in pick_inputs (Phase 2).
-RECENT_HR9_BLEND_WEIGHT = 0.60   # recent weight; season gets (1 - this)
-RECENT_HR9_MIN_STARTS   = 2      # below this, fall back to season-only
+# B4 (2026-05-21): generalized from a fixed 21d / 60-40 / 2-start blend
+# into a configurable last-N-starts mode. The DB columns + slate-level
+# dict keys retain the *_21d suffix for backward compat — the value now
+# reflects the *configured* window (PITCHER_RECENT_WINDOW_TYPE +
+# PITCHER_RECENT_WINDOW_N). Document the active config in WEIGHT_REFIT_LOG
+# when flipping.
+#
+# Also extended to ERA + K/9 — the same gameLog payload that returns HR
+# allowed also returns ER and K, so blending those is ~free and aligns the
+# whole pitcher pipeline on consistent recent windows.
+RECENT_HR9_BLEND_WEIGHT = 0.60     # recent weight; season gets (1 - this)
+RECENT_HR9_MIN_STARTS   = 2        # below this, fall back to season-only
+
+# B4 (2026-05-21): window configuration. 'days' is the legacy behavior;
+# 'starts' uses last-N-starts (sample-size-aware, not calendar-dependent).
+# Tune via WEIGHT_REFIT_LOG.md after the backtest harness picks a winner;
+# defaults keep production behavior unchanged on this PR's land.
+PITCHER_RECENT_WINDOW_TYPE = "days"   # "days" | "starts"
+PITCHER_RECENT_WINDOW_N    = 21       # days when "days"; starts when "starts"
+
+
+def _blend(
+    season_val: float | None,
+    recent_val: float | None,
+    recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
+    recent_ok_at_zero: bool = True,
+) -> float | None:
+    """Shared recent/season blend logic. Returns None when neither input usable.
+
+    *recent_ok_at_zero* — True for rate stats where 0 is meaningful (a
+    pitcher giving up 0 HR in 25 IP is real signal). False for guard
+    cases (caller wants > 0 strictly).
+    """
+    if recent_ok_at_zero:
+        has_recent = recent_val is not None and recent_val >= 0
+    else:
+        has_recent = recent_val is not None and recent_val > 0
+    has_season = season_val is not None and season_val > 0
+    starts = recent_starts or 0
+
+    if has_recent and has_season and starts >= min_starts:
+        return blend_weight * recent_val + (1.0 - blend_weight) * season_val
+    if has_season:
+        return season_val
+    if has_recent and starts >= min_starts:
+        return recent_val
+    return None
 
 
 def effective_hr9(
     season_hr9: float | None,
     recent_hr9: float | None,
     recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
 ) -> float | None:
     """
     Blend season + recent HR/9 into a single "effective" value for the
@@ -164,25 +212,63 @@ def effective_hr9(
     usable (caller treats as missing signal).
 
     Rules:
-      - recent_starts < RECENT_HR9_MIN_STARTS → season only (one bad start
+      - recent_starts < min_starts → season only (one bad start
         shouldn't yank the score)
       - recent missing but season present → season only
       - season missing but recent present → recent only (rare; brand-new
         starter without season HR/9 yet)
-      - both present and recent_starts >= MIN → 60/40 recent-leaning blend
-    """
-    has_season = season_hr9 is not None and season_hr9 > 0
-    has_recent = recent_hr9 is not None and recent_hr9 >= 0
-    starts = recent_starts or 0
+      - both present and recent_starts >= min_starts → weighted blend
 
-    if has_recent and has_season and starts >= RECENT_HR9_MIN_STARTS:
-        w = RECENT_HR9_BLEND_WEIGHT
-        return w * recent_hr9 + (1.0 - w) * season_hr9
-    if has_season:
-        return season_hr9
-    if has_recent and starts >= RECENT_HR9_MIN_STARTS:
-        return recent_hr9
-    return None
+    B4 (2026-05-21): blend_weight and min_starts are now keyword overrides
+    so the backtest harness can sweep candidates without mutating module
+    constants. Defaults preserve the original 60/40, min-2-starts behavior.
+    """
+    return _blend(
+        season_hr9, recent_hr9, recent_starts,
+        blend_weight=blend_weight, min_starts=min_starts,
+    )
+
+
+def effective_era(
+    season_era: float | None,
+    recent_era: float | None,
+    recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
+) -> float | None:
+    """Recent/season ERA blend (parallel to effective_hr9).
+
+    B4 (2026-05-21): ERA recency rides along with HR/9 because the same
+    gameLog query returns both. A pitcher whose ERA has collapsed but HR/9
+    stayed flat (high-walk meltdown, BABIP variance) still shows season ERA
+    today — this blend catches it for the vulnerability score.
+    """
+    return _blend(
+        season_era, recent_era, recent_starts,
+        blend_weight=blend_weight, min_starts=min_starts,
+    )
+
+
+def effective_k9(
+    season_k9: float | None,
+    recent_k9: float | None,
+    recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
+) -> float | None:
+    """Recent/season K/9 blend (parallel to effective_hr9).
+
+    B4 (2026-05-21): K/9 recency catches the inverse case — a strikeout
+    pitcher whose stuff has backed up over the last few starts (declining
+    velo, hittable, more contact) shows the same season K/9 in the DB
+    until the aggregate catches up.
+    """
+    return _blend(
+        season_k9, recent_k9, recent_starts,
+        blend_weight=blend_weight, min_starts=min_starts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -637,10 +723,12 @@ def score_pitcher_vulnerability(
     # only when nothing was measured.
     scores = []
 
-    # 2026-05-13: blend season + recent (21d) HR/9 via effective_hr9().
+    # 2026-05-13: blend season + recent HR/9 via effective_hr9().
     # Season-only HR/9 missed pitchers whose last 3-4 starts had collapsed
     # (Brady Singer on 2026-05-12: recent 3.07 vs. season 1.89). Blend
     # rules + ratio live in effective_hr9() so refits can tune them.
+    # B4 (2026-05-21): same blend applied to ERA + K/9 when recent values
+    # are populated — see effective_era / effective_k9.
     hr9_effective = effective_hr9(
         pitcher_stats.get("hr_per_9"),
         pitcher_stats.get("recent_hr9_21d"),
@@ -653,20 +741,28 @@ def score_pitcher_vulnerability(
         # for trending-bad pitchers, so the same cap applies cleanly.
         scores.append(max(0, min(100, (hr9_effective / 4.5) * 100)))
 
-    era = pitcher_stats.get("era")
-    if era is not None and era > 0:
+    era_effective = effective_era(
+        pitcher_stats.get("era"),
+        pitcher_stats.get("recent_era_21d"),
+        pitcher_stats.get("recent_starts_21d"),
+    )
+    if era_effective is not None and era_effective > 0:
         # ERA: 2.0–6.0 → 0–100
-        scores.append(max(0, min(100, (era - 2.0) / 4.0 * 100)))
+        scores.append(max(0, min(100, (era_effective - 2.0) / 4.0 * 100)))
 
     hh = pitcher_stats.get("hard_hit_pct_allowed")
     if hh is not None and hh > 0:
         # Hard-hit% allowed: 25–50% → 0–100
         scores.append(max(0, min(100, (hh - 25) / 25 * 100)))
 
-    k9 = pitcher_stats.get("k_per_9")
-    if k9 is not None and k9 > 0:
+    k9_effective = effective_k9(
+        pitcher_stats.get("k_per_9"),
+        pitcher_stats.get("recent_k9_21d"),
+        pitcher_stats.get("recent_starts_21d"),
+    )
+    if k9_effective is not None and k9_effective > 0:
         # K/9 inverse: range ~4–14, higher K = less vulnerable
-        scores.append(max(0, min(100, (14 - k9) / 10 * 100)))
+        scores.append(max(0, min(100, (14 - k9_effective) / 10 * 100)))
 
     # IP as a season sample size indicator (don't trust stats on < 10 IP).
     # Only fires when IP is measured + low; missing IP no longer collapses

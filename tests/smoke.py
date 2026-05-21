@@ -739,6 +739,107 @@ def pin_aggregate_recent_statcast_thin_sample_dropped() -> Result:
     )
 
 
+def pin_effective_era_blend() -> Result:
+    """B4: effective_era follows the same blend rules as effective_hr9."""
+    from pitcher_profile import effective_era, RECENT_HR9_BLEND_WEIGHT
+    season, recent, starts = 3.90, 5.20, 4
+    got = effective_era(season, recent, starts)
+    expected = RECENT_HR9_BLEND_WEIGHT * recent + (1 - RECENT_HR9_BLEND_WEIGHT) * season
+    if got is not None and abs(got - expected) < 1e-6:
+        return Result(
+            f"effective_era(season=3.90, recent=5.20, starts=4) -> {got:.3f}",
+            Result.PASS,
+        )
+    return Result(
+        "effective_era blend", Result.HALT,
+        f"got {got}, expected {expected:.4f}",
+    )
+
+
+def pin_effective_k9_blend() -> Result:
+    """B4: effective_k9 follows the same blend rules as effective_hr9."""
+    from pitcher_profile import effective_k9, RECENT_HR9_BLEND_WEIGHT
+    season, recent, starts = 10.5, 7.2, 4
+    got = effective_k9(season, recent, starts)
+    expected = RECENT_HR9_BLEND_WEIGHT * recent + (1 - RECENT_HR9_BLEND_WEIGHT) * season
+    if got is not None and abs(got - expected) < 1e-6:
+        return Result(
+            f"effective_k9(season=10.5, recent=7.2, starts=4) -> {got:.3f}",
+            Result.PASS,
+        )
+    return Result(
+        "effective_k9 blend", Result.HALT,
+        f"got {got}, expected {expected:.4f}",
+    )
+
+
+def pin_effective_blends_custom_weight() -> Result:
+    """B4: blend_weight / min_starts kwargs override defaults — for the harness."""
+    from pitcher_profile import effective_hr9, effective_era, effective_k9
+    got_hr  = effective_hr9(2.0, 4.0, 3, blend_weight=0.70, min_starts=3)
+    got_era = effective_era(4.0, 6.0, 3, blend_weight=0.70, min_starts=3)
+    got_k   = effective_k9(8.0, 5.0, 3, blend_weight=0.70, min_starts=3)
+    failures = []
+    for name, got, want in [("hr9", got_hr, 3.4), ("era", got_era, 5.4), ("k9", got_k, 5.9)]:
+        if got is None or abs(got - want) > 1e-6:
+            failures.append(f"{name}: got {got}, want {want}")
+    if not failures:
+        return Result("effective_* honor custom blend_weight / min_starts", Result.PASS)
+    return Result("effective_* custom blend_weight", Result.HALT, "; ".join(failures))
+
+
+def pin_effective_blend_min_starts_gate() -> Result:
+    """B4: custom min_starts gate — 2 starts < min=3 falls back to season only."""
+    from pitcher_profile import effective_hr9
+    got = effective_hr9(2.0, 4.0, 2, min_starts=3)
+    if got is not None and abs(got - 2.0) < 1e-6:
+        return Result(
+            "effective_hr9(starts=2, min_starts=3) -> season only", Result.PASS
+        )
+    return Result(
+        "effective_hr9 custom min_starts gate", Result.HALT,
+        f"got {got}, expected 2.0 (season only — 2 starts below custom min of 3)",
+    )
+
+
+def pin_pitcher_recent_window_defaults() -> Result:
+    """B4: production defaults preserved — 21-day calendar window."""
+    from pitcher_profile import PITCHER_RECENT_WINDOW_TYPE, PITCHER_RECENT_WINDOW_N
+    if PITCHER_RECENT_WINDOW_TYPE == "days" and PITCHER_RECENT_WINDOW_N == 21:
+        return Result(
+            "PITCHER_RECENT_WINDOW defaults = ('days', 21) (production unchanged)",
+            Result.PASS,
+        )
+    return Result(
+        "PITCHER_RECENT_WINDOW defaults", Result.HALT,
+        f"got ({PITCHER_RECENT_WINDOW_TYPE!r}, {PITCHER_RECENT_WINDOW_N}); flipping "
+        "to last-N-starts requires a documented WEIGHT_REFIT_LOG.md decision.",
+    )
+
+
+def pin_score_pitcher_vulnerability_era_recency_lifts_score() -> Result:
+    """B4: a pitcher whose recent ERA has collapsed scores higher than season-only."""
+    from pitcher_profile import score_pitcher_vulnerability
+    season_only = score_pitcher_vulnerability({
+        "name": "P_seasonOnly",
+        "hr_per_9": 1.5, "era": 3.50, "hard_hit_pct_allowed": 35, "k_per_9": 9.0,
+    })
+    with_recent_era = score_pitcher_vulnerability({
+        "name": "P_withRecentEra",
+        "hr_per_9": 1.5, "era": 3.50, "hard_hit_pct_allowed": 35, "k_per_9": 9.0,
+        "recent_era_21d": 6.5, "recent_starts_21d": 4,
+    })
+    if with_recent_era > season_only + 1:
+        return Result(
+            f"score_pitcher_vulnerability ERA recency: {season_only:.1f} -> {with_recent_era:.1f}",
+            Result.PASS,
+        )
+    return Result(
+        "score_pitcher_vulnerability ERA recency lift", Result.HALT,
+        f"season_only={season_only:.1f}, with_recent_era={with_recent_era:.1f} (lift <= +1)",
+    )
+
+
 def pin_score_pitcher_vulnerability_recency_lifts_score() -> Result:
     """score_pitcher_vulnerability blends recent into HR/9 — Singer-style
     case (season 1.89, recent 3.07, 3 starts) ranks above season-only."""
@@ -797,6 +898,13 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_aggregate_recent_statcast_basic,
     pin_aggregate_recent_statcast_empty,
     pin_aggregate_recent_statcast_thin_sample_dropped,
+    # 2026-05-21: B4 — recency extended to ERA + K/9, configurable window
+    pin_effective_era_blend,
+    pin_effective_k9_blend,
+    pin_effective_blends_custom_weight,
+    pin_effective_blend_min_starts_gate,
+    pin_pitcher_recent_window_defaults,
+    pin_score_pitcher_vulnerability_era_recency_lifts_score,
 ]
 
 
