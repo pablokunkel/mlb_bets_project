@@ -962,6 +962,107 @@ def pin_as_of_date_signatures_present() -> Result:
     return Result("as_of_date signatures", Result.HALT, "; ".join(failures))
 
 
+def pin_backfill_orchestrator_imports() -> Result:
+    """PR 4: backfill_2025 orchestrator imports cleanly + exposes the
+    documented entry points."""
+    try:
+        from etl import backfill_2025 as bf
+    except Exception as e:
+        return Result(
+            "backfill_2025 import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in (
+        "backfill_one_date", "backfill_window",
+        "ensure_2025_outcomes", "bridge_historical_to_outcomes",
+        "DEFAULT_START", "DEFAULT_END", "main",
+    ):
+        if not hasattr(bf, name):
+            failures.append(f"missing {name}")
+    if not failures:
+        return Result(
+            "etl.backfill_2025 imports + exposes entry points", Result.PASS,
+        )
+    return Result("backfill_2025 entry points", Result.HALT, "; ".join(failures))
+
+
+def pin_backfill_date_range_complete() -> Result:
+    """PR 4: _date_range yields every date inclusive of both endpoints."""
+    from etl.backfill_2025 import _date_range
+    dates = list(_date_range("2025-04-01", "2025-04-05"))
+    if dates == [
+        "2025-04-01", "2025-04-02", "2025-04-03",
+        "2025-04-04", "2025-04-05",
+    ]:
+        return Result(
+            "_date_range yields inclusive [start, end]", Result.PASS,
+        )
+    return Result(
+        "_date_range coverage", Result.HALT,
+        f"got {dates}, expected 5 consecutive dates",
+    )
+
+
+def pin_backfill_default_window_full_season() -> Result:
+    """PR 4: defaults cover the 2025 regular season start through end."""
+    from etl.backfill_2025 import DEFAULT_START, DEFAULT_END
+    if DEFAULT_START == "2025-03-27" and DEFAULT_END == "2025-09-30":
+        return Result(
+            "backfill default window = 2025-03-27..2025-09-30", Result.PASS,
+        )
+    return Result(
+        "backfill default window", Result.HALT,
+        f"got ({DEFAULT_START!r}..{DEFAULT_END!r}); the 2025 regular "
+        "season runs 2025-03-27 to 2025-09-30",
+    )
+
+
+def pin_generate_card_accepts_as_of_date() -> Result:
+    """PR 4: generate_card has the as_of_date kwarg (default None)."""
+    import inspect
+    from generate_picks import generate_card
+    sig = inspect.signature(generate_card)
+    if "as_of_date" not in sig.parameters:
+        return Result(
+            "generate_card(as_of_date)", Result.HALT,
+            "missing as_of_date kwarg",
+        )
+    param = sig.parameters["as_of_date"]
+    if param.default is not None:
+        return Result(
+            "generate_card(as_of_date) default = None", Result.HALT,
+            f"got default={param.default!r}",
+        )
+    return Result(
+        "generate_card accepts as_of_date kwarg (default None)", Result.PASS,
+    )
+
+
+def pin_fetch_live_slate_accepts_as_of_date() -> Result:
+    """PR 4: fetch_live_slate + score_live_slate + score_untiered_starters
+    all accept as_of_date with default None."""
+    import inspect
+    from generate_picks import (
+        fetch_live_slate, score_live_slate, score_untiered_starters,
+    )
+    failures = []
+    for fn in (fetch_live_slate, score_live_slate, score_untiered_starters):
+        sig = inspect.signature(fn)
+        if "as_of_date" not in sig.parameters:
+            failures.append(f"{fn.__name__} missing as_of_date")
+            continue
+        if sig.parameters["as_of_date"].default is not None:
+            failures.append(f"{fn.__name__}.as_of_date default != None")
+    if not failures:
+        return Result(
+            "fetch/score_*_slate accept as_of_date (default None)", Result.PASS,
+        )
+    return Result(
+        "fetch_live_slate signature", Result.HALT, "; ".join(failures),
+    )
+
+
 def pin_weather_archive_threshold_present() -> Result:
     """PR 3: get_weather has the archive-endpoint threshold constant set
     to a non-trivial value (5+ days), and both endpoint URLs are defined.
@@ -1032,6 +1133,12 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_filter_before_empty_safe,
     pin_as_of_date_signatures_present,
     pin_weather_archive_threshold_present,
+    # 2026-05-21: PR 4 — 2025 backfill orchestrator
+    pin_backfill_orchestrator_imports,
+    pin_backfill_date_range_complete,
+    pin_backfill_default_window_full_season,
+    pin_generate_card_accepts_as_of_date,
+    pin_fetch_live_slate_accepts_as_of_date,
 ]
 
 

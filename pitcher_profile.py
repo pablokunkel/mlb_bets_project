@@ -355,13 +355,16 @@ def _fetch_batter_hr_events(
         return cached
 
     hr_events = []
-    end_cur = (as_of_date or datetime.now().strftime("%Y-%m-%d"))
 
+    # PR 4 perf fix (2026-05-21): fetch the FULL season window so the
+    # pybaseball cache is shared across every backfill date for the
+    # same batter. Then _filter_before clips in memory.
     try:
         from pybaseball import statcast_batter
 
         # Current season
         start_cur = f"{season}-03-20"
+        end_cur = datetime.now().strftime("%Y-%m-%d")
         df = statcast_batter(start_cur, end_cur, player_id)
         df = _filter_before(df, as_of_date)
         if df is not None and not df.empty:
@@ -432,15 +435,17 @@ def _fetch_pitcher_arsenal_statcast(
     if cached is not None:
         return cached
 
-    # Cap the current-season window at as_of_date (exclusive) so historical
-    # reconstruction never sees future pitches. Falls back to today for
-    # production runs.
-    end_cur = (as_of_date or datetime.now().strftime("%Y-%m-%d"))
-
+    # PR 4 perf fix (2026-05-21): fetch the FULL season window from
+    # Statcast (cached by pybaseball under one (pitcher_id, season-window)
+    # key), then clip in memory with _filter_before. Each backfill date
+    # for the same pitcher hits the same pybaseball cache entry instead
+    # of N separate (start, as_of_date) entries — drops 2025 backfill
+    # runtime from ~30h to ~6h.
     try:
         from pybaseball import statcast_pitcher
 
         start = f"{season}-03-20"
+        end_cur = datetime.now().strftime("%Y-%m-%d")
         df = statcast_pitcher(start, end_cur, pitcher_id)
         df = _filter_before(df, as_of_date)
 
