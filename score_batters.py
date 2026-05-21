@@ -511,18 +511,59 @@ SEASON_HR_FLOOR_TIERS: list[tuple[int, float]] = [
 ]
 
 
-def compute_season_hr_floor(season_hr: int | None) -> float:
+# B6b (2026-05-21): smooth HR-floor curve as alternative to the 5-tier cliff.
+# Off by default — flip USE_SMOOTH_HR_FLOOR=True (and run the backtest harness)
+# to evaluate against the tiered baseline.
+#
+# Form: floor(hr) = SMOOTH_HR_FLOOR_C * ln(hr + 1)
+#
+# Constant chosen so the 18-HR floor (78) matches the existing tier exactly
+# (Schwarber-class all-star), preserving the most-load-bearing calibration
+# point. Resulting values vs cliff:
+#
+#   season_hr  | cliff | smooth (log)
+#   ----------- + ----- + ------------
+#         0    |  0.0  |   0.0
+#         3    |  0.0  |  36.7
+#         5    | 50.0  |  47.5  (just under cliff — 5-HR cliff intentionally
+#                                generous, smooth's lower value is honest)
+#         8    | 60.0  |  58.2  (Burger case — smooth lands between old
+#                                cliff-50 and cliff-60, the right answer)
+#        12    | 70.0  |  68.0
+#        18    | 78.0  |  78.0  (calibration anchor)
+#        25    | 85.0  |  86.5
+#        40    | 85.0  |  98.2  (cliff capped; smooth still rewards 40+ HR)
+#
+# Trade-off: smooth removes the 10pt jump at every cliff edge (a 7-HR
+# hitter at cliff=50 vs 8-HR at cliff=60 reads as a wildly different
+# class of player despite ~12% empirical HR-rate difference). Smooth
+# distributes the lift continuously so the model can express "this guy
+# is closer to a 60-floor type, this guy closer to 50."
+USE_SMOOTH_HR_FLOOR = False
+SMOOTH_HR_FLOOR_C = 26.5
+
+
+def compute_season_hr_floor(season_hr: int | None, smooth: bool | None = None) -> float:
     """Look up the power-score floor for a batter's season HR count.
 
     Returns 0.0 (no floor effect) when:
       - season_hr is None or <= 0
-      - season_hr is below the lowest tier threshold
+      - season_hr is below the lowest tier threshold (cliff mode only)
 
-    Otherwise returns the highest tier_floor the batter qualifies for.
-    Highest threshold the batter meets-or-exceeds wins.
+    Otherwise:
+      - cliff mode (default): returns the highest SEASON_HR_FLOOR_TIERS
+        tier the batter meets-or-exceeds.
+      - smooth mode: returns SMOOTH_HR_FLOOR_C * ln(season_hr + 1),
+        capped at 100.
+
+    *smooth* — overrides the module-level USE_SMOOTH_HR_FLOOR flag when
+    set (mostly for tests / backtest harness). None means "use the flag."
     """
     if season_hr is None or season_hr <= 0:
         return 0.0
+    use_smooth = USE_SMOOTH_HR_FLOOR if smooth is None else smooth
+    if use_smooth:
+        return min(100.0, SMOOTH_HR_FLOOR_C * float(np.log(season_hr + 1)))
     floor = 0.0
     for threshold, tier_floor in SEASON_HR_FLOOR_TIERS:
         if season_hr >= threshold:

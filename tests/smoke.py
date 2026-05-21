@@ -375,6 +375,46 @@ def pin_compute_season_hr_floor_tiers() -> Result:
     )
 
 
+def pin_compute_season_hr_floor_smooth() -> Result:
+    """B6b smooth log curve: floor(hr) = 26.5 * ln(hr + 1), with 18 HR pinned at 78."""
+    from score_batters import compute_season_hr_floor, SMOOTH_HR_FLOOR_C
+    import math
+    cases = [
+        (None, 0.0),
+        (0,    0.0),
+        (18,   78.0),                                       # calibration anchor
+        (8,    SMOOTH_HR_FLOOR_C * math.log(9)),            # ~58.2 (Burger)
+        (5,    SMOOTH_HR_FLOOR_C * math.log(6)),            # ~47.5
+        (25,   SMOOTH_HR_FLOOR_C * math.log(26)),           # ~86.3
+        (40,   SMOOTH_HR_FLOOR_C * math.log(41)),           # ~98.4 (no cap until 100)
+    ]
+    failures = []
+    for hr, want in cases:
+        got = compute_season_hr_floor(hr, smooth=True)
+        if abs(got - want) > 0.5:
+            failures.append(f"hr={hr}: got {got:.2f}, want {want:.2f}")
+    if not failures:
+        return Result("compute_season_hr_floor(smooth) matches log curve", Result.PASS)
+    return Result(
+        "compute_season_hr_floor(smooth)", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_use_smooth_hr_floor_default_off() -> Result:
+    """USE_SMOOTH_HR_FLOOR must stay off until backtest validates the curve."""
+    from score_batters import USE_SMOOTH_HR_FLOOR
+    if USE_SMOOTH_HR_FLOOR is False:
+        return Result(
+            "USE_SMOOTH_HR_FLOOR default = False (pre-backtest)", Result.PASS
+        )
+    return Result(
+        "USE_SMOOTH_HR_FLOOR default = False",
+        Result.HALT,
+        f"got {USE_SMOOTH_HR_FLOOR}; flipping the smooth curve on requires "
+        "a documented backtest comparison (cliff vs smooth) in WEIGHT_REFIT_LOG.md.",
+    )
+
+
 def pin_use_season_hr_floor_default_on() -> Result:
     """Production runs with the floor ON since 2026-05-03.
 
@@ -550,6 +590,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_shrink_to_career_huge_sample_barely_shrinks,
     pin_use_career_prior_default_off,
     pin_compute_season_hr_floor_tiers,
+    pin_compute_season_hr_floor_smooth,
+    pin_use_smooth_hr_floor_default_off,
     pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
