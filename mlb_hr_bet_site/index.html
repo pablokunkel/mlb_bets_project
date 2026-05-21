@@ -5049,8 +5049,12 @@
           .filter(p => p && p.selected)
           .map(p => p.batter_id || p.player_id)
       );
-      let cashedCount = 0;
-      for (const h of hrs) if (ourPickIds.has(h.batterId)) cashedCount += 1;
+      // 2026-05-21: count UNIQUE picks who cashed, not HR events.
+      // Mirror of PR #41's HR Hitters fix — a pick that homers twice
+      // (e.g., Soto's 2 HRs) should still read as 1/8, not 2/8.
+      const cashedCount = new Set(
+        hrs.map(h => h.batterId).filter(id => id && ourPickIds.has(id))
+      ).size;
       const ourPicksTotal = ourPickIds.size || 8;
 
       const lastHRTime = hrs.length ? hrs[0].time : null;
