@@ -163,13 +163,21 @@ def load_season_batting_lookup(season: int) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT player_id, player_name, games,
+            SELECT player_id, player_name, games, hr, bats,
                    barrel_pct, exit_velo, hr_fb_pct, iso, woba
             FROM season_batting
             WHERE season = ?
             """,
             (season,),
         ).fetchall()
+        # 2026-05-20 (B9): added `hr` and `bats` to the SELECT. T4
+        # untiered stubs (score_untiered_starters) had no `bats` key on
+        # the batter dict — compute_composite defaulted to "R" silently,
+        # so every LHB and switch-hitter on T4 got wrong park-handedness
+        # skew and wrong platoon bonus. `hr` is included for parity with
+        # the live-tier path (display, debugging) — score_power's floor
+        # lookup uses `season_hr` from B8 (authoritative outcomes-cumulative),
+        # not this `hr` column which is the lagging-API season_batting value.
         conn.close()
         # 2026-05-04: added player_name + games to the SELECT.
         # PR #24's T4 display fix relied on sb_row["player_name"] to
@@ -1419,9 +1427,20 @@ def score_untiered_starters(
                     # play_rate. Without this, T4 batters would always read
                     # `games`=None and skip dampening — exactly the cohort
                     # most likely to be platoon hitters.
+                    # 2026-05-20 (B9): also attach `bats` (handedness) and
+                    # `hr` (parity with live-tier shape). Without `bats`,
+                    # compute_composite line ~1076 defaulted to "R" so
+                    # every LHB and switch-hitter on T4 got the wrong park-
+                    # handedness skew and wrong platoon advantage. `hr` is
+                    # informational only — score_power's floor reads
+                    # `season_hr` (B8) from outcomes-cumulative.
                     sb_row = season_lookup.get(pid) or {}
                     if sb_row.get("games") is not None:
                         stub["games"] = sb_row["games"]
+                    if sb_row.get("bats"):
+                        stub["bats"] = sb_row["bats"]
+                    if sb_row.get("hr") is not None:
+                        stub["hr"] = sb_row["hr"]
                 if career_lookup:
                     stub = enrich_with_career_prior(stub, career_lookup)
                 stubs.append((stub, game, i, side))
