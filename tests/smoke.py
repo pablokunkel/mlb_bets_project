@@ -962,6 +962,94 @@ def pin_as_of_date_signatures_present() -> Result:
     return Result("as_of_date signatures", Result.HALT, "; ".join(failures))
 
 
+def pin_aggregate_victim_profile_weighted() -> Result:
+    """DB-backed backfill path: _aggregate_victim_profile computes the
+    HR-weighted arsenal average and sample-size confidence correctly.
+
+    Synthetic input: 10 HR events across 3 victim pitchers — 5 off pitcher
+    1 (FB velo 95), 3 off pitcher 2 (velo 93), 2 off pitcher 3 (velo 91).
+    HR-weighted avg_fb_velo = (95*5 + 93*3 + 91*2) / 10 = 93.6.
+    hr_count = 10, n_victim_pitchers = 3 -> confidence tier 0.6
+    (hr_count >= 8 but n_victim_pitchers < 4, so not the 0.8 tier).
+    """
+    from pitcher_profile import _aggregate_victim_profile
+
+    def _event(pid):
+        return {
+            "pitcher_id": pid,
+            "p_throws": "R",
+            "pitch_type": "FF",
+            "release_speed": 93.0,
+            "release_spin_rate": 2250.0,
+            "release_extension": 6.2,
+        }
+    events = [_event(1)] * 5 + [_event(2)] * 3 + [_event(3)] * 2
+    arsenals = {
+        1: {"avg_fb_velo": 95.0, "fb_usage_pct": 0.55, "breaking_usage_pct": 0.30,
+            "offspeed_usage_pct": 0.15, "avg_fb_spin": 2300.0, "avg_extension": 6.3},
+        2: {"avg_fb_velo": 93.0, "fb_usage_pct": 0.50, "breaking_usage_pct": 0.30,
+            "offspeed_usage_pct": 0.20, "avg_fb_spin": 2250.0, "avg_extension": 6.2},
+        3: {"avg_fb_velo": 91.0, "fb_usage_pct": 0.45, "breaking_usage_pct": 0.35,
+            "offspeed_usage_pct": 0.20, "avg_fb_spin": 2200.0, "avg_extension": 6.0},
+    }
+    prof = _aggregate_victim_profile(events, arsenals.get)
+
+    failures = []
+    if abs(prof.get("avg_fb_velo", -1) - 93.6) > 0.05:
+        failures.append(f"avg_fb_velo got {prof.get('avg_fb_velo')}, want 93.6")
+    if prof.get("hr_count") != 10:
+        failures.append(f"hr_count got {prof.get('hr_count')}, want 10")
+    if prof.get("n_victim_pitchers") != 3:
+        failures.append(f"n_victim_pitchers got {prof.get('n_victim_pitchers')}, want 3")
+    if abs(prof.get("confidence", -1) - 0.6) > 1e-9:
+        failures.append(f"confidence got {prof.get('confidence')}, want 0.6")
+    # All 10 events p_throws=R -> hand_R_pct = 1.0
+    if abs(prof.get("hand_R_pct", -1) - 1.0) > 1e-9:
+        failures.append(f"hand_R_pct got {prof.get('hand_R_pct')}, want 1.0")
+    if not failures:
+        return Result(
+            "_aggregate_victim_profile HR-weighted avg + confidence tier",
+            Result.PASS,
+        )
+    return Result(
+        "_aggregate_victim_profile(synthetic)", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_aggregate_victim_profile_no_arsenal_fallback() -> Result:
+    """DB-backed backfill path: with no arsenal data,
+    _aggregate_victim_profile falls back to per-event release_speed and
+    still returns a usable profile (n_victim_pitchers = 0)."""
+    from pitcher_profile import _aggregate_victim_profile
+    events = [
+        {"pitcher_id": p, "p_throws": "L", "pitch_type": "SL",
+         "release_speed": 90.0, "release_spin_rate": 2100.0,
+         "release_extension": 6.0}
+        for p in (11, 12, 13, 14)
+    ]
+    prof = _aggregate_victim_profile(events, lambda pid: None)
+    failures = []
+    # No arsenals -> per-event velo mean = 90.0
+    if abs(prof.get("avg_fb_velo", -1) - 90.0) > 0.05:
+        failures.append(
+            f"avg_fb_velo got {prof.get('avg_fb_velo')}, want 90.0 (per-event fallback)"
+        )
+    if prof.get("n_victim_pitchers") != 0:
+        failures.append(f"n_victim_pitchers got {prof.get('n_victim_pitchers')}, want 0")
+    # All events p_throws=L -> hand_R_pct = 0.0
+    if abs(prof.get("hand_R_pct", -1) - 0.0) > 1e-9:
+        failures.append(f"hand_R_pct got {prof.get('hand_R_pct')}, want 0.0")
+    if not failures:
+        return Result(
+            "_aggregate_victim_profile no-arsenal -> per-event velo fallback",
+            Result.PASS,
+        )
+    return Result(
+        "_aggregate_victim_profile no-arsenal fallback", Result.HALT,
+        "; ".join(failures),
+    )
+
+
 def pin_backfill_orchestrator_imports() -> Result:
     """PR 4: backfill_2025 orchestrator imports cleanly + exposes the
     documented entry points."""
@@ -1310,6 +1398,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_backfill_parse_duration,
     pin_backfill_window_accepts_chunk_flags,
     pin_run_backfill_local_wrapper_present,
+    # 2026-05-22: DB-backed victim/arsenal backfill path
+    pin_aggregate_victim_profile_weighted,
+    pin_aggregate_victim_profile_no_arsenal_fallback,
 ]
 
 
