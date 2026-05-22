@@ -1050,6 +1050,43 @@ def pin_aggregate_victim_profile_no_arsenal_fallback() -> Result:
     )
 
 
+def pin_backtest_power_inputs_isolates_variants() -> Result:
+    """B6 harness: backtest_power_inputs imports, exposes its entry points,
+    and its synthetic vs. real input-key sets are disjoint — the property
+    that makes the synthetic-vs-real head-to-head an honest comparison."""
+    try:
+        from diagnostics import backtest_power_inputs as bpi
+    except Exception as e:
+        return Result(
+            "backtest_power_inputs import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    syn = set(bpi.SYNTHETIC_KEYS)
+    real = set(bpi.REAL_KEYS)
+    if not syn or not real:
+        failures.append("an input-key set is empty")
+    if syn & real:
+        failures.append(f"synthetic/real key sets overlap: {sorted(syn & real)}")
+    for name in ("fetch_rows", "score_variants", "compute_metrics", "main"):
+        if not hasattr(bpi, name):
+            failures.append(f"missing {name}")
+    # _has_signal must require non-null AND > 0 — a 0 or None is not signal.
+    if bpi._has_signal({"iso": None}, ("iso",)):
+        failures.append("_has_signal True on None")
+    if bpi._has_signal({"iso": 0}, ("iso",)):
+        failures.append("_has_signal True on 0")
+    if not bpi._has_signal({"iso": 0.2}, ("iso",)):
+        failures.append("_has_signal False on a real value")
+    if not failures:
+        return Result(
+            "backtest_power_inputs: synthetic/real variants isolated", Result.PASS,
+        )
+    return Result(
+        "backtest_power_inputs variants", Result.HALT, "; ".join(failures),
+    )
+
+
 def pin_backfill_orchestrator_imports() -> Result:
     """PR 4: backfill_2025 orchestrator imports cleanly + exposes the
     documented entry points."""
@@ -1401,6 +1438,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     # 2026-05-22: DB-backed victim/arsenal backfill path
     pin_aggregate_victim_profile_weighted,
     pin_aggregate_victim_profile_no_arsenal_fallback,
+    # 2026-05-22: B6 power input-source backtest harness
+    pin_backtest_power_inputs_isolates_variants,
 ]
 
 
