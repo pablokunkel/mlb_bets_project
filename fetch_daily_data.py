@@ -931,14 +931,18 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
             "windspeed_unit": "mph",
             "timezone": tz_name,  # Align hourly array to venue-local time
         }
-        # Open-Meteo's free tier appears to deprioritize GitHub Actions
-        # egress IPs — 10s read timeouts were producing 5-8 venue failures
-        # per noon run. 30s + one retry on transient errors clears most
-        # of them without changing behavior for healthy responses.
+        # Timeout is a (connect, read) split. A healthy Open-Meteo host
+        # connects in ~0.1s, so a 5s connect cap fails fast when a host
+        # is unreachable (e.g. an archive-api.open-meteo.com outage),
+        # instead of burning 30s x 2 attempts x ~8 venues = ~8 min of
+        # dead waiting per backfill date. The 30s READ budget stays
+        # generous: a connected-but-slow archive query is worth the wait.
+        # One retry still clears a transient single-call blip; a fully-
+        # down host now fails fast on both attempts.
         resp = None
         for attempt in range(2):
             try:
-                resp = requests.get(url, params=params, timeout=30)
+                resp = requests.get(url, params=params, timeout=(5, 30))
                 resp.raise_for_status()
                 break
             except (requests.Timeout, requests.ConnectionError):
