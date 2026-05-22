@@ -1157,6 +1157,78 @@ def pin_fetch_live_slate_accepts_as_of_date() -> Result:
     )
 
 
+def pin_form_fetch_as_of_date_threaded() -> Result:
+    """PR 4 fix (2026-05-22): the batter Form fetch path is as-of-date-aware.
+
+    get_recent_game_log + fetch_form_data_batch must accept as_of_date
+    (default None). Without it the 2025 backfill's Form factor — the
+    joint-heaviest at weight 0.279 — silently uses end-of-season games
+    for a mid-season reconstruction (look-ahead bias).
+    """
+    import inspect
+    from fetch_daily_data import get_recent_game_log
+    from generate_picks import fetch_form_data_batch
+    failures = []
+    for fn in (get_recent_game_log, fetch_form_data_batch):
+        sig = inspect.signature(fn)
+        p = sig.parameters.get("as_of_date")
+        if p is None:
+            failures.append(f"{fn.__name__} missing as_of_date kwarg")
+        elif p.default is not None:
+            failures.append(f"{fn.__name__}.as_of_date default = {p.default!r}, want None")
+    if not failures:
+        return Result(
+            "Form fetch (get_recent_game_log + batch) accepts as_of_date",
+            Result.PASS,
+        )
+    return Result("Form fetch as_of_date threading", Result.HALT, "; ".join(failures))
+
+
+def pin_get_recent_game_log_filters_before_date() -> Result:
+    """PR 4 fix: get_recent_game_log's as_of_date cutoff drops on/after games.
+
+    Exercises the filter logic against a synthetic gameLog so we don't
+    need a network call. Monkeypatches requests.get to return a canned
+    season log of 5 games; with as_of_date set, only the games strictly
+    before it should feed the windows.
+    """
+    import fetch_daily_data as fdd
+
+    class _FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            # 5 games; HR on the LAST two (the "future" ones).
+            mk = lambda d, hr: {"date": d, "stat": {
+                "atBats": 4, "hits": 1, "doubles": 0, "triples": 0, "homeRuns": hr}}
+            return {"stats": [{"splits": [
+                mk("2025-04-01", 0), mk("2025-04-05", 0), mk("2025-04-10", 0),
+                mk("2025-09-01", 1), mk("2025-09-05", 1),
+            ]}]}
+
+    orig = fdd.requests.get
+    fdd.requests.get = lambda *a, **k: _FakeResp()
+    try:
+        # as_of_date cutoff at 2025-05-01: the two September games (each
+        # with a HR) must be excluded -> recent_hr_10g should be 0.
+        cut = fdd.get_recent_game_log(12345, 2025, as_of_date="2025-05-01")
+        # no cutoff: all 5 games -> 2 HR.
+        full = fdd.get_recent_game_log(12345, 2025)
+    finally:
+        fdd.requests.get = orig
+
+    failures = []
+    if cut.get("recent_hr_10g") != 0:
+        failures.append(f"as_of_date=2025-05-01 -> recent_hr_10g={cut.get('recent_hr_10g')}, "
+                        "want 0 (Sept HRs are look-ahead, must be excluded)")
+    if full.get("recent_hr_10g") != 2:
+        failures.append(f"no cutoff -> recent_hr_10g={full.get('recent_hr_10g')}, want 2")
+    if not failures:
+        return Result(
+            "get_recent_game_log(as_of_date) excludes future games", Result.PASS,
+        )
+    return Result("get_recent_game_log as_of_date cutoff", Result.HALT, "; ".join(failures))
+
+
 def pin_weather_archive_threshold_present() -> Result:
     """PR 3: get_weather has the archive-endpoint threshold constant set
     to a non-trivial value (5+ days), and both endpoint URLs are defined.
@@ -1233,6 +1305,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_backfill_default_window_full_season,
     pin_generate_card_accepts_as_of_date,
     pin_fetch_live_slate_accepts_as_of_date,
+    pin_form_fetch_as_of_date_threaded,
+    pin_get_recent_game_log_filters_before_date,
     pin_backfill_parse_duration,
     pin_backfill_window_accepts_chunk_flags,
     pin_run_backfill_local_wrapper_present,

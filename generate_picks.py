@@ -546,19 +546,29 @@ def try_fetch_statcast_recent(player_id: int, days: int = 14) -> dict:
         return {}
 
 
-def fetch_form_data_batch(player_ids: list[tuple[str, int]], season: int) -> dict:
+def fetch_form_data_batch(
+    player_ids: list[tuple[str, int]],
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> dict:
     """
     Fetch recent game logs for a batch of players via the MLB Stats API.
     Much more reliable than per-batter Statcast calls.
 
     *player_ids* is a list of (name, player_id) tuples.
+    *as_of_date* — YYYY-MM-DD; forwarded to get_recent_game_log so the
+    Form windows exclude games on/after that date. Required for the
+    2025 backfill — without it the Form factor (the joint-heaviest at
+    weight 0.279) silently uses end-of-season games for a mid-season
+    reconstruction. None (default) = today = production behavior.
     Returns {player_id: game_log_dict}.
     """
     results = {}
     for name, pid in player_ids:
         if not pid or pid < 1000:
             continue
-        log = get_recent_game_log(pid, season)
+        log = get_recent_game_log(pid, season, as_of_date=as_of_date)
         if log:
             results[pid] = log
     return results
@@ -1023,15 +1033,30 @@ def fetch_live_slate(
 
     # ── Batter xwOBA on contact via BULK Savant CSV (one HTTP call) ────
     # Replaces per-batter Statcast in score_live_slate. Slate-level cache.
+    #
+    # PR 4 fix (2026-05-22): SKIP for backfill. fetch_batter_xwoba_bulk
+    # hits Savant's expected_statistics leaderboard, which only returns a
+    # SEASON-AGGREGATE xwOBA — for a historical reconstruction that's the
+    # season-FINAL number, i.e. look-ahead bias on xwoba_contact. We can't
+    # cheaply make it as-of-date. Leaving it empty -> xwoba_contact stays
+    # None -> score_power skip-on-missing. The as-of-date-correct recent
+    # contact signal still flows via B6a's recent_xwoba_contact_14d below.
     bulk_batter_xwoba: dict = {}
-    try:
-        bulk_batter_xwoba = fetch_batter_xwoba_bulk(season)
-        if bulk_batter_xwoba:
-            status.ok("Batter xwOBA (bulk)", f"{len(bulk_batter_xwoba)} batters via Savant")
-        else:
-            status.warn("Batter xwOBA (bulk)", "No data — power score falls back to ISO/EV")
-    except Exception as e:
-        status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
+    if is_backfill:
+        status.warn(
+            "Batter xwOBA (bulk)",
+            f"Skipped (backfill mode, as_of={as_of_date}) — season-aggregate "
+            "would be look-ahead; recent_xwoba_contact_14d carries the signal",
+        )
+    else:
+        try:
+            bulk_batter_xwoba = fetch_batter_xwoba_bulk(season)
+            if bulk_batter_xwoba:
+                status.ok("Batter xwOBA (bulk)", f"{len(bulk_batter_xwoba)} batters via Savant")
+            else:
+                status.warn("Batter xwOBA (bulk)", "No data — power score falls back to ISO/EV")
+        except Exception as e:
+            status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
 
     # ── B6a: rolling 14d quality-contact Statcast (one bulk pull) ──────
     # Aggregated per-batter to {recent_barrel_real_14d,
@@ -1291,9 +1316,11 @@ def score_live_slate(
 
         eligible_batters.append((b, game, player_id, batting_order))
 
-    # Batch-fetch game logs for all eligible batters
+    # Batch-fetch game logs for all eligible batters. as_of_date forwards
+    # the backfill cutoff so the Form windows exclude games on/after the
+    # reconstructed date (look-ahead guard).
     player_id_list = [(b["name"], pid) for b, _, pid, _ in eligible_batters]
-    game_logs = fetch_form_data_batch(player_id_list, season)
+    game_logs = fetch_form_data_batch(player_id_list, season, as_of_date=as_of_date)
     log_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in game_logs)
     print(f"  [FORM] Fetched game logs for {log_hit}/{len(eligible_batters)} "
           f"T{tier} batters")
@@ -1580,10 +1607,11 @@ def score_untiered_starters(
     print(f"  [UNTIERED] {len(stubs)} confirmed starters not in any tier — "
           f"scoring with season_batting fallback")
 
-    # Batch fetch game logs (recent form data)
+    # Batch fetch game logs (recent form data). as_of_date forwards the
+    # backfill cutoff (look-ahead guard) — same as the tiered path.
     player_id_list = [(s[0]["name"], s[0]["player_id"]) for s in stubs]
     try:
-        game_logs = fetch_form_data_batch(player_id_list, season)
+        game_logs = fetch_form_data_batch(player_id_list, season, as_of_date=as_of_date)
     except Exception as e:
         print(f"  [UNTIERED] form data batch failed: {e}")
         game_logs = {}

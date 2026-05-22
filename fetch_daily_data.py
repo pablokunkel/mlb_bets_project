@@ -1119,7 +1119,8 @@ def get_recent_statcast(player_id: int, days: int = 14) -> pd.DataFrame:
 
 
 def get_recent_game_log(player_id: int, season: int,
-                        hr_window: int = 10, rate_window: int = 30) -> dict:
+                        hr_window: int = 10, rate_window: int = 30,
+                        *, as_of_date: str | None = None) -> dict:
     """
     Pull a player's recent game log from the MLB Stats API and summarize it
     over two windows (Form factor rebuild, 2026-05-19):
@@ -1136,6 +1137,14 @@ def get_recent_game_log(player_id: int, season: int,
 
     One HTTP call fetches the full season game log; both windows slice from
     it. Returns {} on failure.
+
+    *as_of_date* — YYYY-MM-DD; when set, game-log entries on or after this
+    date are dropped BEFORE the last-N-games windows are taken. Critical
+    for the 2025-season backfill: without it, "last 10 games" for a May
+    reconstruction would be September games (pure look-ahead bias). None
+    (default) = today = the full season-to-date, which is the correct
+    behavior for a live noon run. Mirrors get_recent_pitcher_game_log's
+    today_str semantics (B4).
     """
     url = f"{MLB_STATS_API}/people/{player_id}/stats"
     params = {
@@ -1157,6 +1166,14 @@ def get_recent_game_log(player_id: int, season: int,
     splits = stats_list[0].get("splits", [])
     if not splits:
         return {}
+
+    # As-of-date cutoff (backfill look-ahead guard). The gameLog `date`
+    # field is YYYY-MM-DD; a string compare is correct. Strictly-before:
+    # games played ON as_of_date haven't happened at noon-scoring time.
+    if as_of_date is not None:
+        splits = [g for g in splits if (g.get("date") or "") < as_of_date]
+        if not splits:
+            return {}
 
     def _agg(game_splits: list) -> dict:
         """Aggregate a list of game-log splits into counting + rate stats."""

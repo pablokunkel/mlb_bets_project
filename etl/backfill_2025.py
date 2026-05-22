@@ -370,6 +370,26 @@ def backfill_window(
     conn = get_db(db_path)
     create_tables(conn)
 
+    # ── Score the backfill with REAL recent Statcast contact quality ────
+    # score_power's season-level barrel% / exit_velo are synthetic
+    # estimates (82 + slg*15 etc. — the audit's documented debt). B6a
+    # added a real, as-of-date-correct recent-Statcast blend
+    # (recent_barrel_real_14d / recent_xwoba_contact_14d / recent_iso_14d),
+    # gated behind USE_RECENT_STATCAST_BLEND. Production leaves it off
+    # pending a backtest; the backfill flips it ON so the historical
+    # Power scores reflect real contact quality, not just synthetics.
+    #
+    # Train/serve note for the A1 refit (PR 5): these backfill rows are
+    # scored flag-ON. refit_weights / backtest_factors re-score from raw
+    # pick_inputs columns, so the refit run must ALSO be flag-on for a
+    # consistent fit — and adopting that refit means flipping the
+    # production flag on. Documented in WEIGHT_REFIT_LOG when A1 lands.
+    import score_batters as _sb
+    if not _sb.USE_RECENT_STATCAST_BLEND:
+        _sb.USE_RECENT_STATCAST_BLEND = True
+        print("  [backfill] USE_RECENT_STATCAST_BLEND -> True for this run "
+              "(real recent Statcast feeds score_power)")
+
     log_id = log_etl_start(conn, "backfill_2025", f"{start}..{end}")
     summary = {
         "start": start, "end": end,
