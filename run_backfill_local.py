@@ -58,6 +58,32 @@ PYTHON = sys.executable
 
 
 # ---------------------------------------------------------------------------
+# UTF-8 I/O hardening
+# ---------------------------------------------------------------------------
+
+def _force_utf8_io() -> None:
+    """Make this wrapper and every child subprocess emit UTF-8.
+
+    On Windows, when stdout is a pipe or a redirected file — you run
+    `run_backfill_2025.bat > backfill.log 2>&1` — Python falls back to the
+    legacy cp1252 console codec. The first non-ASCII char in any log line
+    (an em-dash, an arrow) then crashes the run with UnicodeEncodeError. A
+    6-12h backfill is exactly the job you want to tee to a file, so harden
+    it at the root: PYTHONUTF8 / PYTHONIOENCODING go into os.environ (the
+    r2_sync.py and etl.backfill_2025 subprocesses inherit them), and this
+    wrapper's own streams are reconfigured directly. setdefault() respects
+    any value the user already exported. No-op on a real console / Linux.
+    """
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # .env loader (no python-dotenv dep)
 # ---------------------------------------------------------------------------
 # IMPORTANT — this DELIBERATELY differs from features_v2._load_dotenv().
@@ -171,6 +197,7 @@ def run_orchestrator(args: list[str]) -> int:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    _force_utf8_io()
     _load_dotenv()
 
     required = (
