@@ -58,13 +58,30 @@ PYTHON = sys.executable
 
 
 # ---------------------------------------------------------------------------
-# .env loader (no python-dotenv dep) — same pattern as features_v2._load_dotenv
+# .env loader (no python-dotenv dep)
 # ---------------------------------------------------------------------------
+# IMPORTANT — this DELIBERATELY differs from features_v2._load_dotenv().
+#
+# features_v2's loader uses the standard dotenv convention "existing env
+# wins" (`if key not in os.environ`). That's correct for the daily
+# pipeline on GH Actions, where R2_* / VEGAS_* are injected as real env
+# vars from repo secrets and must beat any committed .env.
+#
+# This wrapper is laptop-only. Here, .env is the single source of truth
+# for R2 credentials. The "env wins" rule is an active hazard: a stale
+# `set R2_ACCESS_KEY_ID=...` left in a cmd session silently shadows .env,
+# and the only symptom is a 403 that looks exactly like a dead token.
+# That cost a debugging session on 2026-05-22.
+#
+# So: .env is AUTHORITATIVE. Every key in .env overrides whatever the
+# shell handed us — and when an override actually changes a value, we
+# say so out loud. A shadowed credential should never be silent again.
 
 def _load_dotenv() -> None:
-    """Parse KEY=VALUE lines from .env into os.environ. Existing env wins."""
+    """Load KEY=VALUE lines from .env into os.environ. .env always wins."""
     env_path = REPO / ".env"
     if not env_path.exists():
+        print(f"  [WARN] no .env found at {env_path}", file=sys.stderr)
         return
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -74,8 +91,14 @@ def _load_dotenv() -> None:
             key, _, val = line.partition("=")
             key = key.strip()
             val = val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = val
+            if not key:
+                continue
+            prior = os.environ.get(key)
+            if prior is not None and prior != val:
+                # The exact failure mode we're guarding against — announce it.
+                print(f"  [.env] {key}: .env value overrides a DIFFERENT value "
+                      f"already in the shell environment (.env is authoritative)")
+            os.environ[key] = val
     except Exception as e:
         print(f"  [WARN] .env parse failed: {e}", file=sys.stderr)
 
@@ -169,6 +192,20 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # Masked R2 identity — print exactly which account / key / bucket this
+    # run will use, so a wrong credential is obvious at a glance instead of
+    # surfacing 30 lines deep in a boto3 traceback. Account ID is semi-public
+    # (it's in every dashboard URL); the access key is masked; the secret is
+    # never printed.
+    _acct = os.environ.get("R2_ACCOUNT_ID", "")
+    _akid = os.environ.get("R2_ACCESS_KEY_ID", "")
+    _bkt = os.environ.get("R2_BUCKET", "")
+
+    def _mask(s: str) -> str:
+        return f"{s[:6]}...{s[-4:]}" if len(s) > 12 else "(short!)"
+
+    print(f"  R2 target: bucket={_bkt}  account={_acct}  key={_mask(_akid)}")
 
     forwarded_args = sys.argv[1:]
 
