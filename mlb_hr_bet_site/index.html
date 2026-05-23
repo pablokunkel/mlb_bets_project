@@ -215,6 +215,17 @@
     .stat-card .value.accent { color: var(--signal); background: none; -webkit-background-clip: unset; }
     .stat-card .value.orange { color: var(--clay-deep); background: none; -webkit-background-clip: unset; }
 
+    /* Small baseball emoji used inline next to HR counts. The raw emoji
+       crowds the number — pad + size it down a touch so "3 ⚾" reads
+       as "3 HRs" rather than as one composite glyph. */
+    .hr-ball {
+      display: inline-block;
+      margin-left: 4px;
+      font-size: 0.85em;
+      filter: saturate(0.85);
+      vertical-align: -1px;
+    }
+
     /* Picks table — cream paper ledger with ruled rows. Used by Big Board,
        History per-day, HR Recap per-day. Today's Picks gets its own
        scoreboard treatment instead. */
@@ -1652,6 +1663,25 @@
       .board-grid { grid-template-columns: 1fr; }
       .board-rail { position: static; max-height: none; }
     }
+    /* 2026-05-23: slate dropdown is the mobile presentation of the
+       Today's Slate rail card. Inline above the board table on mobile;
+       hidden on desktop (the full rail card takes over). */
+    .slate-mobile-dropdown { display: none; }
+    .slate-mobile-dropdown label {
+      display: block; font-size: 10px; color: var(--ink-muted);
+      text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .slate-mobile-dropdown select {
+      width: 100%; padding: 10px 12px; font-size: 14px;
+      background: var(--surface); color: var(--ink);
+      border: 1px solid var(--border); border-radius: 6px;
+      font-family: 'Inter', sans-serif;
+    }
+    @media (max-width: 768px) {
+      .slate-mobile-dropdown { display: block; margin-bottom: 16px; }
+      #railSlate { display: none; }
+    }
 
     /* Big Board filter buttons (& reused .band-chip) — pill style */
     .board-filter {
@@ -2105,8 +2135,8 @@
            a useful sample-size knob. -->
       <div class="board-controls">
         <input id="boardSearch" type="search" placeholder="Search player name…" class="board-search" />
-        <select id="boardTeamFilter" class="board-team-filter">
-          <option value="all">All teams</option>
+        <select id="boardGameFilter" class="board-team-filter">
+          <option value="all">All games</option>
         </select>
         <!-- 2026-05-12: "Build your own list" filter drawer. Floats over
              content via .board-filter-popover so the table doesn't shift.
@@ -2176,11 +2206,12 @@
                 <option value="off">— off —</option>
                 <option value="7d">7 days</option>
                 <option value="14d">14 days</option>
+                <option value="season">Season</option>
               </select>
               <span>HR between</span>
-              <input id="filterHrMin" type="number" min="0" max="20" value="0"/>
+              <input id="filterHrMin" type="number" min="0" max="80" value="0"/>
               <span>and</span>
-              <input id="filterHrMax" type="number" min="0" max="20" value="20"/>
+              <input id="filterHrMax" type="number" min="0" max="80" value="80"/>
             </div>
           </div>
           <div class="filter-section">
@@ -2208,6 +2239,10 @@
           </div>
         </div>
       </div>
+      <!-- 2026-05-23: on mobile, the slate rail consumes too much vertical
+           space below the board. Replace it with a single dropdown above
+           the table on mobile; desktop still gets the full rail card. -->
+      <div id="slateMobileDropdown" class="slate-mobile-dropdown" hidden></div>
       <div class="board-grid">
         <div id="boardTable"><div class="loading">Loading board...</div></div>
         <aside class="board-rail" id="boardRail">
@@ -4371,7 +4406,7 @@
     // changed 2026-05-01: T1/T2/T3/Picked buttons replaced with team
     // dropdown + free-text name search. Click any row → Topps modal.
     let _boardCache = null;
-    let _boardTeam   = 'all';
+    let _boardGame   = 'all';   // game_pk string, or 'all'
     let _boardSearch = '';
     // 2026-05-12: "Build your own list" filter drawer state. Reset on
     // full reload; persists across tab switches since the SPA never
@@ -4383,8 +4418,8 @@
         form_score: 0, weather_score: 0, lineup_score: 0,
       },
       statMin: { barrel_pct: 0, iso: 0 },
-      hrWindow: 'off',   // 'off' | '7d' | '14d'
-      hrMin: 0, hrMax: 20,
+      hrWindow: 'off',   // 'off' | '7d' | '14d' | 'season'
+      hrMin: 0, hrMax: 80,
       sortField: 'composite',
       sortDir: 'desc',
     };
@@ -4397,13 +4432,33 @@
           return;
         }
         _boardCache = data;
-        // Populate the team filter dropdown one time on first load.
-        const teams = Array.from(new Set(data.full_board.map(r => r.team).filter(Boolean))).sort();
-        const sel = document.getElementById('boardTeamFilter');
+        // Populate the game filter dropdown one time on first load.
+        // 2026-05-23: replaced the per-team filter with a per-game one —
+        // sorting picks by game beats sorting by team for the typical
+        // "what's the slate look like?" workflow. Derive AWAY@HOME
+        // abbreviations from any matching full_board row (slate_games
+        // carries full names; we want short for the dropdown).
+        const sel = document.getElementById('boardGameFilter');
         if (sel.options.length <= 1) {
-          teams.forEach(t => {
+          const gameAbbr = {};   // game_pk -> { away, home }
+          data.full_board.forEach(r => {
+            if (r.game_pk == null || !r.team) return;
+            const slot = gameAbbr[r.game_pk] = gameAbbr[r.game_pk] || {};
+            slot[r.team] = true;
+          });
+          const games = (data.slate_games || []).slice().sort(
+            (a, b) => (a.game_time || '').localeCompare(b.game_time || '')
+          );
+          games.forEach(g => {
+            const slot = gameAbbr[g.game_pk];
+            if (!slot) return;
+            const teams = Object.keys(slot);
+            if (teams.length < 2) return;
+            const time = formatGameTime(g.game_time) || '';
+            const label = `${teams[0]} @ ${teams[1]}${time ? ' · ' + time : ''}`;
             const opt = document.createElement('option');
-            opt.value = t; opt.textContent = t;
+            opt.value = String(g.game_pk);
+            opt.textContent = label;
             sel.appendChild(opt);
           });
         }
@@ -4413,8 +4468,9 @@
       const search = (_boardSearch || '').trim().toLowerCase();
 
       let rows = board.slice();
-      if (_boardTeam !== 'all') {
-        rows = rows.filter(r => r.team === _boardTeam);
+      if (_boardGame !== 'all') {
+        const gpk = parseInt(_boardGame, 10);
+        rows = rows.filter(r => r.game_pk === gpk);
       }
       if (search) {
         rows = rows.filter(r => {
@@ -4435,13 +4491,18 @@
         const m = _boardFilters.statMin.iso;
         rows = rows.filter(r => (r.season_stats?.iso ?? 0) >= m);
       }
-      // HR window — count of HRs in last 7d or 14d (null treated as 0,
-      // matches existing recent_hr_7d semantics).
+      // HR window — count of HRs in last 7d / 14d / full season. Null
+      // treated as 0. Season reads season_stats.hr (MLB-API season total,
+      // known to lag 1-3 days until B8 lands; best available signal today).
       if (_boardFilters.hrWindow !== 'off') {
-        const hrField = _boardFilters.hrWindow === '7d' ? 'recent_hr_7d' : 'recent_hr_14d';
+        const getHr = (r) => {
+          if (_boardFilters.hrWindow === '7d')  return r.recent_hr_7d  || 0;
+          if (_boardFilters.hrWindow === '14d') return r.recent_hr_14d || 0;
+          return r.season_stats?.hr || 0;
+        };
         const hmin = _boardFilters.hrMin, hmax = _boardFilters.hrMax;
         rows = rows.filter(r => {
-          const v = r[hrField] || 0;
+          const v = getHr(r);
           return v >= hmin && v <= hmax;
         });
       }
@@ -4494,16 +4555,22 @@
         { field: 'weather_score', label: 'Weathr' },
         { field: 'park_score',    label: 'Park'   },
       ];
+      // 2026-05-23: on mobile, also surface whichever factor column is
+      // currently sorted — desktop shows all six, but on a phone we hide
+      // everything except composite + the active sort. Tracks the
+      // sortField so the visible column moves with the user's choice.
+      const sortedField = _boardFilters.sortField;
       const sortHead = BOARD_SORT_COLS.map(c => {
-        const active = _boardFilters.sortField === c.field;
+        const active = sortedField === c.field;
         const dirCls = !active ? ''
           : (_boardFilters.sortDir === 'desc' ? ' th-sort-active th-sort-desc'
                                               : ' th-sort-active th-sort-asc');
         const ariaSort = !active ? 'none'
           : (_boardFilters.sortDir === 'desc' ? 'descending' : 'ascending');
-        // Composite stays visible on mobile (the headline number); the other
-        // five factor columns collapse into the tap-to-expand row.
-        const hm = c.field === 'composite' ? '' : ' hide-mobile';
+        // Composite is the headline on mobile; also keep the active-sort
+        // column visible there so the user sees what they sorted by.
+        const visibleOnMobile = c.field === 'composite' || c.field === sortedField;
+        const hm = visibleOnMobile ? '' : ' hide-mobile';
         return `<th class="num th-sortable${dirCls}${hm}" data-sort-field="${c.field}"
           role="button" tabindex="0" aria-sort="${ariaSort}"
           title="Sort by ${c.label}">${c.label}<span class="sort-ind"></span></th>`;
@@ -4517,6 +4584,7 @@
         </tr></thead><tbody>`;
 
       const fmtScore = (v) => (v == null ? '–' : (+v).toFixed(1));
+      const factorHm = (field) => (field === sortedField ? '' : ' hide-mobile');
       rows.forEach((p, i) => {
         const pid = p.batter_id || p.player_id;
         const name = p.batter_name || p.name || '';
@@ -4527,11 +4595,11 @@
           <td class="bb-rank">${i + 1}</td>
           <td><span class="player-link" style="font-weight:600">${star}${name}</span><span class="bb-team">${p.team || ''}</span></td>
           <td class="num bb-comp">${(p.composite || 0).toFixed(1)}</td>
-          <td class="num hide-mobile">${fmtScore(p.power_score)}</td>
-          <td class="num hide-mobile">${fmtScore(p.matchup_score)}</td>
-          <td class="num hide-mobile">${fmtScore(p.form_score)}</td>
-          <td class="num hide-mobile">${fmtScore(p.weather_score)}</td>
-          <td class="num hide-mobile">${fmtScore(p.park_score)}</td>
+          <td class="num${factorHm('power_score')}">${fmtScore(p.power_score)}</td>
+          <td class="num${factorHm('matchup_score')}">${fmtScore(p.matchup_score)}</td>
+          <td class="num${factorHm('form_score')}">${fmtScore(p.form_score)}</td>
+          <td class="num${factorHm('weather_score')}">${fmtScore(p.weather_score)}</td>
+          <td class="num${factorHm('park_score')}">${fmtScore(p.park_score)}</td>
         </tr>`;
       });
       html += '</tbody></table>';
@@ -4579,8 +4647,10 @@
     function renderSlateRail(cache) {
       const games = (cache.slate_games || []).slice();
       const el = document.getElementById('railSlate');
+      const mob = document.getElementById('slateMobileDropdown');
       if (!games.length) {
         el.innerHTML = '<h4>Today\'s Slate</h4><div class="empty">No games yet.</div>';
+        if (mob) { mob.hidden = true; mob.innerHTML = ''; }
         return;
       }
       // Sort by top-25 count desc, then by game time
@@ -4603,10 +4673,35 @@
         </div>`;
       });
       el.innerHTML = html;
-      // Bind click → openGameModal
       el.querySelectorAll('[data-gpk]').forEach(row => {
         row.addEventListener('click', () => openGameModal(parseInt(row.dataset.gpk, 10)));
       });
+
+      // Mobile: same data as a single <select>. Default option is the
+      // header; choosing a game fires openGameModal and resets the select.
+      if (mob) {
+        const opts = games.map(g => {
+          const time = formatGameTime(g.game_time) || '';
+          const badge = g.top25_count > 0 ? ` · ${g.top25_count} in top 25` : '';
+          const label = `${g.away_team || '?'} @ ${g.home_team || '?'}${time ? ' · ' + time : ''}${badge}`;
+          return `<option value="${g.game_pk}">${label}</option>`;
+        }).join('');
+        mob.hidden = false;
+        mob.innerHTML = `
+          <label for="slateDropdownSelect">Today's Slate · ${games.length} games</label>
+          <select id="slateDropdownSelect">
+            <option value="">Open a game…</option>
+            ${opts}
+          </select>
+        `;
+        const sel = document.getElementById('slateDropdownSelect');
+        sel.addEventListener('change', () => {
+          const v = sel.value;
+          if (!v) return;
+          openGameModal(parseInt(v, 10));
+          sel.value = '';
+        });
+      }
     }
 
     // ── Right rail: Composite distribution histogram ──
@@ -4655,8 +4750,8 @@
     }
 
     // ── Bind new filter controls ──
-    document.getElementById('boardTeamFilter').addEventListener('change', (e) => {
-      _boardTeam = e.target.value;
+    document.getElementById('boardGameFilter').addEventListener('change', (e) => {
+      _boardGame = e.target.value;
       renderBoard();
     });
     document.getElementById('boardSearch').addEventListener('input', (e) => {
@@ -4781,7 +4876,7 @@
         _boardFilters.hrWindow = document.getElementById('filterHrWindow').value;
         _boardFilters.hrMin    = parseInt(document.getElementById('filterHrMin').value, 10) || 0;
         _boardFilters.hrMax    = parseInt(document.getElementById('filterHrMax').value, 10);
-        if (Number.isNaN(_boardFilters.hrMax)) _boardFilters.hrMax = 20;
+        if (Number.isNaN(_boardFilters.hrMax)) _boardFilters.hrMax = 80;
         renderBoard();
       }
       document.getElementById('filterHrWindow').addEventListener('change', syncHrWindow);
@@ -4804,7 +4899,7 @@
         Object.keys(_boardFilters.scoreMin).forEach(k => { _boardFilters.scoreMin[k] = 0; });
         Object.keys(_boardFilters.statMin).forEach(k => { _boardFilters.statMin[k] = 0; });
         _boardFilters.hrWindow = 'off';
-        _boardFilters.hrMin = 0; _boardFilters.hrMax = 20;
+        _boardFilters.hrMin = 0; _boardFilters.hrMax = 80;
         _boardFilters.sortField = 'composite';
         _boardFilters.sortDir = 'desc';
         // Push state back into the DOM controls.
@@ -4823,7 +4918,7 @@
         });
         document.getElementById('filterHrWindow').value = 'off';
         document.getElementById('filterHrMin').value = 0;
-        document.getElementById('filterHrMax').value = 20;
+        document.getElementById('filterHrMax').value = 80;
         document.getElementById('filterSort').value = 'composite';
         dirBtn.textContent = '↓';
         dirBtn.dataset.dir = 'desc';
@@ -5334,8 +5429,14 @@
       summary.innerHTML = `<strong style="color:var(--signal)">${s.we_picked}</strong>/<strong>${s.total_hr_hitters}</strong> HR hitters captured · <strong>${dayCapture}%</strong>` +
         (s.best_rank_we_missed != null ? ` · best missed: <strong>#${s.best_rank_we_missed}</strong>` : '');
 
-      // Hitters split: on-board vs off-board (off-board renders separately at the bottom in muted style)
-      const onBoard = day.hitters.filter(h => h.rank_in_board != null);
+      // Hitters split: on-board vs off-board (off-board renders separately at the bottom in muted style).
+      // 2026-05-23: sort on-board hitters by our composite score (desc),
+      // not by HR count. The HR count is a noisy 1/2/3 signal whereas
+      // the composite tells you whether the model saw this guy coming.
+      const onBoard = day.hitters
+        .filter(h => h.rank_in_board != null)
+        .slice()
+        .sort((a, b) => (b.composite ?? -1) - (a.composite ?? -1));
       const offBoard = day.hitters.filter(h => h.rank_in_board == null);
 
       let html = `<div class="recap-statbook">
@@ -5387,7 +5488,7 @@
           <td style="font-weight:600" class="player-link">${h.batter_name || ''}</td>
           <td style="font-family:'JetBrains Mono',monospace;color:var(--ink-soft)">${h.team || ''}</td>
           <td class="hide-mobile" style="font-style:italic;color:var(--ink-soft);font-size:12px">${h.opp_pitcher || '—'}</td>
-          <td style="color:var(--signal);font-weight:700">${h.hr_count}⚾</td>
+          <td style="color:var(--signal);font-weight:700;white-space:nowrap">${h.hr_count}<span class="hr-ball">⚾</span></td>
           <td class="hide-mobile" style="font-family:'JetBrains Mono',monospace">${hitsAb}</td>
           <td class="hide-mobile" style="font-family:'JetBrains Mono',monospace">${rbi}</td>
           <td style="font-family:'JetBrains Mono',monospace;font-weight:600">#${h.rank_in_board}</td>
