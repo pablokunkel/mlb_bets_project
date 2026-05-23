@@ -5292,15 +5292,36 @@
       }
       const recap = data.recap;
       // Aggregate stat strip across all days (unchanged)
-      const totalDays = recap.length;
+      // 2026-05-23: replaced the 4-card "tracker stats" header (Days
+      // Tracked / HR Hitters / We Picked / Capture Rate) with a 3-card
+      // hit-rate trio. Capture Rate was the only headline-worthy metric;
+      // splitting it three ways shows trend (14d) and reach (top-50).
+      //
+      //   Season hit rate — picks∩HRs / total HRs over the full window.
+      //   14d hit rate    — same, last 14 days. Trend signal.
+      //   Top-50 hit rate — % of HRs whose hitter was in our top 50 by
+      //                     composite that day. A wider-net "did the
+      //                     model at least see this guy" signal.
+      //
+      // hr_recap.json is sorted newest-first (recap[0] = most recent).
       const totalHRs = recap.reduce((s, d) => s + d.hitters.length, 0);
       const totalPicked = recap.reduce((s, d) => s + d.summary.we_picked, 0);
-      const captureRate = totalHRs > 0 ? (totalPicked / totalHRs * 100).toFixed(1) : '0';
+      const seasonRate = totalHRs > 0 ? (totalPicked / totalHRs * 100).toFixed(1) : '0';
+
+      const recent = recap.slice(0, 14);
+      const recentHRs = recent.reduce((s, d) => s + d.hitters.length, 0);
+      const recentPicked = recent.reduce((s, d) => s + d.summary.we_picked, 0);
+      const rate14d = recentHRs > 0 ? (recentPicked / recentHRs * 100).toFixed(1) : '0';
+
+      const top50Caught = recap.reduce((s, d) =>
+        s + d.hitters.filter(h => h.rank_in_board != null && h.rank_in_board <= 50).length
+      , 0);
+      const top50Rate = totalHRs > 0 ? (top50Caught / totalHRs * 100).toFixed(1) : '0';
+
       document.getElementById('hrRecapStats').innerHTML = `
-        <div class="stat-card"><div class="label">Days Tracked</div><div class="value">${totalDays}</div></div>
-        <div class="stat-card"><div class="label">HR Hitters</div><div class="value accent">${totalHRs}</div></div>
-        <div class="stat-card"><div class="label">We Picked</div><div class="value green">${totalPicked}</div></div>
-        <div class="stat-card"><div class="label">Capture Rate</div><div class="value orange">${captureRate}%</div></div>
+        <div class="stat-card"><div class="label">Season Hit Rate</div><div class="value orange">${seasonRate}%</div></div>
+        <div class="stat-card"><div class="label">14d Hit Rate</div><div class="value accent">${rate14d}%</div></div>
+        <div class="stat-card"><div class="label">Top-50 Hit Rate</div><div class="value green">${top50Rate}%</div></div>
       `;
       // Populate date selector — most recent first
       const sel = document.getElementById('recapDateSelect');
