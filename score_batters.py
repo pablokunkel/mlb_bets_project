@@ -239,7 +239,7 @@ def compute_slate_context(
     # the v1 path (which is also fixed below).
     # Lazy import to keep the module-load graph simple (mirrors the
     # `from pitcher_profile import score_matchup_v2` pattern at line 995).
-    from pitcher_profile import effective_hr9
+    from pitcher_profile import effective_hr9, effective_era, effective_k9
 
     pitcher_vuln_raw = {}
     for pname, p in (pitcher_stats_by_name or {}).items():
@@ -251,6 +251,8 @@ def compute_slate_context(
         # below then orders pitchers by their blended vulnerability — fixes
         # the "season HR/9 lags recent collapse" gap that left Brady Singer
         # ranked below Mikolas on the 2026-05-12 slate.
+        # B4 (2026-05-21): same blend for ERA + K/9 when recent values
+        # arrive — keeps the whole pitcher pipeline on consistent windows.
         hr9 = effective_hr9(
             p.get("hr_per_9"),
             p.get("recent_hr9_21d"),
@@ -258,13 +260,21 @@ def compute_slate_context(
         )
         if hr9 is not None and hr9 > 0:
             components.append(hr9 * 30.0)
-        era = p.get("era")
+        era = effective_era(
+            p.get("era"),
+            p.get("recent_era_21d"),
+            p.get("recent_starts_21d"),
+        )
         if era is not None and era > 0:
             components.append(era * 5.0)
         hh = p.get("hard_hit_pct_allowed")
         if hh is not None and hh > 0:
             components.append(hh * 0.6)
-        k9 = p.get("k_per_9")
+        k9 = effective_k9(
+            p.get("k_per_9"),
+            p.get("recent_k9_21d"),
+            p.get("recent_starts_21d"),
+        )
         if k9 is not None and k9 > 0:
             components.append(-k9 * 2.0)
         fb_pct_allowed = p.get("fb_pct_allowed")
@@ -493,6 +503,19 @@ USE_SEASON_HR_FLOOR = True   # 2026-05-03: flipped on after 14d harness showed
                               # the Drake Baldwin pattern (8 HR, ranked #97)
                               # confirmed the qualitative case.
 
+
+# B6a (2026-05-21): blend rolling-14d Statcast quality-contact metrics into
+# score_power alongside the season inputs. OFF by default — flip True after
+# (1) backfilling 2025 + 2026 with the new columns populated, and (2)
+# documenting the backtest comparison vs season-only in WEIGHT_REFIT_LOG.md.
+#
+# When on, three new inputs (recent_barrel_real_14d, recent_xwoba_contact_14d,
+# recent_iso_14d) join the season-level inputs in score_power's mean, with the
+# same skip-on-missing semantics. The intent is that a slow-starter-now-hot
+# hitter (Bohm-class: 4 HR season but elite contact last 2 weeks) gets credit
+# for the recent quality before the season aggregate catches up.
+USE_RECENT_STATCAST_BLEND = False
+
 # (season_hr_threshold, power_score_floor_when_qualified)
 # Calibrated on 2026-05-02 HR data:
 #   - 5 HR  → 50  (a guy with 5 HR shouldn't score below league average)
@@ -511,18 +534,59 @@ SEASON_HR_FLOOR_TIERS: list[tuple[int, float]] = [
 ]
 
 
-def compute_season_hr_floor(season_hr: int | None) -> float:
+# B6b (2026-05-21): smooth HR-floor curve as alternative to the 5-tier cliff.
+# Off by default — flip USE_SMOOTH_HR_FLOOR=True (and run the backtest harness)
+# to evaluate against the tiered baseline.
+#
+# Form: floor(hr) = SMOOTH_HR_FLOOR_C * ln(hr + 1)
+#
+# Constant chosen so the 18-HR floor (78) matches the existing tier exactly
+# (Schwarber-class all-star), preserving the most-load-bearing calibration
+# point. Resulting values vs cliff:
+#
+#   season_hr  | cliff | smooth (log)
+#   ----------- + ----- + ------------
+#         0    |  0.0  |   0.0
+#         3    |  0.0  |  36.7
+#         5    | 50.0  |  47.5  (just under cliff — 5-HR cliff intentionally
+#                                generous, smooth's lower value is honest)
+#         8    | 60.0  |  58.2  (Burger case — smooth lands between old
+#                                cliff-50 and cliff-60, the right answer)
+#        12    | 70.0  |  68.0
+#        18    | 78.0  |  78.0  (calibration anchor)
+#        25    | 85.0  |  86.5
+#        40    | 85.0  |  98.2  (cliff capped; smooth still rewards 40+ HR)
+#
+# Trade-off: smooth removes the 10pt jump at every cliff edge (a 7-HR
+# hitter at cliff=50 vs 8-HR at cliff=60 reads as a wildly different
+# class of player despite ~12% empirical HR-rate difference). Smooth
+# distributes the lift continuously so the model can express "this guy
+# is closer to a 60-floor type, this guy closer to 50."
+USE_SMOOTH_HR_FLOOR = False
+SMOOTH_HR_FLOOR_C = 26.5
+
+
+def compute_season_hr_floor(season_hr: int | None, smooth: bool | None = None) -> float:
     """Look up the power-score floor for a batter's season HR count.
 
     Returns 0.0 (no floor effect) when:
       - season_hr is None or <= 0
-      - season_hr is below the lowest tier threshold
+      - season_hr is below the lowest tier threshold (cliff mode only)
 
-    Otherwise returns the highest tier_floor the batter qualifies for.
-    Highest threshold the batter meets-or-exceeds wins.
+    Otherwise:
+      - cliff mode (default): returns the highest SEASON_HR_FLOOR_TIERS
+        tier the batter meets-or-exceeds.
+      - smooth mode: returns SMOOTH_HR_FLOOR_C * ln(season_hr + 1),
+        capped at 100.
+
+    *smooth* — overrides the module-level USE_SMOOTH_HR_FLOOR flag when
+    set (mostly for tests / backtest harness). None means "use the flag."
     """
     if season_hr is None or season_hr <= 0:
         return 0.0
+    use_smooth = USE_SMOOTH_HR_FLOOR if smooth is None else smooth
+    if use_smooth:
+        return min(100.0, SMOOTH_HR_FLOOR_C * float(np.log(season_hr + 1)))
     floor = 0.0
     for threshold, tier_floor in SEASON_HR_FLOOR_TIERS:
         if season_hr >= threshold:
@@ -592,6 +656,31 @@ def score_power(batter: dict) -> float:
         if pull_fb < 1:
             pull_fb *= 100
         scores.append(min_max_scale(pull_fb, 8, 22))
+
+    # B6a (2026-05-21): rolling 14d quality-contact inputs. Gated by
+    # USE_RECENT_STATCAST_BLEND (default False) — when off, these inputs
+    # are stored on the batter dict for backfill / refit observation but
+    # not consumed here, so the season-only score is unchanged. When on,
+    # they join the season inputs in the same mean with skip-on-missing.
+    #
+    # Anchors:
+    #   recent_barrel_real_14d   8-18   (vs season 5-15 — tighter for a
+    #                                    higher-variance shorter window;
+    #                                    league avg ~10%, elite ~18%+)
+    #   recent_xwoba_contact_14d 0.330-0.450  (same as season)
+    #   recent_iso_14d           0.100-0.300  (mirrors Form's recent_iso_30g)
+    if USE_RECENT_STATCAST_BLEND:
+        rb = batter.get("recent_barrel_real_14d")
+        if rb is not None and rb > 0:
+            scores.append(min_max_scale(rb, 8, 18))
+
+        rx = batter.get("recent_xwoba_contact_14d")
+        if rx is not None and rx > 0:
+            scores.append(min_max_scale(rx, 0.330, 0.450))
+
+        ri = batter.get("recent_iso_14d")
+        if ri is not None and ri > 0:
+            scores.append(min_max_scale(ri, 0.100, 0.300))
 
     base_score = float(np.mean(scores)) if scores else 50.0
 
@@ -1175,6 +1264,12 @@ def compute_composite(
         "iso":                     batter.get("iso"),
         "xwoba_contact":           batter.get("xwoba_contact"),
         "pull_fb_pct":             batter.get("pull_fb_pct"),
+        # B6a (2026-05-21): rolling 14d quality-contact. Persisted to
+        # pick_inputs regardless of USE_RECENT_STATCAST_BLEND so backfills
+        # and refits can use them.
+        "recent_barrel_real_14d":  batter.get("recent_barrel_real_14d"),
+        "recent_xwoba_contact_14d": batter.get("recent_xwoba_contact_14d"),
+        "recent_iso_14d":          batter.get("recent_iso_14d"),
         # Form (rebuilt 2026-05-19 — split game-count windows, honest names)
         "recent_hr_10g":           batter.get("recent_hr_10g"),
         "recent_iso_30g":          batter.get("recent_iso_30g"),
@@ -1191,8 +1286,11 @@ def compute_composite(
         # pitcher_hr_per_9 inside score_pitcher_vulnerability when
         # recent_starts_21d >= 2. Persisted as its own input column so the
         # next refit can learn an independent coefficient.
+        # B4 (2026-05-21): + recent ERA + recent K/9 (same gameLog payload).
         "pitcher_recent_hr9_21d":     pitcher.get("recent_hr9_21d"),
         "pitcher_recent_starts_21d":  pitcher.get("recent_starts_21d"),
+        "pitcher_recent_era_21d":     pitcher.get("recent_era_21d"),
+        "pitcher_recent_k9_21d":      pitcher.get("recent_k9_21d"),
         # Matchup — batter / game
         # NOTE on woba_vs_hand: this can be a synthetic estimate when the
         # batter dict came from MLB Stats API splits via _splits_to_batters

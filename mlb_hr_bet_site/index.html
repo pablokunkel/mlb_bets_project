@@ -171,8 +171,9 @@
     .panel { display: none; }
     .panel.active { display: block; }
 
-    /* Stat cards — joined as a "stat strip" like a statbook header band:
-       single cream bordered panel, ledger-ruled rows separated by vertical rules.
+    /* Stat cards — joined as a single cream "stat strip" header band.
+       2026-05-23: dropped ledger gridlines and vertical card dividers
+       per mobile_edits.pdf — kept the outer panel + cream surface only.
        (Individual .stat-card still works for places that need standalone cards.) */
     .stat-row {
       display: grid;
@@ -180,9 +181,7 @@
       gap: 0;
       margin-bottom: 22px;
       overflow: hidden;
-      background:
-        repeating-linear-gradient(0deg, transparent 0 27px, rgba(184, 167, 132, 0.15) 27px 28px),
-        var(--paper);
+      background: var(--paper);
       border: 1px solid var(--rule);
       border-radius: 4px;
       box-shadow: 0 8px 22px -12px rgba(80, 55, 25, 0.18);
@@ -190,13 +189,11 @@
     .stat-card {
       background: transparent;
       border: none;
-      border-right: 1px solid var(--rule);
       border-radius: 0;
       padding: 14px 18px;
       position: relative; overflow: visible;
     }
     .stat-card::before { display: none; }   /* drop gradient overlay from previous design */
-    .stat-card:last-child { border-right: none; }
     .stat-card:hover { transform: none; }
     .stat-card .label {
       font-size: 10px; color: var(--ink-muted);
@@ -543,10 +540,6 @@
       font-size: 11px; color: var(--ink-muted);
       font-family: 'JetBrains Mono', monospace;
       letter-spacing: 0.04em;
-    }
-    .lab-view-sub {
-      font-size: 12px; color: var(--ink-soft); margin-bottom: 10px;
-      font-style: italic;
     }
     .lab-row {
       display: grid;
@@ -1671,6 +1664,12 @@
       .board-grid { grid-template-columns: 1fr; }
       .board-rail { position: static; max-height: none; }
     }
+    /* 2026-05-23: composite-distribution histogram is dense and not very
+       actionable on a phone — scrolling all the way down for it is rough.
+       Hide on mobile; keep on desktop. */
+    @media (max-width: 768px) {
+      #railHistogram { display: none; }
+    }
 
     /* Big Board filter buttons (& reused .band-chip) — pill style */
     .board-filter {
@@ -2173,21 +2172,6 @@
             </div>
           </div>
           <div class="filter-section">
-            <h5>Underlying skill · minimum</h5>
-            <div class="filter-row">
-              <label for="filterBarrel">Barrel %</label>
-              <!-- max 25 covers MLB ceiling (~22% all-time). step 0.5 for granular hot-streak filtering. -->
-              <input id="filterBarrel" type="range" min="0" max="25" step="0.5" value="0" data-filter-stat="barrel_pct"/>
-              <span class="filter-val is-default" data-val-for="barrel_pct">0</span>
-            </div>
-            <div class="filter-row">
-              <label for="filterIso">ISO</label>
-              <!-- ISO scale: .000 to .400. step .010 for fine slicing. Stored as float 0-0.4. -->
-              <input id="filterIso" type="range" min="0" max="0.400" step="0.010" value="0" data-filter-stat="iso"/>
-              <span class="filter-val is-default" data-val-for="iso">.000</span>
-            </div>
-          </div>
-          <div class="filter-section">
             <h5>HR window · cold streak / hot streak</h5>
             <div class="filter-hr-window">
               <span>Last</span>
@@ -2213,8 +2197,6 @@
                 <option value="form_score">Form score</option>
                 <option value="weather_score">Weather score</option>
                 <option value="lineup_score">Lineup score</option>
-                <option value="season_stats.barrel_pct">Barrel %</option>
-                <option value="season_stats.iso">ISO</option>
                 <option value="recent_hr_7d">HRs last 7d</option>
                 <option value="recent_hr_14d">HRs last 14d</option>
               </select>
@@ -2781,18 +2763,7 @@
       const picks = data.picks || [];
       const board = data.full_board || [];
 
-      // Stat cards
-      const avgComp = picks.length
-        ? (picks.reduce((s, p) => s + (p.composite || 0), 0) / picks.length).toFixed(1)
-        : '0';
-      // Tier Mix card removed 2026-05-01 — tiers are display labels only,
-      // not selection gates, so the mix isn't actionable info.
-      // Expected HRs (slate) — computed async after the row first paints,
-      // then patched into place. Avoids blocking the picks render on the
-      // performance.json fetch.
       document.getElementById('todayStats').innerHTML = `
-        <div class="stat-card"><div class="label">Picks</div><div class="value accent">${picks.length}</div></div>
-        <div class="stat-card"><div class="label">Avg Composite</div><div class="value">${avgComp}</div></div>
         <div class="stat-card"><div class="label">Board Size</div><div class="value">${board.length}</div></div>
         <div class="stat-card"><div class="label">Expected HRs · card</div>
           <div class="value accent" id="todayExpectedHRs">…</div>
@@ -2839,7 +2810,6 @@
           ${headshotImg}
           <div class="name-block">
             <div class="name player-link">${name}${orderPill}</div>
-            <div class="matchup">${p.tier_label || ''}</div>
           </div>
           <div class="team">${p.team || '—'}</div>
           <div class="pitcher">vs. ${p.opp_pitcher || '—'}</div>
@@ -3048,7 +3018,7 @@
         </div>`;
       };
 
-      const renderView = (title, formula, sub, rows, accKey) => {
+      const renderView = (title, formula, rows, accKey) => {
         // accKey → append the L7 hit-rate badge to this view's title.
         if (accKey) title += accBadge(accKey);
         if (!rows.length) {
@@ -3057,7 +3027,6 @@
               <div class="lab-view-title">${title}</div>
               <div class="lab-view-formula">${formula}</div>
             </div>
-            <div class="lab-view-sub">${sub}</div>
             <div class="empty" style="font-size:12px;color:var(--ink-muted);padding:14px 0;">
               No batters meet today's criteria.
             </div>
@@ -3068,19 +3037,17 @@
             <div class="lab-view-title">${title}</div>
             <div class="lab-view-formula">${formula}</div>
           </div>
-          <div class="lab-view-sub">${sub}</div>
           ${rows.map((p, i) => renderRow(p, i)).join('')}
         </div>`;
       };
 
-      const renderStacks = (title, formula, sub, stackList) => {
+      const renderStacks = (title, formula, stackList) => {
         if (!stackList.length) {
           return `<div class="lab-view">
             <div class="lab-view-head">
               <div class="lab-view-title">${title}</div>
               <div class="lab-view-formula">${formula}</div>
             </div>
-            <div class="lab-view-sub">${sub}</div>
             <div class="empty" style="font-size:12px;color:var(--ink-muted);padding:14px 0;">
               No qualifying stacks yet.
             </div>
@@ -3102,7 +3069,6 @@
             <div class="lab-view-title">${title}</div>
             <div class="lab-view-formula">${formula}</div>
           </div>
-          <div class="lab-view-sub">${sub}</div>
           ${stacksHtml}
         </div>`;
       };
@@ -3132,42 +3098,36 @@
       html += renderView(
         '💣 Homerun Leaders',
         'top 10 by season HR · top 3 by composite − 0.25·power',
-        'Anchor on proven HR power, then re-rank within those 10 by everything except power (so we don\'t double-count what got them on the list). Catches Judge-class hitters that the main board\'s 6-factor weighting under-rates.',
         v0,
         'homerun_leaders',
       );
       html += renderView(
         '⚡ Power × Matchup',
         'power_score × matchup_score / 100',
-        'Top-quintile in BOTH dimensions, not just average across the 6 factors. Surfaces batters who stack the two signals that matter most for HRs.',
         v1,
         'power_matchup',
       );
       html += renderView(
         '🔥 Hot Streak Watch',
         'top 10 by 7-day HRs · sorted by matchup × park × weather',
-        'Recently-hot batters (≥1 HR in the last 7 days, top 10 by count) ranked by a favorable game environment for tonight: matchup × park × weather, multiplicative. Multiplicative penalizes one-weak-factor batters harder than the weighted composite would, surfacing only those where ALL THREE environmental signals are aligned with the recent HR surge.',
         v2,
         'hot_streak',
       );
       html += renderView(
         '🎯 Park × Pitcher Exploit',
         'season_hr ≥ 5 AND park_score ≥ 65 AND matchup_score ≥ 70',
-        'Power hitter in HR-friendly park facing a vulnerable arm. Three known lifters stacked → small denominator (~5-15 batters/day).',
         v3,
         'park_pitcher',
       );
       html += renderView(
         '🎰 Pure Longshots',
         'season_hr < 5 AND composite ≥ 55',
-        'High-composite batters who haven\'t yet hit 5 HR — under all floor tiers. The model loves them on matchup/park/form/weather despite no HR-history boost. At +800 book prices, ~12% true hit rate breaks even; we\'re tracking these to measure empirically.',
         v3b,
         'pure_longshots',
       );
       html += renderStacks(
         '🎲 Game Stacks',
         'Top 2-3 by composite per game · all games · ranked by Σ top-2',
-        'Pick from the same game — different probability shape than independent picks. P(at least one of N homers) is the parlay angle. Every game on tonight\'s slate is shown so you can compare stacks across the board.',
         v4,
       );
 
@@ -4419,7 +4379,6 @@
         power_score: 0, matchup_score: 0, park_score: 0,
         form_score: 0, weather_score: 0, lineup_score: 0,
       },
-      statMin: { barrel_pct: 0, iso: 0 },
       hrWindow: 'off',   // 'off' | '7d' | '14d'
       hrMin: 0, hrMax: 20,
       sortField: 'composite',
@@ -4464,14 +4423,6 @@
       for (const [field, minVal] of Object.entries(_boardFilters.scoreMin)) {
         if (minVal > 0) rows = rows.filter(r => (r[field] || 0) >= minVal);
       }
-      if (_boardFilters.statMin.barrel_pct > 0) {
-        const m = _boardFilters.statMin.barrel_pct;
-        rows = rows.filter(r => (r.season_stats?.barrel_pct ?? 0) >= m);
-      }
-      if (_boardFilters.statMin.iso > 0) {
-        const m = _boardFilters.statMin.iso;
-        rows = rows.filter(r => (r.season_stats?.iso ?? 0) >= m);
-      }
       // HR window — count of HRs in last 7d or 14d (null treated as 0,
       // matches existing recent_hr_7d semantics).
       if (_boardFilters.hrWindow !== 'off') {
@@ -4498,12 +4449,9 @@
       });
       rows = rows.slice(0, limit);
 
-      const totalSelected = board.filter(r => r.selected).length;
       document.getElementById('boardStats').innerHTML = `
         <div class="stat-card"><div class="label">Date</div><div class="value" style="font-size:14px">${formatLongDate(_boardCache.date)}</div></div>
-        <div class="stat-card"><div class="label">Showing</div><div class="value accent">${rows.length}</div></div>
         <div class="stat-card"><div class="label">Board Total</div><div class="value">${board.length}</div></div>
-        <div class="stat-card"><div class="label">Selected</div><div class="value orange">${totalSelected}</div></div>
         <div class="stat-card"><div class="label">Expected HRs · slate</div>
           <div class="value accent" id="boardExpectedHRs">…</div>
           <div style="font-size:10px;color:var(--ink-muted);margin-top:2px" id="boardExpectedHRsSub">computing…</div>
@@ -4586,7 +4534,6 @@
       {
         let activeN = 0;
         for (const v of Object.values(_boardFilters.scoreMin)) if (v > 0) activeN++;
-        for (const v of Object.values(_boardFilters.statMin))  if (v > 0) activeN++;
         if (_boardFilters.hrWindow !== 'off') activeN++;
         const toggleBtn = document.getElementById('boardFilterToggle');
         if (toggleBtn) {
@@ -4599,8 +4546,7 @@
         const sortLabels = {
           composite: 'composite', power_score: 'power', matchup_score: 'matchup',
           park_score: 'park', form_score: 'form', weather_score: 'weather',
-          lineup_score: 'lineup', 'season_stats.barrel_pct': 'barrel%',
-          'season_stats.iso': 'ISO', recent_hr_7d: '7d HR', recent_hr_14d: '14d HR',
+          lineup_score: 'lineup', recent_hr_7d: '7d HR', recent_hr_14d: '14d HR',
         };
         const sl = document.getElementById('boardSortLabel');
         if (sl) sl.textContent = `by ${sortLabels[_boardFilters.sortField] || _boardFilters.sortField} ${_boardFilters.sortDir === 'desc' ? '↓' : '↑'}`;
@@ -4798,20 +4744,6 @@
           renderBoard();
         });
       });
-      // Stat sliders — barrel_pct (0-25, one decimal), ISO (0-.400, three).
-      pop.querySelectorAll('[data-filter-stat]').forEach(input => {
-        input.addEventListener('input', (e) => {
-          const f = e.target.dataset.filterStat;
-          const v = parseFloat(e.target.value) || 0;
-          _boardFilters.statMin[f] = v;
-          const lbl = pop.querySelector(`[data-val-for="${f}"]`);
-          if (lbl) {
-            lbl.textContent = f === 'iso' ? v.toFixed(3).replace(/^0/, '') : v.toFixed(1);
-            lbl.classList.toggle('is-default', v === 0);
-          }
-          renderBoard();
-        });
-      });
       // HR window — select + min/max numbers. All three bound to the same
       // handler since they always update together.
       function syncHrWindow() {
@@ -4839,7 +4771,6 @@
       // Reset — zero every threshold, snap sort to composite/desc, sync UI.
       document.getElementById('boardFilterReset').addEventListener('click', () => {
         Object.keys(_boardFilters.scoreMin).forEach(k => { _boardFilters.scoreMin[k] = 0; });
-        Object.keys(_boardFilters.statMin).forEach(k => { _boardFilters.statMin[k] = 0; });
         _boardFilters.hrWindow = 'off';
         _boardFilters.hrMin = 0; _boardFilters.hrMax = 20;
         _boardFilters.sortField = 'composite';
@@ -4849,14 +4780,6 @@
           inp.value = 0;
           const lbl = pop.querySelector(`[data-val-for="${inp.dataset.filterScore}"]`);
           if (lbl) { lbl.textContent = '0'; lbl.classList.add('is-default'); }
-        });
-        pop.querySelectorAll('[data-filter-stat]').forEach(inp => {
-          inp.value = 0;
-          const lbl = pop.querySelector(`[data-val-for="${inp.dataset.filterStat}"]`);
-          if (lbl) {
-            lbl.textContent = inp.dataset.filterStat === 'iso' ? '.000' : '0.0';
-            lbl.classList.add('is-default');
-          }
         });
         document.getElementById('filterHrWindow').value = 'off';
         document.getElementById('filterHrMin').value = 0;
@@ -5086,8 +5009,12 @@
           .filter(p => p && p.selected)
           .map(p => p.batter_id || p.player_id)
       );
-      let cashedCount = 0;
-      for (const h of hrs) if (ourPickIds.has(h.batterId)) cashedCount += 1;
+      // 2026-05-21: count UNIQUE picks who cashed, not HR events.
+      // Mirror of PR #41's HR Hitters fix — a pick that homers twice
+      // (e.g., Soto's 2 HRs) should still read as 1/8, not 2/8.
+      const cashedCount = new Set(
+        hrs.map(h => h.batterId).filter(id => id && ourPickIds.has(id))
+      ).size;
       const ourPicksTotal = ourPickIds.size || 8;
 
       const lastHRTime = hrs.length ? hrs[0].time : null;
@@ -5378,7 +5305,7 @@
       let html = `<div class="recap-statbook">
         <div class="recap-page-header">
           <div class="page-title">HR Hitters · ${formatLongDate(day.date)}</div>
-          <div class="page-subtitle">${day.hitters.length} batters went deep this day</div>
+          <div class="page-subtitle">${day.hitters.length} Dingers</div>
         </div>
         <table class="picks-table mobile-expandable" style="margin-bottom:14px">
           <thead><tr>
