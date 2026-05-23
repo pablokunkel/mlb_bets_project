@@ -75,6 +75,7 @@ from features_v2 import (
     fetch_vegas_implied_totals,
     fetch_batter_xwoba_bulk,
     fetch_pitcher_fb_bulk,
+    fetch_batter_recent_statcast_14d,
 )
 
 # Toggle for the slow per-player Statcast paths (archetype profiles +
@@ -568,10 +569,14 @@ def fetch_pitcher_recent_form_batch(
     season: int,
     today_str: str | None = None,
     days: int = 21,
+    *,
+    window_type: str = "days",
+    window_n: int | None = None,
 ) -> dict:
     """
-    Bulk-fetch rolling 21-day HR/9 (and IP / start counts) for each pitcher
-    in today's slate. Mirrors fetch_form_data_batch() but for pitchers.
+    Bulk-fetch rolling recent HR/9 + ERA + K/9 (and IP / start counts) for
+    each pitcher in today's slate. Mirrors fetch_form_data_batch() but for
+    pitchers.
 
     Added 2026-05-13. Closes the "pitcher recency" gap that left
     score_pitcher_vulnerability blind to pitchers whose last 3-4 starts
@@ -579,18 +584,30 @@ def fetch_pitcher_recent_form_batch(
 
     *pitcher_ids* is a list of (name, pitcher_id) tuples.
     *today_str* is the date the picks are being generated for; the window
-    is [today - days, today), excluding today's game itself (we're scoring
-    games yet to be played).
+    is strictly BEFORE today (we're scoring games yet to be played).
+
+    B4 (2026-05-21): window_type / window_n forward through to the per-
+    pitcher fetch. Defaults preserve the original 21-calendar-day window.
+    Set window_type='starts' + window_n=5 (etc.) once the backtest harness
+    picks a winner. Output dict gains recent_era / recent_k_per_9 alongside
+    recent_hr_per_9 (free — same gameLog payload).
 
     Returns {pitcher_id: {recent_hr_count, recent_ip, recent_starts,
-    recent_hr_per_9}}. Missing pitchers (API failure, no recent gameLog,
-    or <1 IP in window) are simply absent from the dict.
+    recent_hr_per_9, recent_era, recent_k_per_9, ...}}. Missing pitchers
+    (API failure, no recent gameLog, or <1 IP in window) are simply absent
+    from the dict.
     """
     results = {}
     for name, pid in pitcher_ids:
         if not pid or pid < 1000:
             continue
-        log = get_recent_pitcher_game_log(pid, season, today_str=today_str, days=days)
+        log = get_recent_pitcher_game_log(
+            pid, season,
+            today_str=today_str,
+            days=days,
+            window_type=window_type,
+            window_n=window_n,
+        )
         if log:
             results[pid] = log
     return results
@@ -923,16 +940,31 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
     except Exception as e:
         status.warn("Pitcher FB% Allowed", f"Bulk fetch failed: {e}")
 
-    # ── Pitcher recency: rolling 21-day HR/9 via MLB API gameLog ───────
-    # Closes the "season HR/9 lags 3-4 bad starts" gap. score_pitcher_
+    # ── Pitcher recency: rolling HR/9 + ERA + K/9 via MLB API gameLog ──
+    # Closes the "season aggregates lag 3-4 bad starts" gap. score_pitcher_
     # vulnerability and compute_slate_context now blend recent + season
-    # HR/9 (60/40) when recent_starts_21d >= 2. Singer (2026-05-12)
-    # case: recent HR/9 3.07 vs season 1.89 → blended 2.60, lifts him
-    # past Mikolas on the slate vulnerability rank.
+    # via effective_hr9 / effective_era / effective_k9 when starts >= 2.
+    # Singer (2026-05-12) case: recent HR/9 3.07 vs season 1.89 → blended
+    # 2.60, lifts him past Mikolas on the slate vulnerability rank.
+    #
+    # B4 (2026-05-21): window_type + window_n hooked into the slate-level
+    # constants in pitcher_profile so backtest / refit cycles can swap
+    # last-N-starts in via WEIGHT_REFIT_LOG decision. Defaults preserve
+    # the 21-day calendar window. _21d suffix on the dict keys retained
+    # for backward-compat persistence; the value reflects the *configured*
+    # window once the flag flips.
+    from pitcher_profile import (
+        PITCHER_RECENT_WINDOW_TYPE,
+        PITCHER_RECENT_WINDOW_N,
+    )
     try:
         pitcher_ids_for_recency = [(n, pid) for n, pid in pitcher_id_map.items() if pid]
         bulk_pitcher_recency = fetch_pitcher_recent_form_batch(
-            pitcher_ids_for_recency, season, today_str=date_str, days=21
+            pitcher_ids_for_recency, season,
+            today_str=date_str,
+            days=PITCHER_RECENT_WINDOW_N if PITCHER_RECENT_WINDOW_TYPE == "days" else 21,
+            window_type=PITCHER_RECENT_WINDOW_TYPE,
+            window_n=PITCHER_RECENT_WINDOW_N,
         )
         n_with_recency = 0
         for pname, pid in pitcher_id_map.items():
@@ -942,20 +974,29 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
                 pitcher_lookup[pname]["recent_hr_count_21d"]  = log.get("recent_hr_count")
                 pitcher_lookup[pname]["recent_starts_21d"]    = log.get("recent_starts")
                 pitcher_lookup[pname]["recent_ip_21d"]        = log.get("recent_ip")
+                # B4 (2026-05-21): ERA + K/9 ride along on the same payload.
+                pitcher_lookup[pname]["recent_era_21d"]       = log.get("recent_era")
+                pitcher_lookup[pname]["recent_er_count_21d"]  = log.get("recent_er_count")
+                pitcher_lookup[pname]["recent_k9_21d"]        = log.get("recent_k_per_9")
+                pitcher_lookup[pname]["recent_k_count_21d"]   = log.get("recent_k_count")
                 if log.get("recent_hr_per_9") is not None:
                     n_with_recency += 1
+        window_label = (
+            f"{PITCHER_RECENT_WINDOW_N}d" if PITCHER_RECENT_WINDOW_TYPE == "days"
+            else f"last-{PITCHER_RECENT_WINDOW_N}-starts"
+        )
         if n_with_recency > 0:
             status.ok(
-                "Pitcher Recency (21d HR/9)",
+                f"Pitcher Recency ({window_label})",
                 f"{n_with_recency}/{len(pitcher_lookup)} via MLB gameLog",
             )
         else:
             status.warn(
-                "Pitcher Recency (21d HR/9)",
-                "0 starters — vulnerability uses season-only HR/9",
+                f"Pitcher Recency ({window_label})",
+                "0 starters — vulnerability uses season-only stats",
             )
     except Exception as e:
-        status.warn("Pitcher Recency (21d HR/9)", f"Bulk fetch failed: {e}")
+        status.warn("Pitcher Recency", f"Bulk fetch failed: {e}")
 
     # ── Batter xwOBA on contact via BULK Savant CSV (one HTTP call) ────
     # Replaces per-batter Statcast in score_live_slate. Slate-level cache.
@@ -968,6 +1009,28 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
             status.warn("Batter xwOBA (bulk)", "No data — power score falls back to ISO/EV")
     except Exception as e:
         status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
+
+    # ── B6a: rolling 14d quality-contact Statcast (one bulk pull) ──────
+    # Aggregated per-batter to {recent_barrel_real_14d,
+    # recent_xwoba_contact_14d, recent_iso_14d}. as_of_date is the slate
+    # date so the cache key matches what prewarm_cache wrote at 2 AM.
+    # Empty dict -> score_power falls through to season aggregates
+    # (skip-on-missing). Gated by USE_RECENT_STATCAST_BLEND in score_power.
+    bulk_recent_statcast: dict = {}
+    try:
+        bulk_recent_statcast = fetch_batter_recent_statcast_14d(as_of_date=date_str)
+        if bulk_recent_statcast:
+            status.ok(
+                "Batter Recent 14d (bulk)",
+                f"{len(bulk_recent_statcast)} batters via Statcast",
+            )
+        else:
+            status.warn(
+                "Batter Recent 14d (bulk)",
+                "No data — power score uses season-only inputs",
+            )
+    except Exception as e:
+        status.warn("Batter Recent 14d (bulk)", f"Bulk fetch failed: {e}")
 
     # ── Vegas implied team totals ──────────────────────────────────────
     implied_totals: dict = {}
@@ -1008,6 +1071,7 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         "live_tiers": live_tiers,
         "implied_totals": implied_totals,
         "bulk_batter_xwoba": bulk_batter_xwoba,
+        "bulk_recent_statcast": bulk_recent_statcast,
     }
 
 
@@ -1204,6 +1268,14 @@ def score_live_slate(
     # bulk endpoint for it. Defaults to 50/neutral in score_power. Re-enable
     # via per-player fetch_batter_advanced_batch by setting USE_PER_PLAYER_STATCAST=True.
 
+    # B6a (2026-05-21): rolling 14d quality-contact metrics from bulk
+    # Statcast. Slate-level so all 3 tiers share the same pre-aggregated
+    # pull. score_power skips on missing values (USE_RECENT_STATCAST_BLEND
+    # flag in score_batters gates whether they participate in the average).
+    bulk_recent_statcast = slate.get("bulk_recent_statcast", {})
+    recent_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in bulk_recent_statcast)
+    print(f"  [RECENT-14d] {recent_hit}/{len(eligible_batters)} T{tier} batters")
+
     # Build victim profiles for archetype matching (v2 matchup scoring).
     # Only runs when USE_PER_PLAYER_STATCAST=True — otherwise the third
     # source of per-player Statcast hangs. With it off, score_matchup_v2
@@ -1283,6 +1355,17 @@ def score_live_slate(
             entry["xwoba_contact"] = adv["xwoba_contact"]
         if adv.get("pull_fb_pct") is not None:
             entry["pull_fb_pct"] = adv["pull_fb_pct"]
+
+        # B6a (2026-05-21): rolling 14d quality-contact inputs. score_power
+        # ignores these unless USE_RECENT_STATCAST_BLEND is on; either way
+        # we attach so they persist to pick_inputs for backfill / refit.
+        recent14 = bulk_recent_statcast.get(player_id, {})
+        if recent14.get("recent_barrel_real_14d") is not None:
+            entry["recent_barrel_real_14d"] = recent14["recent_barrel_real_14d"]
+        if recent14.get("recent_xwoba_contact_14d") is not None:
+            entry["recent_xwoba_contact_14d"] = recent14["recent_xwoba_contact_14d"]
+        if recent14.get("recent_iso_14d") is not None:
+            entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         # Get archetype profiles for v2 matchup scoring
         vp = victim_profiles.get(player_id)
@@ -1462,6 +1545,8 @@ def score_untiered_starters(
     # Reuse the slate-level bulk xwOBA pull
     bulk_xwoba = slate.get("bulk_batter_xwoba", {})
     batter_adv = {pid: {"xwoba_contact": v} for pid, v in bulk_xwoba.items()}
+    # B6a (2026-05-21): same bulk recent-14d Statcast that T1/T2/T3 use
+    bulk_recent_statcast = slate.get("bulk_recent_statcast", {})
 
     for stub, game, batting_order, side in stubs:
         gpk = game["game_pk"]
@@ -1494,6 +1579,17 @@ def score_untiered_starters(
         adv = batter_adv.get(pid, {})
         if adv.get("xwoba_contact") is not None:
             entry["xwoba_contact"] = adv["xwoba_contact"]
+        # B6a (2026-05-21): rolling 14d quality-contact for T4 batters.
+        # Many T4 batters are rookies / IL returnees with thin recent
+        # samples — _aggregate_recent_statcast's min_batted_balls=10
+        # threshold drops them, which is correct (score_power skips).
+        recent14 = bulk_recent_statcast.get(pid, {})
+        if recent14.get("recent_barrel_real_14d") is not None:
+            entry["recent_barrel_real_14d"] = recent14["recent_barrel_real_14d"]
+        if recent14.get("recent_xwoba_contact_14d") is not None:
+            entry["recent_xwoba_contact_14d"] = recent14["recent_xwoba_contact_14d"]
+        if recent14.get("recent_iso_14d") is not None:
+            entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         pp = pitcher_profiles.get(opp_pitcher_name)
 
@@ -1596,6 +1692,13 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                     # ground-truth season HR (sourced from mlb_2025_tiers),
                     # without the MLB-API lag that affects the live path.
                     "season_hr": int(b.get("hr", 0) or 0),
+                    # B6a (2026-05-21): offline sim has no Statcast pull;
+                    # leave as None so score_power skips them. With
+                    # USE_RECENT_STATCAST_BLEND off these are ignored
+                    # anyway; with it on, season anchors carry the score.
+                    "recent_barrel_real_14d": None,
+                    "recent_xwoba_contact_14d": None,
+                    "recent_iso_14d": None,
                 }
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,

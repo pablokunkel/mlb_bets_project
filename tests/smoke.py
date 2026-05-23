@@ -375,6 +375,131 @@ def pin_compute_season_hr_floor_tiers() -> Result:
     )
 
 
+def pin_use_recent_statcast_blend_default_off() -> Result:
+    """USE_RECENT_STATCAST_BLEND must stay off until backtest validates the blend."""
+    from score_batters import USE_RECENT_STATCAST_BLEND
+    if USE_RECENT_STATCAST_BLEND is False:
+        return Result(
+            "USE_RECENT_STATCAST_BLEND default = False (pre-backtest)", Result.PASS
+        )
+    return Result(
+        "USE_RECENT_STATCAST_BLEND default = False",
+        Result.HALT,
+        f"got {USE_RECENT_STATCAST_BLEND}; flipping the recent-Statcast blend on "
+        "requires a documented refit + backtest decision in WEIGHT_REFIT_LOG.md.",
+    )
+
+
+def pin_score_power_recent_blend_flag_off_no_op() -> Result:
+    """With flag off, recent_* inputs on the batter dict are IGNORED by score_power."""
+    import score_batters as sb
+    # Same season-only inputs in both cases; only the recent_* fields differ.
+    base_inputs = {
+        "barrel_pct": 10.0, "exit_velo": 90.0, "hr_fb_pct": 14.0, "iso": 0.200,
+    }
+    season_only = sb.score_power(base_inputs)
+    with_recents = sb.score_power({
+        **base_inputs,
+        "recent_barrel_real_14d": 20.0,        # extreme value
+        "recent_xwoba_contact_14d": 0.500,
+        "recent_iso_14d": 0.400,
+    })
+    if abs(with_recents - season_only) < 0.01:
+        return Result(
+            f"score_power(recents) ignored when flag off ({season_only:.1f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_power flag-off no-op",
+        Result.HALT,
+        f"season_only={season_only}, with_recents={with_recents}; the recent_* "
+        "inputs leaked into the score with USE_RECENT_STATCAST_BLEND=False",
+    )
+
+
+def pin_score_power_recent_blend_flag_on_lifts_score() -> Result:
+    """With flag on, elite recent_* inputs lift the score above season-only."""
+    import score_batters as sb
+    prev = sb.USE_RECENT_STATCAST_BLEND
+    sb.USE_RECENT_STATCAST_BLEND = True
+    try:
+        # Bohm-class scenario: weakish season inputs, elite recent values.
+        base_inputs = {
+            "barrel_pct": 7.0, "exit_velo": 87.0, "hr_fb_pct": 9.0, "iso": 0.140,
+        }
+        season_only_score = sb.score_power(base_inputs)
+        # Mutex flag toggle inside the function so we re-run with same off behavior
+        sb.USE_RECENT_STATCAST_BLEND = False
+        cold_baseline = sb.score_power(base_inputs)
+        sb.USE_RECENT_STATCAST_BLEND = True
+        with_hot_recent = sb.score_power({
+            **base_inputs,
+            "recent_barrel_real_14d": 17.0,           # elite (anchor 8-18)
+            "recent_xwoba_contact_14d": 0.450,        # elite (anchor .330-.450)
+            "recent_iso_14d": 0.290,                  # near elite (anchor .100-.300)
+        })
+    finally:
+        sb.USE_RECENT_STATCAST_BLEND = prev
+    # Sanity: season_only with flag on should still match flag off when recents are absent
+    if abs(season_only_score - cold_baseline) > 0.01:
+        return Result(
+            "score_power flag-on no-recents == flag-off",
+            Result.HALT,
+            f"flag-on no-recents={season_only_score:.1f}, flag-off={cold_baseline:.1f}",
+        )
+    if with_hot_recent <= season_only_score + 5:
+        return Result(
+            "score_power flag-on with hot recents lifts score",
+            Result.HALT,
+            f"season_only={season_only_score:.1f}, with_hot_recent={with_hot_recent:.1f} "
+            f"(expected lift >= +5)",
+        )
+    return Result(
+        f"score_power(Bohm-class hot recents): {season_only_score:.1f} -> {with_hot_recent:.1f}",
+        Result.PASS,
+    )
+
+
+def pin_compute_season_hr_floor_smooth() -> Result:
+    """B6b smooth log curve: floor(hr) = 26.5 * ln(hr + 1), with 18 HR pinned at 78."""
+    from score_batters import compute_season_hr_floor, SMOOTH_HR_FLOOR_C
+    import math
+    cases = [
+        (None, 0.0),
+        (0,    0.0),
+        (18,   78.0),                                       # calibration anchor
+        (8,    SMOOTH_HR_FLOOR_C * math.log(9)),            # ~58.2 (Burger)
+        (5,    SMOOTH_HR_FLOOR_C * math.log(6)),            # ~47.5
+        (25,   SMOOTH_HR_FLOOR_C * math.log(26)),           # ~86.3
+        (40,   SMOOTH_HR_FLOOR_C * math.log(41)),           # ~98.4 (no cap until 100)
+    ]
+    failures = []
+    for hr, want in cases:
+        got = compute_season_hr_floor(hr, smooth=True)
+        if abs(got - want) > 0.5:
+            failures.append(f"hr={hr}: got {got:.2f}, want {want:.2f}")
+    if not failures:
+        return Result("compute_season_hr_floor(smooth) matches log curve", Result.PASS)
+    return Result(
+        "compute_season_hr_floor(smooth)", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_use_smooth_hr_floor_default_off() -> Result:
+    """USE_SMOOTH_HR_FLOOR must stay off until backtest validates the curve."""
+    from score_batters import USE_SMOOTH_HR_FLOOR
+    if USE_SMOOTH_HR_FLOOR is False:
+        return Result(
+            "USE_SMOOTH_HR_FLOOR default = False (pre-backtest)", Result.PASS
+        )
+    return Result(
+        "USE_SMOOTH_HR_FLOOR default = False",
+        Result.HALT,
+        f"got {USE_SMOOTH_HR_FLOOR}; flipping the smooth curve on requires "
+        "a documented backtest comparison (cliff vs smooth) in WEIGHT_REFIT_LOG.md.",
+    )
+
+
 def pin_use_season_hr_floor_default_on() -> Result:
     """Production runs with the floor ON since 2026-05-03.
 
@@ -509,6 +634,212 @@ def pin_effective_hr9_below_min_starts_falls_back() -> Result:
     )
 
 
+def pin_aggregate_recent_statcast_basic() -> Result:
+    """B6a: bulk Statcast aggregator computes per-batter 14d metrics correctly.
+
+    Synthetic input: 12 batted-ball PAs for one batter (id=10001) with
+    1 barrel (launch_speed_angle=6), mean estimated xwOBA of 0.450 on
+    those 12, and a known hit/AB mix that yields ISO = 0.250.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("aggregate_recent_statcast (pandas missing — skipped)", Result.INFO)
+    from features_v2 import _aggregate_recent_statcast
+
+    # 12 PAs: 4 singles, 2 doubles, 1 triple, 1 HR, 4 outs.
+    # AB = 12, H = 8, TB = 4 + 4 + 3 + 4 = 15. ISO = (15 - 8) / 12 = 0.583.
+    # Going to use a simpler mix that lands ISO at exactly 0.250:
+    #   8 ABs: 1 single, 1 double, 1 HR, 5 outs. H=3, TB=1+2+4=7. ISO=(7-3)/8=0.500.
+    # Simpler: 10 ABs: 2 singles, 1 double, 1 HR, 6 outs.
+    #   H=4, TB=2+2+4=8. ISO=(8-4)/10=0.400.
+    events = (
+        ["single"] * 2 + ["double"] * 1 + ["home_run"] * 1
+        + ["field_out"] * 6
+    )
+    bb_type = ["line_drive"] * 2 + ["fly_ball"] * 2 + ["ground_ball"] * 6
+    # One barrel (the HR); others not barreled.
+    lsa = [0, 0, 5, 6, 0, 0, 0, 0, 0, 0]
+    # estimated xwoba on contact: only 6 fly/line, others ground (Statcast
+    # still fills xwoba but typically lower). Use 10 values, mean=0.300.
+    xwoba_speed = [0.350, 0.380, 0.500, 1.500, 0.150, 0.150, 0.150, 0.150, 0.150, 0.120]
+    df = pd.DataFrame({
+        "batter": [10001] * 10,
+        "events": events,
+        "bb_type": bb_type,
+        "launch_speed_angle": lsa,
+        "estimated_woba_using_speedangle": xwoba_speed,
+    })
+    agg = _aggregate_recent_statcast(df, min_batted_balls=10)
+    if 10001 not in agg:
+        return Result(
+            "_aggregate_recent_statcast(synthetic)", Result.HALT,
+            f"batter not in output; got keys={list(agg.keys())}",
+        )
+    row = agg[10001]
+    failures = []
+    # 1 barrel out of 10 batted balls = 10.0%
+    if abs(row.get("recent_barrel_real_14d", -1) - 10.0) > 0.5:
+        failures.append(f"barrel% got {row.get('recent_barrel_real_14d')}, want ~10.0")
+    # ISO = (8 - 4) / 10 = 0.400
+    if abs(row.get("recent_iso_14d", -1) - 0.400) > 0.005:
+        failures.append(f"ISO got {row.get('recent_iso_14d')}, want ~0.400")
+    # xwoba_contact = mean of 10 values
+    expected_xwoba = sum(xwoba_speed) / len(xwoba_speed)
+    if abs(row.get("recent_xwoba_contact_14d", -1) - expected_xwoba) > 0.005:
+        failures.append(f"xwoba got {row.get('recent_xwoba_contact_14d')}, want ~{expected_xwoba:.3f}")
+    if not failures:
+        return Result(
+            f"_aggregate_recent_statcast(synthetic) computes barrel/iso/xwoba",
+            Result.PASS,
+        )
+    return Result(
+        "_aggregate_recent_statcast(synthetic)", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_aggregate_recent_statcast_empty() -> Result:
+    """Empty / None DataFrame returns {} without crashing."""
+    from features_v2 import _aggregate_recent_statcast
+    if _aggregate_recent_statcast(None) != {}:
+        return Result("_aggregate_recent_statcast(None)", Result.HALT, "expected {}")
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("_aggregate_recent_statcast(None) -> {}", Result.PASS)
+    if _aggregate_recent_statcast(pd.DataFrame()) != {}:
+        return Result("_aggregate_recent_statcast(empty df)", Result.HALT, "expected {}")
+    return Result("_aggregate_recent_statcast(empty / None) -> {}", Result.PASS)
+
+
+def pin_aggregate_recent_statcast_thin_sample_dropped() -> Result:
+    """Batters under min_batted_balls threshold are dropped, not reported."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("aggregate_recent_statcast thin-sample (pandas missing)", Result.INFO)
+    from features_v2 import _aggregate_recent_statcast
+    # 3 PAs for one batter; threshold is 10. Should drop.
+    df = pd.DataFrame({
+        "batter": [20002] * 3,
+        "events": ["single", "field_out", "double"],
+        "bb_type": ["line_drive", "ground_ball", "line_drive"],
+        "launch_speed_angle": [0, 0, 5],
+        "estimated_woba_using_speedangle": [0.4, 0.1, 0.5],
+    })
+    agg = _aggregate_recent_statcast(df, min_batted_balls=10)
+    if not agg:
+        return Result(
+            "_aggregate_recent_statcast drops thin sample (<10 BB)", Result.PASS
+        )
+    return Result(
+        "_aggregate_recent_statcast thin sample dropped",
+        Result.HALT,
+        f"expected empty, got {agg}",
+    )
+
+
+def pin_effective_era_blend() -> Result:
+    """B4: effective_era follows the same blend rules as effective_hr9."""
+    from pitcher_profile import effective_era, RECENT_HR9_BLEND_WEIGHT
+    season, recent, starts = 3.90, 5.20, 4
+    got = effective_era(season, recent, starts)
+    expected = RECENT_HR9_BLEND_WEIGHT * recent + (1 - RECENT_HR9_BLEND_WEIGHT) * season
+    if got is not None and abs(got - expected) < 1e-6:
+        return Result(
+            f"effective_era(season=3.90, recent=5.20, starts=4) -> {got:.3f}",
+            Result.PASS,
+        )
+    return Result(
+        "effective_era blend", Result.HALT,
+        f"got {got}, expected {expected:.4f}",
+    )
+
+
+def pin_effective_k9_blend() -> Result:
+    """B4: effective_k9 follows the same blend rules as effective_hr9."""
+    from pitcher_profile import effective_k9, RECENT_HR9_BLEND_WEIGHT
+    season, recent, starts = 10.5, 7.2, 4
+    got = effective_k9(season, recent, starts)
+    expected = RECENT_HR9_BLEND_WEIGHT * recent + (1 - RECENT_HR9_BLEND_WEIGHT) * season
+    if got is not None and abs(got - expected) < 1e-6:
+        return Result(
+            f"effective_k9(season=10.5, recent=7.2, starts=4) -> {got:.3f}",
+            Result.PASS,
+        )
+    return Result(
+        "effective_k9 blend", Result.HALT,
+        f"got {got}, expected {expected:.4f}",
+    )
+
+
+def pin_effective_blends_custom_weight() -> Result:
+    """B4: blend_weight / min_starts kwargs override defaults — for the harness."""
+    from pitcher_profile import effective_hr9, effective_era, effective_k9
+    got_hr  = effective_hr9(2.0, 4.0, 3, blend_weight=0.70, min_starts=3)
+    got_era = effective_era(4.0, 6.0, 3, blend_weight=0.70, min_starts=3)
+    got_k   = effective_k9(8.0, 5.0, 3, blend_weight=0.70, min_starts=3)
+    failures = []
+    for name, got, want in [("hr9", got_hr, 3.4), ("era", got_era, 5.4), ("k9", got_k, 5.9)]:
+        if got is None or abs(got - want) > 1e-6:
+            failures.append(f"{name}: got {got}, want {want}")
+    if not failures:
+        return Result("effective_* honor custom blend_weight / min_starts", Result.PASS)
+    return Result("effective_* custom blend_weight", Result.HALT, "; ".join(failures))
+
+
+def pin_effective_blend_min_starts_gate() -> Result:
+    """B4: custom min_starts gate — 2 starts < min=3 falls back to season only."""
+    from pitcher_profile import effective_hr9
+    got = effective_hr9(2.0, 4.0, 2, min_starts=3)
+    if got is not None and abs(got - 2.0) < 1e-6:
+        return Result(
+            "effective_hr9(starts=2, min_starts=3) -> season only", Result.PASS
+        )
+    return Result(
+        "effective_hr9 custom min_starts gate", Result.HALT,
+        f"got {got}, expected 2.0 (season only — 2 starts below custom min of 3)",
+    )
+
+
+def pin_pitcher_recent_window_defaults() -> Result:
+    """B4: production defaults preserved — 21-day calendar window."""
+    from pitcher_profile import PITCHER_RECENT_WINDOW_TYPE, PITCHER_RECENT_WINDOW_N
+    if PITCHER_RECENT_WINDOW_TYPE == "days" and PITCHER_RECENT_WINDOW_N == 21:
+        return Result(
+            "PITCHER_RECENT_WINDOW defaults = ('days', 21) (production unchanged)",
+            Result.PASS,
+        )
+    return Result(
+        "PITCHER_RECENT_WINDOW defaults", Result.HALT,
+        f"got ({PITCHER_RECENT_WINDOW_TYPE!r}, {PITCHER_RECENT_WINDOW_N}); flipping "
+        "to last-N-starts requires a documented WEIGHT_REFIT_LOG.md decision.",
+    )
+
+
+def pin_score_pitcher_vulnerability_era_recency_lifts_score() -> Result:
+    """B4: a pitcher whose recent ERA has collapsed scores higher than season-only."""
+    from pitcher_profile import score_pitcher_vulnerability
+    season_only = score_pitcher_vulnerability({
+        "name": "P_seasonOnly",
+        "hr_per_9": 1.5, "era": 3.50, "hard_hit_pct_allowed": 35, "k_per_9": 9.0,
+    })
+    with_recent_era = score_pitcher_vulnerability({
+        "name": "P_withRecentEra",
+        "hr_per_9": 1.5, "era": 3.50, "hard_hit_pct_allowed": 35, "k_per_9": 9.0,
+        "recent_era_21d": 6.5, "recent_starts_21d": 4,
+    })
+    if with_recent_era > season_only + 1:
+        return Result(
+            f"score_pitcher_vulnerability ERA recency: {season_only:.1f} -> {with_recent_era:.1f}",
+            Result.PASS,
+        )
+    return Result(
+        "score_pitcher_vulnerability ERA recency lift", Result.HALT,
+        f"season_only={season_only:.1f}, with_recent_era={with_recent_era:.1f} (lift <= +1)",
+    )
+
+
 def pin_score_pitcher_vulnerability_recency_lifts_score() -> Result:
     """score_pitcher_vulnerability blends recent into HR/9 — Singer-style
     case (season 1.89, recent 3.07, 3 starts) ranks above season-only."""
@@ -534,6 +865,127 @@ def pin_score_pitcher_vulnerability_recency_lifts_score() -> Result:
     )
 
 
+def pin_filter_before_drops_after_date() -> Result:
+    """PR 3 (as-of-date infra): _filter_before drops rows on/after as_of_date.
+
+    Three rows dated 04-01, 04-15, 05-01. as_of_date=2026-04-15 should keep
+    only the 04-01 row (strictly before, not on-or-after).
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("filter_before (pandas missing)", Result.INFO)
+    from pitcher_profile import _filter_before
+    df = pd.DataFrame({
+        "game_date": ["2026-04-01", "2026-04-15", "2026-05-01"],
+        "foo": [1, 2, 3],
+    })
+    res = _filter_before(df, "2026-04-15")
+    if len(res) == 1 and res["game_date"].iloc[0] == "2026-04-01":
+        return Result(
+            "_filter_before drops rows >= as_of_date (strict before)", Result.PASS
+        )
+    return Result(
+        "_filter_before strict-before semantics", Result.HALT,
+        f"expected 1 row dated 2026-04-01, got {len(res)}: "
+        f"{res['game_date'].tolist() if len(res) else '[]'}",
+    )
+
+
+def pin_filter_before_none_is_noop() -> Result:
+    """PR 3: as_of_date=None returns the df unchanged (production behavior)."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("filter_before noop (pandas missing)", Result.INFO)
+    from pitcher_profile import _filter_before
+    df = pd.DataFrame({"game_date": ["2026-04-01", "2026-05-01"], "foo": [1, 2]})
+    res = _filter_before(df, None)
+    if len(res) == 2:
+        return Result("_filter_before(None) is a no-op", Result.PASS)
+    return Result(
+        "_filter_before(None) no-op", Result.HALT,
+        f"expected 2 rows unchanged, got {len(res)}",
+    )
+
+
+def pin_filter_before_empty_safe() -> Result:
+    """PR 3: _filter_before handles None / empty / missing-column gracefully."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("filter_before empty-safe (pandas missing)", Result.INFO)
+    from pitcher_profile import _filter_before
+    failures = []
+    if _filter_before(None, "2026-01-01") is not None:
+        failures.append("None input did not pass through")
+    empty = pd.DataFrame()
+    if not _filter_before(empty, "2026-01-01").empty:
+        failures.append("empty df was not preserved")
+    no_col = pd.DataFrame({"other": [1, 2]})
+    if len(_filter_before(no_col, "2026-01-01")) != 2:
+        failures.append("df without game_date column should pass through")
+    if not failures:
+        return Result(
+            "_filter_before(None / empty / no game_date col) is safe", Result.PASS
+        )
+    return Result("_filter_before edge cases", Result.HALT, "; ".join(failures))
+
+
+def pin_as_of_date_signatures_present() -> Result:
+    """PR 3: every public profile fn accepts as_of_date kwarg with default None."""
+    import inspect
+    from pitcher_profile import (
+        _fetch_batter_hr_events, _fetch_pitcher_arsenal_statcast,
+        build_victim_profile, build_pitcher_profile,
+        build_pitcher_profiles_batch, build_victim_profiles_batch,
+    )
+    failures = []
+    for fn in (_fetch_batter_hr_events, _fetch_pitcher_arsenal_statcast,
+               build_victim_profile, build_pitcher_profile,
+               build_pitcher_profiles_batch, build_victim_profiles_batch):
+        sig = inspect.signature(fn)
+        if "as_of_date" not in sig.parameters:
+            failures.append(f"{fn.__name__} missing as_of_date param")
+            continue
+        param = sig.parameters["as_of_date"]
+        if param.default is not None:
+            failures.append(f"{fn.__name__}.as_of_date default is {param.default!r}, expected None")
+        if param.kind not in (inspect.Parameter.KEYWORD_ONLY,
+                              inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            failures.append(f"{fn.__name__}.as_of_date kind = {param.kind}")
+    if not failures:
+        return Result(
+            "as_of_date kwarg present on all 6 profile fns (default None)",
+            Result.PASS,
+        )
+    return Result("as_of_date signatures", Result.HALT, "; ".join(failures))
+
+
+def pin_weather_archive_threshold_present() -> Result:
+    """PR 3: get_weather has the archive-endpoint threshold constant set
+    to a non-trivial value (5+ days), and both endpoint URLs are defined.
+    """
+    import fetch_daily_data as fdd
+    failures = []
+    for name in ("_OPEN_METEO_FORECAST_URL", "_OPEN_METEO_ARCHIVE_URL",
+                 "_OPEN_METEO_ARCHIVE_THRESHOLD_DAYS"):
+        if not hasattr(fdd, name):
+            failures.append(f"missing module attr {name}")
+    if hasattr(fdd, "_OPEN_METEO_ARCHIVE_THRESHOLD_DAYS"):
+        t = fdd._OPEN_METEO_ARCHIVE_THRESHOLD_DAYS
+        if not (isinstance(t, int) and 3 <= t <= 14):
+            failures.append(f"threshold {t!r} outside sane [3, 14] range")
+    if hasattr(fdd, "_OPEN_METEO_ARCHIVE_URL"):
+        if "archive-api.open-meteo.com" not in fdd._OPEN_METEO_ARCHIVE_URL:
+            failures.append(f"archive URL is {fdd._OPEN_METEO_ARCHIVE_URL!r}")
+    if not failures:
+        return Result(
+            "get_weather archive-endpoint routing wired", Result.PASS
+        )
+    return Result("get_weather archive wiring", Result.HALT, "; ".join(failures))
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -550,6 +1002,11 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_shrink_to_career_huge_sample_barely_shrinks,
     pin_use_career_prior_default_off,
     pin_compute_season_hr_floor_tiers,
+    pin_compute_season_hr_floor_smooth,
+    pin_use_smooth_hr_floor_default_off,
+    pin_use_recent_statcast_blend_default_off,
+    pin_score_power_recent_blend_flag_off_no_op,
+    pin_score_power_recent_blend_flag_on_lifts_score,
     pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
@@ -558,6 +1015,23 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_effective_hr9_blend_when_enough_starts,
     pin_effective_hr9_below_min_starts_falls_back,
     pin_score_pitcher_vulnerability_recency_lifts_score,
+    # 2026-05-21: B6a recent quality-contact aggregation
+    pin_aggregate_recent_statcast_basic,
+    pin_aggregate_recent_statcast_empty,
+    pin_aggregate_recent_statcast_thin_sample_dropped,
+    # 2026-05-21: B4 — recency extended to ERA + K/9, configurable window
+    pin_effective_era_blend,
+    pin_effective_k9_blend,
+    pin_effective_blends_custom_weight,
+    pin_effective_blend_min_starts_gate,
+    pin_pitcher_recent_window_defaults,
+    pin_score_pitcher_vulnerability_era_recency_lifts_score,
+    # 2026-05-21: PR 3 — as-of-date infrastructure
+    pin_filter_before_drops_after_date,
+    pin_filter_before_none_is_noop,
+    pin_filter_before_empty_safe,
+    pin_as_of_date_signatures_present,
+    pin_weather_archive_threshold_present,
 ]
 
 
