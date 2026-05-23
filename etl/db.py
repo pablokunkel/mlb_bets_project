@@ -400,6 +400,16 @@ def create_tables(conn: sqlite3.Connection):
         recent_window_days      INTEGER, -- calendar span of the 30-game window
         ev_trend                REAL,    -- real EV trend vs season (Phase 2)
 
+        -- Power rebuild B6a (2026-05-21): rolling 14-day quality-contact
+        -- inputs from bulk Statcast pitch-level data. Fed into score_power
+        -- when USE_RECENT_STATCAST_BLEND is on; otherwise stored only for
+        -- backfill / refit observation. *_real_* suffix distinguishes from
+        -- the legacy synthetic recent_barrel_pct_14d above (which was
+        -- min(25, recent_ISO*100), kept for historical rows only).
+        recent_barrel_real_14d   REAL,   -- real Statcast barrel% (events / batted balls)
+        recent_xwoba_contact_14d REAL,   -- mean est_woba_using_speedangle on contact
+        recent_iso_14d           REAL,   -- (TB - H) / AB in window
+
         -- Matchup: pitcher inputs
         pitcher_hr_per_9        REAL,
         pitcher_era             REAL,
@@ -412,8 +422,17 @@ def create_tables(conn: sqlite3.Connection):
         -- here so the next refit can learn its own coefficient instead of
         -- inheriting season HR/9's standardized weight (form 0.496,
         -- matchup 0.468 from the 2026-05-01 refit baseline).
-        pitcher_recent_hr9_21d  REAL,
+        --
+        -- B4 (2026-05-21): the _21d suffix is retained for backward compat
+        -- with the prior schema. The value reflects the *configured*
+        -- recency window (pitcher_profile.PITCHER_RECENT_WINDOW_TYPE +
+        -- PITCHER_RECENT_WINDOW_N), which may be last-N-starts post-
+        -- backtest. recent_era + recent_k9 added — same gameLog payload,
+        -- aligns the whole pitcher pipeline on consistent recent windows.
+        pitcher_recent_hr9_21d    REAL,
         pitcher_recent_starts_21d INTEGER,
+        pitcher_recent_era_21d    REAL,
+        pitcher_recent_k9_21d     REAL,
 
         -- Matchup: batter + game inputs
         woba_vs_hand            REAL,
@@ -645,6 +664,10 @@ def create_tables(conn: sqlite3.Connection):
     # count from MLB API gameLog. NULL-safe additive; older rows stay NULL
     # until rerun against the new pipeline. See pick_inputs CREATE block
     # comment for the blend semantics.
+    #
+    # B4 (2026-05-21): added recent_era + recent_k9. The _21d suffix is
+    # retained for backward compat; the actual window is configurable via
+    # pitcher_profile.PITCHER_RECENT_WINDOW_TYPE + PITCHER_RECENT_WINDOW_N.
     existing_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
     }
@@ -653,6 +676,10 @@ def create_tables(conn: sqlite3.Connection):
          "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_hr9_21d REAL"),
         ("pitcher_recent_starts_21d",
          "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_starts_21d INTEGER"),
+        ("pitcher_recent_era_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_era_21d REAL"),
+        ("pitcher_recent_k9_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN pitcher_recent_k9_21d REAL"),
     ]:
         if col not in existing_cols:
             try:
@@ -698,6 +725,35 @@ def create_tables(conn: sqlite3.Connection):
     for col, ddl in [
         ("season_hr",
          "ALTER TABLE pick_inputs ADD COLUMN season_hr INTEGER"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
+    # 2026-05-21: B6a -- recent quality-contact blend for score_power.
+    # Three rolling 14-day inputs sourced from bulk Statcast pitch-level
+    # data (no per-player Statcast calls -- those hung the noon run
+    # 2026-04-29). Populated by features_v2.fetch_batter_recent_statcast_14d,
+    # which is as_of_date-aware so the 2025-season backfill can target
+    # historical dates without look-ahead bias. NULL-safe additive;
+    # score_power skips on None so flag-off behavior is unchanged.
+    #
+    # *recent_barrel_real_14d* has the _real_ suffix to distinguish from
+    # the dead legacy *recent_barrel_pct_14d* column above, which was
+    # min(25, recent_ISO*100) -- a synthetic proxy retained only for
+    # historical rows.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("recent_barrel_real_14d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_barrel_real_14d REAL"),
+        ("recent_xwoba_contact_14d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_xwoba_contact_14d REAL"),
+        ("recent_iso_14d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_iso_14d REAL"),
     ]:
         if col not in existing_cols:
             try:
