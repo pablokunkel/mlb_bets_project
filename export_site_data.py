@@ -231,21 +231,23 @@ def export_latest_picks(conn, out_dir: Path):
     """, (latest_date,)).fetchall()
     games_by_pk = {r["game_pk"]: dict(r) for r in game_rows}
 
-    # Vegas implied totals per team — same source the matchup score uses.
-    # We pull from the cache the morning ETL hit, which lives in slate_ctx
-    # at scoring time but isn't persisted per-team. Approximation here:
-    # if pick_inputs has vegas_team_total_pct for any batter on this team
-    # today, that's their team's percentile rank (already 0-100).
+    # Vegas implied totals per GAME (percentile rank of avg team total).
+    # Key by game_pk so we can look up directly when building slate_games —
+    # the previous per-team dict was keyed on the abbrev ("PHI"), but
+    # slate_games uses the full team name ("Philadelphia Phillies") so
+    # every lookup missed and the modal showed "—" forever.
+    # pick_inputs has no game_pk column, so join through daily_picks.
     # 2026-05-03: column renamed from vegas_implied_total — see migration
     # in etl/db.py. Old DBs are auto-renamed on first create_tables call.
     vegas_rows = conn.execute("""
-        SELECT DISTINCT dp.team, AVG(pi.vegas_team_total_pct) AS team_total_pct
+        SELECT dp.game_pk, AVG(pi.vegas_team_total_pct) AS game_total_pct
         FROM daily_picks dp
         LEFT JOIN pick_inputs pi ON pi.date = dp.date AND pi.batter_id = dp.batter_id
         WHERE dp.date = ? AND pi.vegas_team_total_pct IS NOT NULL
-        GROUP BY dp.team
+              AND dp.game_pk IS NOT NULL
+        GROUP BY dp.game_pk
     """, (latest_date,)).fetchall()
-    vegas_by_team = {r["team"]: r["team_total_pct"] for r in vegas_rows}
+    vegas_by_gamepk = {r["game_pk"]: r["game_total_pct"] for r in vegas_rows}
 
     # Top-25 board members per game_pk — for the slate sidebar's
     # "X in top 25" badge that flags where today's HRs are coming from.
@@ -315,13 +317,10 @@ def export_latest_picks(conn, out_dir: Path):
     for gpk, g in sorted(games_by_pk.items(), key=lambda kv: (kv[1].get("game_time") or "")):
         # How many top-25 board members are in this game?
         top25_count = top25_per_game.get(gpk, 0)
-        # Avg Vegas implied total across the two teams (if present)
-        vegas_home = vegas_by_team.get(g.get("home_team"))
-        vegas_away = vegas_by_team.get(g.get("away_team"))
-        vegas_avg  = None
-        present = [v for v in (vegas_home, vegas_away) if v is not None]
-        if present:
-            vegas_avg = round(sum(present) / len(present), 1)
+        # Vegas implied total %ile for this game (avg across both teams'
+        # batters, computed in vegas_by_gamepk above).
+        v = vegas_by_gamepk.get(gpk)
+        vegas_avg = round(v, 1) if v is not None else None
         slate_games.append({
             "game_pk":       gpk,
             "home_team":     g.get("home_team"),

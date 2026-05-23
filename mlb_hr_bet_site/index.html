@@ -600,7 +600,15 @@
       display: flex; justify-content: space-between;
     }
     .lab-stack-head .lab-stack-total {
-      color: var(--signal); font-weight: 700;
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 8px;
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 3px;
+      color: var(--signal);
+      font-weight: 700;
+      font-feature-settings: 'tnum';
     }
     /* L7 hit-rate badge on Lab view headers — populated from
        lab_accuracy.json (compute_lab_accuracy.py, refreshed by the 1 AM
@@ -947,7 +955,18 @@
       background: var(--grass-deep);
       color: #f4ecd8;
       cursor: pointer;
+      vertical-align: middle;
       box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.15);
+    }
+    /* Baseball emoji inside .cell-hit — size it down so it doesn't crowd
+       the 22×22 cell and gets a subtle desaturation to fit the cream/clay
+       palette better than the bright default. */
+    .history-heatmap tbody td.cell-hit .hr-glyph {
+      font-size: 12px;
+      line-height: 1;
+      display: inline-block;
+      vertical-align: middle;
+      filter: saturate(0.8) brightness(1.08);
     }
     .history-heatmap tbody td.cell-miss {
       background: rgba(185, 71, 45, 0.85);
@@ -2925,19 +2944,23 @@
         .filter(p => (p.recent_hr_7d ?? 0) >= 1)
         .sort((a, b) => (b.recent_hr_7d ?? 0) - (a.recent_hr_7d ?? 0))
         .slice(0, 10);
+      // 2026-05-23: still sort by matchup × park × weather (multiplicative
+      // env score) so the right batters surface, but display the composite
+      // instead of the raw env product — the env score reads as single
+      // digits, which is misleading. Underlying calc is on the backlog
+      // for a separate session; until then, composite is the clearer
+      // user-facing number.
       const v2 = top10Hot
         .map(p => {
           const m = p.matchup_score || 0;
           const pk = p.park_score || 0;
           const w = p.weather_score || 0;
-          // Multiplicative on 0-1 scale (each factor / 100), then back
-          // to 0-100. So 70×70×70 → 34.3, 90×90×90 → 72.9. Penalizes
-          // batters with one weak env factor more than weighted-avg
-          // would, surfacing only batters where ALL THREE are strong.
-          const _lab_score = (m / 100) * (pk / 100) * (w / 100) * 100;
-          return { ...p, _lab_score };
+          const _env_score = (m / 100) * (pk / 100) * (w / 100) * 100;
+          return { ...p, _env_score };
         })
-        .sort((a, b) => b._lab_score - a._lab_score);
+        .sort((a, b) => b._env_score - a._env_score)
+        // Strip the env score so renderRow falls back to composite.
+        .map(({ _env_score, ...rest }) => rest);
 
       // VIEW 3: Park × Pitcher Exploit
       // Career power hitter (≥5 HR season-to-date) in HR-friendly park
@@ -3069,7 +3092,7 @@
           return `<div class="lab-stack">
             <div class="lab-stack-head">
               <span>Game #${s.gamePk} · ${teamLabel} stack · ${s.players.length} batters</span>
-              <span>Stack score <span class="lab-stack-total">${s.score.toFixed(1)}</span></span>
+              <span>Stack score <span class="lab-stack-total">${Math.round(s.score)}</span></span>
             </div>
             ${s.players.map((p, i) => renderRow(p, i)).join('')}
           </div>`;
@@ -3181,7 +3204,10 @@
       // Each cell colored green if that rank's pick HR'd, red if not, gray if pending.
       // The pick at rank #N for a given day is determined by sorting that day's
       // picks by composite descending and taking position N-1.
-      const heatDays = history.slice().reverse().slice(-30);   // chronological order, last 30
+      // 2026-05-23: cap at last 10 days. The 30-day version was too dense
+       // to read on mobile and the older columns rarely added signal beyond
+       // the per-rank hit-rate summary below the grid.
+      const heatDays = history.slice().reverse().slice(-10);   // chronological order, last 10
       const ranks = [1, 2, 3, 4, 5, 6, 7, 8];
       // Per-day dedupe: when the same player appears twice (doubleheader
        // outcomes joining to two rows), keep the row with the BETTER hr_count
@@ -3236,7 +3262,7 @@
             heatHtml += `<td class="cell-pending" title="${p.name || ''} — pending"></td>`;
           } else if (p.hr_count > 0) {
             const pid = p.batter_id || p.player_id || '';
-            heatHtml += `<td class="cell-hit clickable-row" data-pid="${pid}" title="${p.name || ''} — HR (${formatLongDate(d.date)})">⚾</td>`;
+            heatHtml += `<td class="cell-hit clickable-row" data-pid="${pid}" title="${p.name || ''} — HR (${formatLongDate(d.date)})"><span class="hr-glyph">⚾</span></td>`;
           } else {
             const pid = p.batter_id || p.player_id || '';
             heatHtml += `<td class="cell-miss clickable-row" data-pid="${pid}" title="${p.name || ''} — miss (${formatLongDate(d.date)})"></td>`;
@@ -3525,7 +3551,18 @@
             responsive: true,
             interaction: { mode: 'index', intersect: false },
             scales: {
-              x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#30363d' } },
+              x: {
+                ticks: {
+                  color: '#8b949e', font: { size: 10 },
+                  // 2026-05-23: cap X-axis labels at ~10 so the dates don't
+                  // crowd into each other; data points and tooltips still
+                  // show every day. autoSkip means Chart.js picks ~evenly
+                  // spaced labels.
+                  autoSkip: true,
+                  maxTicksLimit: 10,
+                },
+                grid: { color: '#30363d' }
+              },
               y: { min: 0, max: 100, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } }
             },
             plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } }
@@ -5770,11 +5807,25 @@
       const game = (cache.slate_games || []).find(g => g.game_pk === gpk);
       if (!game) return;
       const board = cache.full_board || [];
-      // Top-25 batters from this game, sorted by composite
-      const top25Cutoff = board.slice().sort((a, b) => (b.composite || 0) - (a.composite || 0))[24]?.composite || 0;
-      const inGame = board
-        .filter(b => b.game_pk === gpk && (b.composite || 0) >= top25Cutoff)
-        .sort((a, b) => (b.composite || 0) - (a.composite || 0));
+      // 2026-05-23: changed from "top-25 batters that fell in this game"
+      // to top-5 by composite from this game (with global rank kept on
+      // each row). The previous version showed up to 9 in one game and
+      // 0 in another; the per-game top-5 is a more useful "who from this
+      // game might homer" lens. Global rank still answers "should I care
+      // about this game at all?".
+      const fromGame = board.filter(b => b.game_pk === gpk)
+                            .sort((a, b) => (b.composite || 0) - (a.composite || 0));
+      const inGame = fromGame.slice(0, 5);
+
+      // Pitching-matchup score: average matchup_score across all batters
+      // in this game (i.e. how vulnerable, in aggregate, are the starting
+      // pitchers to the opposing lineup tonight). Higher = easier night
+      // for the bats.
+      const matchupAvg = (() => {
+        const xs = fromGame.map(b => b.matchup_score).filter(v => v != null);
+        if (!xs.length) return null;
+        return xs.reduce((s, v) => s + v, 0) / xs.length;
+      })();
 
       const time = formatGameTime(game.game_time) || 'TBD';
       const wxParts = [];
@@ -5811,12 +5862,13 @@
           <h4>Pitching Matchup</h4>
           ${lineRow(`${game.away_team || 'AWAY'} starter`, game.away_pitcher || '—')}
           ${lineRow(`${game.home_team || 'HOME'} starter`, game.home_pitcher || '—')}
+          ${lineRow('Avg matchup score', matchupAvg != null ? matchupAvg.toFixed(1) : '—')}
         </div>
         <div class="modal-section">
-          <h4>Top-25 Batters in This Game · ${inGame.length}</h4>
+          <h4>Top Batters in This Game · ${inGame.length}</h4>
       `;
       if (inGame.length === 0) {
-        html += `<div class="empty" style="padding:12px 0">No batters from this game in today's top 25.</div>`;
+        html += `<div class="empty" style="padding:12px 0">No batters from this game on today's board.</div>`;
       } else {
         inGame.forEach(b => {
           html += `<div class="game-card-batter" data-pid="${b.batter_id || ''}">
