@@ -171,6 +171,222 @@
     .panel { display: none; }
     .panel.active { display: block; }
 
+    /* ────────────────────────────────────────────────────────────────
+       Hitters tab — batter × game heatmap (port of
+       diagnostics/batter_ab_heatmap.py, restyled to clay/cream).
+       All selectors are scoped under .hm-wrap so the JS port can use the
+       diagnostic tool's structure verbatim without colliding with the
+       site's existing .scroll / table / modal styles.
+       ──────────────────────────────────────────────────────────────── */
+    .hm-wrap { font-family: 'Inter', sans-serif; color: var(--ink); }
+    .hm-wrap .hm-title { font-size: 18px; font-weight: 700; margin: 0 0 2px; }
+    .hm-wrap .hm-sub { color: var(--ink-muted); font-size: 12px; }
+    .hm-wrap a { color: var(--signal); }
+    .hm-wrap .hm-head { margin-bottom: 8px; }
+
+    .hm-cards { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px; }
+    .hm-cards .hm-card {
+      background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
+      padding: 9px 13px; min-width: 120px;
+    }
+    .hm-cards .hm-card .big { font-size: 21px; font-weight: 700; font-feature-settings: 'tnum'; }
+    .hm-cards .hm-card .lbl {
+      color: var(--ink-muted); font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .hm-cards .hm-card.good .big { color: var(--grass-deep); }
+    .hm-cards .hm-card.mid  .big { color: var(--clay-deep); }
+    .hm-cards .hm-card.bad  .big { color: var(--signal); }
+
+    .hm-ctl {
+      display: flex; flex-wrap: wrap; gap: 12px 14px; align-items: center;
+      background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
+      padding: 9px 13px; margin: 10px 0; position: sticky; top: 0; z-index: 30;
+    }
+    .hm-ctl label {
+      color: var(--ink-muted); font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.4px; margin-right: 5px;
+    }
+    .hm-ctl select,
+    .hm-ctl input[type=text] {
+      background: var(--paper); color: var(--ink);
+      border: 1px solid var(--rule); border-radius: 4px;
+      padding: 4px 7px; font-size: 12px; font-family: 'Inter', sans-serif;
+    }
+    .hm-ctl input[type=text] { width: 160px; }
+    .hm-ctl .hm-seg {
+      display: inline-flex; border: 1px solid var(--rule); border-radius: 4px;
+      overflow: hidden;
+    }
+    .hm-ctl .hm-seg button {
+      background: var(--paper); color: var(--ink-muted); border: 0;
+      padding: 4px 9px; cursor: pointer; font-size: 12px; font-family: 'Inter', sans-serif;
+    }
+    .hm-ctl .hm-seg button.on { background: var(--signal); color: var(--paper); font-weight: 700; }
+    .hm-tg { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 5px; font-size: 12px; }
+    .hm-tg input { accent-color: var(--signal); }
+
+    .hm-scroll {
+      overflow: auto; border: 1px solid var(--rule); border-radius: 6px;
+      max-height: 78vh; background: var(--paper);
+    }
+    .hm-wrap table { border-collapse: separate; border-spacing: 0; }
+    .hm-wrap th, .hm-wrap td { padding: 0; margin: 0; }
+    .hm-wrap thead th {
+      position: sticky; top: 0; z-index: 20; background: var(--paper-2);
+      color: var(--ink-muted); font-weight: 600; font-size: 10px;
+      border-bottom: 1px solid var(--rule); border-right: 1px solid var(--rule-soft);
+      height: 34px; min-width: 30px; width: 30px;
+    }
+    .hm-wrap thead th.mgap { background: var(--bg-2); }
+    .hm-wrap thead th.corner {
+      left: 0; z-index: 25; min-width: 240px; width: 240px; text-align: left;
+    }
+    .hm-wrap tbody th.name {
+      position: sticky; left: 0; z-index: 10; background: var(--paper);
+      border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule-soft);
+      min-width: 240px; width: 240px; text-align: left;
+      padding: 0 9px; height: 30px; cursor: pointer;
+    }
+    .hm-wrap tbody th.name:hover { background: var(--surface); }
+    .hm-wrap tbody tr:hover th.name { background: var(--surface); }
+    .hm-wrap .nm { display: flex; align-items: baseline; gap: 7px; }
+    .hm-wrap .nm .rk { color: var(--ink-muted); font-size: 10px; width: 26px; flex: none; }
+    .hm-wrap .nm .who {
+      font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .hm-wrap .nm .tm { color: var(--ink-muted); font-size: 10px; }
+    .hm-wrap .nm .hrn {
+      margin-left: auto; color: var(--signal); font-weight: 700; font-size: 13px; flex: none;
+    }
+    .hm-wrap .nm .hrn small { color: var(--ink-muted); font-weight: 400; }
+
+    .hm-wrap td.cell {
+      width: 30px; height: 30px; text-align: center; vertical-align: middle;
+      border-right: 1px solid var(--rule-soft); border-bottom: 1px solid var(--rule-soft);
+      cursor: pointer; position: relative; font-size: 11px;
+    }
+    .hm-wrap td.cell:hover { outline: 2px solid var(--signal); outline-offset: -2px; z-index: 5; }
+    .hm-wrap td.dnp { background: var(--bg-deep); cursor: default; opacity: 0.6; }
+    .hm-wrap td.nomodel {
+      background-image: repeating-linear-gradient(45deg,
+        rgba(140, 122, 82, 0.18) 0 5px,
+        rgba(140, 122, 82, 0.08) 5px 10px);
+    }
+    .hm-wrap .g { font-weight: 700; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5); }
+    .hm-wrap .g.hr { color: var(--signal); font-size: 13px; }
+    .hm-wrap .g.xb { color: var(--ink); }
+    .hm-wrap .g.s1 { color: var(--ink-soft); font-weight: 600; }
+    .hm-wrap .g.out { color: var(--ink-muted); font-weight: 400; }
+    .hm-wrap td.sel { box-shadow: inset 0 0 0 2px var(--grass-deep); }
+    .hm-wrap td.miss { box-shadow: inset 0 0 0 2px var(--signal); }
+    .hm-wrap td.sel.miss { box-shadow: inset 0 0 0 2px var(--signal), inset 0 0 0 4px var(--grass-deep); }
+    .hm-wrap.focushr td.cell:not(.has-hr) .g { opacity: 0.18; }
+    .hm-wrap.focushr td.nomodel:not(.has-hr) { opacity: 0.5; }
+
+    .hm-wrap tbody tr.ghdr th.ghn {
+      position: sticky; left: 0; z-index: 11;
+      background: var(--surface); color: var(--ink); font-weight: 700; font-size: 11px;
+      text-transform: uppercase; letter-spacing: 0.4px; text-align: left;
+      padding: 5px 10px; border-top: 2px solid var(--border-strong);
+      border-bottom: 1px solid var(--rule);
+    }
+    .hm-wrap .ghs {
+      color: var(--ink-muted); font-weight: 400; text-transform: none;
+      letter-spacing: 0; margin-left: 10px;
+    }
+
+    .hm-legend {
+      display: flex; flex-wrap: wrap; gap: 7px 16px; margin: 9px 2px;
+      color: var(--ink-muted); font-size: 11px; align-items: center;
+    }
+    .hm-legend b { color: var(--ink); }
+    .hm-legend .chip {
+      display: inline-block; width: 13px; height: 13px; border-radius: 3px;
+      vertical-align: -2px; margin-right: 3px;
+    }
+    .hm-legend .ramp {
+      display: inline-block; width: 120px; height: 11px; border-radius: 3px;
+      vertical-align: -1px;
+    }
+
+    /* Heatmap modal — reuses the diagnostic tool's structure but inherits
+       the site's modal palette. */
+    .hm-ovl {
+      position: fixed; inset: 0; background: rgba(26, 31, 36, 0.62); z-index: 100;
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 34px 16px; overflow: auto;
+    }
+    .hm-ovl.on { display: flex; }
+    .hm-modal {
+      background: var(--surface); border: 1px solid var(--rule);
+      border-radius: 10px; width: min(880px, 100%); color: var(--ink);
+    }
+    .hm-modal .mhd {
+      display: flex; align-items: flex-start; gap: 12px; padding: 14px 17px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .hm-modal .mhd h2 { margin: 0; font-size: 16px; }
+    .hm-modal .mhd .x {
+      margin-left: auto; cursor: pointer; color: var(--ink-muted); font-size: 22px;
+      line-height: 1; border: 0; background: none;
+    }
+    .hm-modal .mbody { padding: 12px 17px 18px; }
+    .hm-modal .sec {
+      border-top: 1px solid var(--rule-soft); padding: 10px 0 6px;
+    }
+    .hm-modal .sec:first-child { border-top: none; }
+    .hm-modal .sec h3 {
+      font-size: 11px; color: var(--ink-muted); margin: 0 0 8px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .hm-modal .kv {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 4px 10px; font-size: 12px;
+    }
+    .hm-modal .k { color: var(--ink-muted); margin-right: 5px; }
+    .hm-modal .v { color: var(--ink); }
+    .hm-modal .v.na { color: var(--ink-muted); font-style: italic; }
+    .hm-modal .bigc {
+      font-size: 22px; font-weight: 700; font-feature-settings: 'tnum';
+    }
+    .hm-modal .pill {
+      display: inline-block; padding: 1px 7px; border-radius: 3px;
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+      font-weight: 700; vertical-align: 2px; margin-left: 4px;
+    }
+    .hm-modal .pill.sel { background: var(--grass-deep); color: #fbf6e9; }
+    .hm-modal .pill.miss { background: var(--signal); color: #fbf6e9; }
+    .hm-modal .fbars { display: grid; gap: 4px; margin-top: 4px; }
+    .hm-modal .fb {
+      display: grid; grid-template-columns: 60px 1fr 36px; gap: 6px;
+      align-items: center; font-size: 11px;
+    }
+    .hm-modal .fl { color: var(--ink-muted); }
+    .hm-modal .ft {
+      background: var(--paper-2); height: 8px; border-radius: 2px; overflow: hidden;
+    }
+    .hm-modal .ff { display: block; height: 100%; }
+    .hm-modal .fv { font-feature-settings: 'tnum'; text-align: right; }
+    .hm-modal .hrcard {
+      background: var(--paper); border: 1px solid var(--rule-soft);
+      border-radius: 4px; padding: 8px 10px; margin-bottom: 6px;
+    }
+    .hm-modal .hrcard .d1 { font-weight: 600; font-size: 12px; }
+    .hm-modal .hrcard .d2 {
+      display: flex; flex-wrap: wrap; gap: 8px 14px;
+      font-size: 11px; color: var(--ink-muted); margin-top: 3px;
+    }
+    .hm-modal .hrcard .stat b { color: var(--ink); font-feature-settings: 'tnum'; }
+    .hm-modal .hrlog .row {
+      display: flex; align-items: center; gap: 10px; font-size: 12px;
+      padding: 5px 0; border-bottom: 1px solid var(--rule-soft);
+    }
+    .hm-modal .hrlog .dt { color: var(--ink-muted); width: 90px; flex: none; }
+    .hm-modal .hrlog .cc { width: 60px; flex: none; }
+    .hm-empty { color: var(--ink-muted); padding: 30px; text-align: center; }
+    /* End of heatmap CSS ─────────────────────────────────────────────── */
+
     /* Stat cards — joined as a "stat strip" like a statbook header band:
        single cream bordered panel, ledger-ruled rows separated by vertical rules.
        (Individual .stat-card still works for places that need standalone cards.) */
@@ -2258,13 +2474,61 @@
       <div id="hrRecapList"><div class="loading">Loading recap...</div></div>
     </div>
 
-    <!-- HITTERS LEADERBOARD -->
+    <!-- HITTERS — season-long batter × game heatmap. Ports the diagnostic
+         tool in diagnostics/batter_ab_heatmap.py to a live dashboard view,
+         restyled to the site's clay/cream palette. Data loaded lazily on
+         first activation from data/heatmap.json (~few MB; not fetched on
+         page load). -->
     <div class="panel" id="panel-hitters">
-      <div class="stat-row" id="hittersStats"></div>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
-        Top HR hitters in the last 14 days. Each cell shows our model's rank for that batter on that day — green = we picked them, gray = on board but not picked, dim "X" = HR but not on our board.
+      <div class="hm-wrap">
+        <div class="hm-head">
+          <div class="hm-title">Batter × Game Heatmap <span class="hm-sub" id="hmRangeNote"></span></div>
+          <div class="hm-sub" id="hmGenNote"></div>
+        </div>
+        <div class="hm-cards" id="hmCards"></div>
+        <div class="hm-ctl">
+          <span class="hm-fld"><label>Heat</label>
+            <select id="hmMode">
+              <option value="c">Composite score</option>
+              <option value="rk">Board rank</option>
+              <option value="rg">Rank within game</option>
+              <option value="pw">Power factor</option>
+              <option value="mu">Matchup factor</option>
+              <option value="fm">Form factor</option>
+              <option value="wx">Weather factor</option>
+              <option value="pk">Park factor</option>
+              <option value="ln">Lineup factor</option>
+            </select></span>
+          <span class="hm-fld"><label>Group by</label>
+            <select id="hmGroupby">
+              <option value="none">none</option>
+              <option value="hrWindow">HR games — in view window</option>
+              <option value="hr7">HR games — last 7 days of view</option>
+              <option value="decile">Heat-metric decile</option>
+            </select></span>
+          <span class="hm-fld"><label>Dates</label>
+            <select id="hmDfrom"></select>
+            <span class="hm-sub">→</span>
+            <select id="hmDto"></select></span>
+          <span class="hm-fld"><label>Show</label>
+            <span class="hm-seg" id="hmMinhr">
+              <button data-v="1" class="on">1+ HR</button>
+              <button data-v="3">3+</button>
+              <button data-v="5">5+</button>
+              <button data-v="10">10+</button>
+              <button data-v="0">All</button>
+            </span></span>
+          <span class="hm-fld"><label>Find</label>
+            <input type="text" id="hmSearch" placeholder="batter or team…"></span>
+          <label class="hm-tg"><input type="checkbox" id="hmFocushr">Focus HRs</label>
+          <label class="hm-tg"><input type="checkbox" id="hmFlagmiss" checked>Flag misses</label>
+          <span class="hm-sub" id="hmCount"></span>
+        </div>
+        <div class="hm-legend" id="hmLegend"></div>
+        <div class="hm-scroll"><table id="hmGrid"></table></div>
+        <div id="hmEmptymsg"></div>
       </div>
-      <div id="hittersTable"><div class="loading">Loading hitters...</div></div>
+      <div class="hm-ovl" id="hmOvl"><div class="hm-modal" id="hmModal"></div></div>
     </div>
 
     <!-- HISTORY -->
@@ -2463,6 +2727,9 @@
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+        // Lazy-load heatmap on first Hitters activation (heatmap.json is
+        // ~few MB; not worth pulling on every page load).
+        if (tab.dataset.panel === 'hitters') renderHitters();
       });
     });
 
@@ -5456,81 +5723,547 @@
     // (treated as "innings"). Cells use ⚾ glyph for HRs with our daily
     // rank as a superscript, dot for on-board not picked, blank for
     // off-board. Reads like the line score on a manual scoreboard.
+    // 2026-05-23: Hitters tab is now the batter × game heatmap — a port
+    // of diagnostics/batter_ab_heatmap.py with the dark palette swapped
+    // for the site's clay/cream. Data is loaded lazily on first tab
+    // activation (heatmap.json is ~few MB); subsequent activations reuse
+    // the in-memory dataset.
+    let _hmData = null;          // parsed heatmap.json
+    let _hmInit = false;         // wiring already attached?
+    const _hmS = {
+      mode: 'c', minhr: 1, search: '', focushr: false, flagmiss: true,
+      from: 0, to: 0, group: 'none',
+    };
+    const _HM_FACT = {pw:'Power',mu:'Matchup',pk:'Park',fm:'Form',wx:'Weather',ln:'Lineup'};
+    const _HM_MODE_LABEL = {c:'Composite',rk:'Board rank',rg:'Rank within game',
+      pw:'Power',mu:'Matchup',fm:'Form',wx:'Weather',pk:'Park',ln:'Lineup'};
+    const _HM_INVERT = new Set(['rk','rg']);
+    // 2026-05-23: ramped from the diagnostic tool's cyan→amber→red but
+    // pulled cooler end toward site's navy and warmer end toward clay.
+    const _HM_RAMP = [[29,45,80],[68,90,128],[140,135,118],[180,128,72],[196,99,31],[185,71,45]];
+    let _HM_DOMAIN = {};
+
+    function _hmRamp(t) {
+      t = Math.max(0, Math.min(1, t));
+      const s = t * (_HM_RAMP.length - 1);
+      const i = Math.min(Math.floor(s), _HM_RAMP.length - 2);
+      const f = s - i;
+      const a = _HM_RAMP[i], b = _HM_RAMP[i + 1];
+      return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)})`;
+    }
+    function _hmMetric(cell, mode) {
+      if (!cell) return null;
+      if (mode === 'c')  return cell.c ?? null;
+      if (mode === 'rk') return cell.rk ?? null;
+      if (mode === 'rg') return cell.rig ?? null;
+      if (cell.f && cell.f[mode] != null) return cell.f[mode];
+      return null;
+    }
+    function _hmComputeDomains(visSet) {
+      const modes = ['c','rk','rg','pw','mu','pk','fm','wx','ln'];
+      modes.forEach(m => {
+        let lo = Infinity, hi = -Infinity;
+        const C = _hmData.cells;
+        for (const bid in C) for (const d in C[bid]) {
+          if (!visSet.has(d)) continue;
+          const v = _hmMetric(C[bid][d], m);
+          if (v == null) continue;
+          if (v < lo) lo = v; if (v > hi) hi = v;
+        }
+        if (lo === Infinity) { lo = 0; hi = 1; }
+        _HM_DOMAIN[m] = [lo, hi];
+      });
+    }
+    function _hmHeatColor(cell, mode) {
+      const v = _hmMetric(cell, mode);
+      if (v == null) return null;
+      const [lo, hi] = _HM_DOMAIN[mode];
+      let t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+      if (_HM_INVERT.has(mode)) t = 1 - t;
+      return _hmRamp(t);
+    }
+    function _hmGlyph(cell) {
+      if (!cell) return { cls: '', txt: '' };
+      const hr = cell.hr || 0;
+      if (hr >= 2) return { cls: 'g hr', txt: '★' + hr };
+      if (hr === 1) return { cls: 'g hr', txt: '★' };
+      if (cell.h != null) {
+        if (cell.d3) return { cls: 'g xb', txt: '3B' };
+        if (cell.d2) return { cls: 'g xb', txt: '2B' };
+        if (cell.h > 0) return { cls: 'g s1', txt: '1B' };
+        if (cell.ab > 0) return { cls: 'g out', txt: '·' };
+        return { cls: 'g out', txt: '∘' };
+      }
+      return { cls: 'g out', txt: '·' };
+    }
+    function _hmIsMiss(cell) {
+      if (!cell || !(cell.hr > 0)) return false;
+      return (cell.rk == null) || (cell.rk > 30);
+    }
+    function _hmEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function _hmFmtDay(d) {
+      const p = d.split('-');
+      return (+p[1]) + '/' + (+p[2]);
+    }
+    function _hmVisibleDates() { return _hmData.dates.slice(_hmS.from, _hmS.to + 1); }
+
+    function _hmComputeHeadline(visSet) {
+      const h = {total:0, scored:0, nomodel:0, b10:0, b30:0, b100:0, b101:0, picked:0};
+      const C = _hmData.cells;
+      for (const bid in C) for (const d in C[bid]) {
+        if (!visSet.has(d)) continue;
+        const c = C[bid][d];
+        if ((c.hr || 0) <= 0) continue;
+        h.total++;
+        if (c.rk == null) { h.nomodel++; }
+        else {
+          h.scored++;
+          if (c.rk <= 10) h.b10++;
+          else if (c.rk <= 30) h.b30++;
+          else if (c.rk <= 100) h.b100++;
+          else h.b101++;
+          if (c.sel) h.picked++;
+        }
+      }
+      return h;
+    }
+    function _hmRenderCards(h) {
+      const sc = h.scored || 0;
+      const pct = n => sc ? Math.round(100*n/sc) + '%' : '--';
+      const cards = [
+        {lbl:'HR games (window)', big:h.total, cls:''},
+        {lbl:'HR games — model days', big:h.scored, cls:''},
+        {lbl:'…from board top 10', big:pct(h.b10), cls:'good'},
+        {lbl:'…from rank 11-30', big:pct(h.b30), cls:'mid'},
+        {lbl:'…from rank 31-100', big:pct(h.b100), cls:'bad'},
+        {lbl:'…from rank 101+', big:pct(h.b101), cls:'bad'},
+        {lbl:'HR games by an 8-pick', big:h.picked, cls:'good'},
+      ];
+      document.getElementById('hmCards').innerHTML = cards.map(c =>
+        `<div class="hm-card ${c.cls}"><div class="big">${c.big}</div><div class="lbl">${c.lbl}</div></div>`
+      ).join('');
+    }
+    function _hmRenderLegend() {
+      document.getElementById('hmLegend').innerHTML =
+        `<span><b>Heat</b> = <span id="hmLgmode"></span>: ` +
+        `<span class="ramp" style="background:linear-gradient(90deg,` +
+          _HM_RAMP.map((c, i) => `${_hmRamp(i/(_HM_RAMP.length-1))} ${i/(_HM_RAMP.length-1)*100}%`).join(',') +
+        `)"></span> cold→hot</span>` +
+        `<span><span class="g hr">★</span> <b>HR</b> (★N = multi)</span>` +
+        `<span><span class="g xb">2B</span>/<span class="g xb">3B</span> extra-base</span>` +
+        `<span><span class="g s1">1B</span> single</span>` +
+        `<span><span class="g out">·</span> played, no hit</span>` +
+        `<span><span class="chip" style="background:var(--bg-deep)"></span>DNP</span>` +
+        `<span><span class="chip" style="background-image:repeating-linear-gradient(45deg,rgba(140,122,82,0.25) 0 4px,rgba(140,122,82,0.12) 4px 8px)"></span>no model score</span>` +
+        `<span style="box-shadow:inset 0 0 0 2px var(--grass-deep);padding:0 6px">green outline = was an 8-pick</span>` +
+        `<span style="box-shadow:inset 0 0 0 2px var(--signal);padding:0 6px">red outline = flagged miss</span>`;
+      document.getElementById('hmLgmode').textContent = _HM_MODE_LABEL[_hmS.mode];
+    }
+    function _hmVisibleBatters(visSet) {
+      const q = _hmS.search.trim().toLowerCase();
+      const C = _hmData.cells;
+      return _hmData.batters.filter(b => {
+        if (b.hr < _hmS.minhr) return false;
+        if (q) {
+          const hay = (b.name + ' ' + (b.team || '')).toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        const row = C[String(b.id)];
+        if (!row) return false;
+        for (const d in row) if (visSet.has(d)) return true;
+        return false;
+      });
+    }
+    function _hmAvgMetric(b, visSet) {
+      const row = _hmData.cells[String(b.id)] || {};
+      let s = 0, n = 0;
+      for (const d in row) {
+        if (!visSet.has(d)) continue;
+        const v = _hmMetric(row[d], _hmS.mode);
+        if (v != null) { s += v; n++; }
+      }
+      return n ? s / n : null;
+    }
+    function _hmGroupStat(batters, visSet) {
+      let games = 0, hr = 0, ghr = 0;
+      const C = _hmData.cells;
+      batters.forEach(b => {
+        const row = C[String(b.id)] || {};
+        for (const d in row) {
+          if (!visSet.has(d)) continue;
+          games++;
+          const n = row[d].hr || 0;
+          hr += n; if (n > 0) ghr++;
+        }
+      });
+      return { games, hr, ghr, rate: games ? (100*ghr/games).toFixed(1) : '0.0' };
+    }
+    function _hmGroupBatters(bs, visList, visSet) {
+      const G = _hmS.group, buckets = {};
+      let order = [];
+      const put = (k, b) => { (buckets[k] = buckets[k] || []).push(b); };
+      const C = _hmData.cells;
+      if (G === 'hrWindow') {
+        order = ['8+ HR games','5-7 HR games','3-4 HR games','2 HR games','1 HR game','0 HR games'];
+        bs.forEach(b => {
+          const row = C[String(b.id)] || {}; let n = 0;
+          for (const d in row) if (visSet.has(d) && (row[d].hr || 0) > 0) n++;
+          put(n>=8?'8+ HR games':n>=5?'5-7 HR games':n>=3?'3-4 HR games':n===2?'2 HR games':n===1?'1 HR game':'0 HR games', b);
+        });
+      } else if (G === 'hr7') {
+        order = ['4+ HR games','3 HR games','2 HR games','1 HR game','0 HR games'];
+        const last7 = visList.slice(-7);
+        bs.forEach(b => {
+          const row = C[String(b.id)] || {}; let n = 0;
+          last7.forEach(d => { if (row[d] && (row[d].hr || 0) > 0) n++; });
+          put(n>=4?'4+ HR games':n===1?'1 HR game':n + ' HR games', b);
+        });
+      } else if (G === 'decile') {
+        const scored = [];
+        bs.forEach(b => { const v = _hmAvgMetric(b, visSet);
+          if (v == null) put('no model score', b); else scored.push({ b, v }); });
+        scored.sort((a, b) => a.v - b.v);
+        const m = scored.length;
+        scored.forEach((x, i) => { put('D' + Math.min(10, Math.floor(i*10/m) + 1), x.b); });
+        for (let d = 10; d >= 1; d--) order.push('D' + d);
+        order.push('no model score');
+      }
+      const label = k => {
+        if (G !== 'decile' || k[0] !== 'D') return k;
+        const d = k.slice(1);
+        return _HM_MODE_LABEL[_hmS.mode] + ' decile ' + d +
+          (d === '10' ? ' (highest avg)' : d === '1' ? ' (lowest avg)' : '');
+      };
+      return order.filter(k => buckets[k] && buckets[k].length)
+                  .map(k => ({ label: label(k), batters: buckets[k] }));
+    }
+    function _hmTooltip(b, d, cell) {
+      let t = b.name + '  ' + d;
+      const hr = cell.hr || 0;
+      if (hr) t += '  — ' + hr + ' HR';
+      else if (cell.h != null) t += '  — ' + cell.h + '-for-' + (cell.ab ?? '?');
+      if (cell.c != null) {
+        t += '  — comp ' + cell.c + ' (board rank ' + (cell.rk ?? '?');
+        if (cell.rig) t += ', game rank ' + cell.rig + '/' + cell.gn;
+        t += ')';
+      } else t += '  — no model score';
+      return _hmEsc(t);
+    }
+    function _hmRowHTML(b, idx, visList) {
+      const C = _hmData.cells;
+      let s = `<tr><th class="name" data-b="${b.id}">` +
+        `<div class="nm"><span class="rk">${idx}</span>` +
+        `<span class="who">${_hmEsc(b.name)}</span>` +
+        `<span class="tm">${_hmEsc(b.team || '')}</span>` +
+        `<span class="hrn">${b.hr}<small> hr</small></span></div></th>`;
+      const row = C[String(b.id)] || {};
+      visList.forEach(d => {
+        const cell = row[d];
+        if (!cell) { s += '<td class="dnp"></td>'; return; }
+        const gl = _hmGlyph(cell), hc = _hmHeatColor(cell, _hmS.mode);
+        let cls = 'cell';
+        if (hc === null) cls += ' nomodel';
+        if (cell.sel) cls += ' sel';
+        if (cell.hr > 0) cls += ' has-hr';
+        if (_hmS.flagmiss && _hmIsMiss(cell)) cls += ' miss';
+        const style = hc ? ` style="background:${hc}"` : '';
+        s += `<td class="${cls}" data-b="${b.id}" data-d="${d}"${style} ` +
+             `title="${_hmTooltip(b, d, cell)}"><span class="${gl.cls}">${gl.txt}</span></td>`;
+      });
+      return s + '</tr>';
+    }
+    function _hmRender() {
+      const visList = _hmVisibleDates(), visSet = new Set(visList);
+      _hmComputeDomains(visSet);
+      _hmRenderCards(_hmComputeHeadline(visSet));
+      document.querySelector('#panel-hitters .hm-wrap')
+        .classList.toggle('focushr', _hmS.focushr);
+      document.getElementById('hmLgmode').textContent = _HM_MODE_LABEL[_hmS.mode];
+
+      const bs = _hmVisibleBatters(visSet);
+      const groups = (_hmS.group === 'none')
+        ? [{ label: null, batters: bs }]
+        : _hmGroupBatters(bs, visList, visSet);
+
+      const MODELSET = new Set(_hmData.modelDates || []);
+      let head = '<thead><tr><th class="corner">' +
+        '<div class="nm"><span class="rk">#</span><span class="who">Batter</span>' +
+        '<span class="hrn">HR</span></div></th>';
+      visList.forEach(d => {
+        head += `<th class="${MODELSET.has(d) ? '' : 'mgap'}" title="${d}">` +
+          _hmFmtDay(d).replace('/', '/<br>') + `</th>`;
+      });
+      head += '</tr></thead>';
+
+      const span = visList.length + 1;
+      let body = '<tbody>', idx = 0;
+      groups.forEach(g => {
+        if (g.label != null) {
+          const st = _hmGroupStat(g.batters, visSet);
+          body += `<tr class="ghdr"><th class="ghn" colspan="${span}">${_hmEsc(g.label)}` +
+            `<span class="ghs">${g.batters.length} batters · ${st.games} games · ` +
+            `${st.ghr} HR games · ${st.rate}% of games went yard</span></th></tr>`;
+        }
+        g.batters.forEach(b => { idx++; body += _hmRowHTML(b, idx, visList); });
+      });
+      body += '</tbody>';
+
+      document.getElementById('hmGrid').innerHTML = head + body;
+      document.getElementById('hmCount').textContent =
+        bs.length + ' batters · ' + visList.length + '/' + _hmData.dates.length + ' days' +
+        (_hmS.group === 'none' ? '' : ' · ' + groups.length + ' groups');
+      document.getElementById('hmEmptymsg').innerHTML = bs.length ? '' :
+        '<div class="hm-empty">No batters match.</div>';
+    }
+    function _hmNum(v, na='--') {
+      return v == null ? `<span class="v na">${na}</span>` : `<span class="v">${v}</span>`;
+    }
+    function _hmKv(k, v, na) {
+      return `<div><span class="k">${k}</span>${_hmNum(v, na)}</div>`;
+    }
+    function _hmOpenCell(bid, d) {
+      const B = _hmData.batters, C = _hmData.cells;
+      const b = B.find(x => x.id == bid), cell = (C[String(bid)] || {})[d];
+      if (!cell) return;
+      const hr = cell.hr || 0;
+      let h = '';
+      let tags = '';
+      if (cell.sel) tags += ' <span class="pill sel">8-PICK</span>';
+      if (_hmIsMiss(cell)) tags += ' <span class="pill miss">FLAGGED MISS</span>';
+      h += `<div class="mhd"><div><h2>${_hmEsc(b.name)} <span class="sub">` +
+           `${_hmEsc(b.team || '')}${b.bats ? ' · bats ' + b.bats : ''}</span>${tags}</h2>` +
+           `<div class="sub">${d}${cell.dh ? ' · doubleheader (folded)' : ''}` +
+           `${cell.tl ? ' · ' + _hmEsc(cell.tl) : ''}</div></div>` +
+           `<button class="x" onclick="_hmCloseModal()">×</button></div>`;
+      h += '<div class="mbody">';
+      h += '<div class="sec"><h3>What happened</h3><div class="kv">';
+      h += _hmKv('Home runs', hr);
+      h += _hmKv('Hits', cell.h); h += _hmKv('At-bats', cell.ab);
+      h += _hmKv('Doubles', cell.d2 || 0); h += _hmKv('Triples', cell.d3 || 0);
+      h += _hmKv('RBI', cell.rbi); h += _hmKv('Total bases', cell.tb || 0);
+      h += '</div></div>';
+      if (cell.hrs && cell.hrs.length) {
+        h += '<div class="sec"><h3>Home run detail (Statcast)</h3>';
+        cell.hrs.forEach(e => {
+          h += '<div class="hrcard"><div class="d1">' +
+            (e.inn ? ('Inn ' + e.inn + (e.half ? ' (' + e.half + ')' : '')) : 'HR') +
+            (e.pit ? ' — off ' + _hmEsc(e.pit) : '') + '</div>';
+          h += '<div class="d2">';
+          if (e.ev != null) h += '<span class="stat">EV <b>' + e.ev + '</b> mph</span>';
+          if (e.la != null) h += '<span class="stat">LA <b>' + e.la + '</b>°</span>';
+          if (e.dist != null) h += '<span class="stat">Dist <b>' + e.dist + '</b> ft</span>';
+          if (e.traj) h += '<span class="stat">' + _hmEsc(e.traj) + '</span>';
+          if (e.hard) h += '<span class="stat">' + _hmEsc(e.hard) + ' contact</span>';
+          h += '</div>';
+          if (e.desc) h += '<div class="d2" style="margin-top:4px">' + _hmEsc(e.desc) + '</div>';
+          h += '</div>';
+        });
+        h += '</div>';
+      }
+      if (cell.c != null) {
+        h += '<div class="sec"><h3>Model read</h3>';
+        h += '<div style="display:flex;gap:18px;align-items:center;margin-bottom:9px;flex-wrap:wrap">' +
+          '<div><div class="bigc" style="color:' + (_hmHeatColor(cell,'c')||'var(--ink-muted)') + '">' +
+          cell.c + '</div><div class="sub">composite</div></div>' +
+          '<div><div class="bigc">' + (cell.rk ?? '--') + '</div>' +
+          '<div class="sub">board rank that day</div></div>' +
+          (cell.rig ? '<div><div class="bigc">' + cell.rig +
+            '<span style="font-size:14px;color:var(--ink-muted)">/' + cell.gn + '</span></div>' +
+            '<div class="sub">rank within its game</div></div>' : '') +
+          (cell.mv ? '<div><div class="bigc" style="font-size:15px">' + _hmEsc(cell.mv) +
+            '</div><div class="sub">matchup path</div></div>' : '') + '</div>';
+        h += '<div class="fbars">';
+        Object.keys(_HM_FACT).forEach(k => {
+          const v = cell.f ? cell.f[k] : null;
+          const w = v == null ? 0 : Math.max(0, Math.min(100, v));
+          h += '<div class="fb"><span class="fl">' + _HM_FACT[k] + '</span>' +
+            '<span class="ft"><span class="ff" style="width:' + w + '%;background:' +
+            (v == null ? 'var(--rule)' : _hmRamp(w/100)) + '"></span></span>' +
+            '<span class="fv">' + (v == null ? '<span class="na">n/a</span>' : v) + '</span>' +
+            '</div>';
+        });
+        h += '</div></div>';
+      } else {
+        h += '<div class="sec"><h3>Model read</h3><div class="sub">' +
+             'No model score for this date — the scoring pipeline did not run.</div></div>';
+      }
+      const I = cell.in || {};
+      h += '<div class="sec"><h3>Matchup &amp; context</h3><div class="kv">';
+      h += _hmKv('Opp. pitcher', cell.opp ? _hmEsc(cell.opp) : null);
+      h += _hmKv('Pitcher throws', I.throws);
+      h += _hmKv('Opponent', cell.oppTeam ? _hmEsc(cell.oppTeam) : null);
+      h += _hmKv('Venue', cell.ven ? _hmEsc(cell.ven) : null);
+      h += _hmKv('Home/Away', cell.home == null ? null : (cell.home ? 'Home' : 'Away'));
+      h += _hmKv('Batting order', I.bo);
+      h += _hmKv('Lineup source', I.lsrc ? _hmEsc(I.lsrc) : null);
+      h += '</div></div>';
+      if (cell.in) {
+        h += '<div class="sec"><h3>Model inputs — power &amp; form</h3><div class="kv">';
+        h += _hmKv('Barrel %', I.barrel); h += _hmKv('Exit velo', I.ev);
+        h += _hmKv('HR/FB %', I.hrfb); h += _hmKv('ISO', I.iso);
+        h += _hmKv('xwOBA contact', I.xwoba); h += _hmKv('Pull-FB %', I.pullfb);
+        h += _hmKv('HR last 10g', I.rhr10g); h += _hmKv('ISO 30g', I.riso30g);
+        h += _hmKv('AVG 30g', I.ravg30g);
+        h += _hmKv('EV trend', I.evtrend);
+        h += '</div></div>';
+        h += '<div class="sec"><h3>Model inputs — pitcher, park, weather, Vegas</h3><div class="kv">';
+        h += _hmKv('Pitcher HR/9', I.phr9); h += _hmKv('Pitcher ERA', I.pera);
+        h += _hmKv('Pitcher hard-hit%', I.phh); h += _hmKv('Pitcher K/9', I.pk9);
+        h += _hmKv('wOBA vs hand', I.wobah); h += _hmKv('Vulnerability', cell.vuln);
+        h += _hmKv('Vegas total %ile', I.vegasp);
+        h += _hmKv('Park HR factor', I.pf);
+        h += _hmKv('Temp (F)', I.temp); h += _hmKv('Wind (mph)', I.wind);
+        h += _hmKv('Humidity %', I.hum);
+        h += '</div></div>';
+      }
+      h += '</div>';
+      document.getElementById('hmModal').innerHTML = h;
+      document.getElementById('hmOvl').classList.add('on');
+    }
+    function _hmOpenBatter(bid) {
+      const B = _hmData.batters, C = _hmData.cells, D = _hmData;
+      const b = B.find(x => x.id == bid);
+      const row = C[String(bid)] || {};
+      let h = '';
+      h += `<div class="mhd"><div><h2>${_hmEsc(b.name)} <span class="sub">` +
+           `${_hmEsc(b.team || '')}${b.bats ? ' · bats ' + b.bats : ''}</span></h2>` +
+           `<div class="sub">${b.hr} HR · ${b.g} games in window ` +
+           `(${D.through.start} → ${D.through.outcomes})</div></div>` +
+           `<button class="x" onclick="_hmCloseModal()">×</button></div>`;
+      h += '<div class="mbody">';
+      const s = b.season;
+      if (s) {
+        h += '<div class="sec"><h3>Season line</h3><div class="kv">';
+        h += _hmKv('Games', s.g); h += _hmKv('PA', s.pa); h += _hmKv('AB', s.ab); h += _hmKv('HR', s.hr);
+        h += _hmKv('AVG', s.avg); h += _hmKv('OBP', s.obp); h += _hmKv('SLG', s.slg);
+        h += _hmKv('ISO', s.iso); h += _hmKv('wOBA', s.woba);
+        h += _hmKv('Barrel %', s.barrel); h += _hmKv('Exit velo', s.ev);
+        h += '</div></div>';
+      }
+      let n = 0, sc = 0, sumc = 0, sumr = 0;
+      const fsum = {pw:0,mu:0,fm:0,wx:0,pk:0,ln:0}, fn = {pw:0,mu:0,fm:0,wx:0,pk:0,ln:0};
+      for (const d in row) { const c = row[d];
+        if (c.c != null) { n++; sumc += c.c; if (c.rk != null) { sc++; sumr += c.rk; }
+          if (c.f) for (const k in fsum) if (c.f[k] != null) { fsum[k] += c.f[k]; fn[k]++; } } }
+      if (n) {
+        h += '<div class="sec"><h3>Model averages (' + n + ' scored days)</h3><div class="kv">';
+        h += _hmKv('Avg composite', (sumc/n).toFixed(1));
+        h += _hmKv('Avg board rank', sc ? (sumr/sc).toFixed(0) : null);
+        for (const k in fsum) h += _hmKv('Avg ' + _HM_FACT[k], fn[k] ? (fsum[k]/fn[k]).toFixed(1) : null);
+        h += '</div></div>';
+      }
+      const hrdays = Object.keys(row).filter(d => row[d].hr > 0).sort();
+      h += '<div class="sec"><h3>Home run log (' + hrdays.length + ' games with a HR)</h3>';
+      if (hrdays.length) {
+        h += '<div class="hrlog">';
+        hrdays.forEach(d => { const c = row[d];
+          const miss = _hmIsMiss(c);
+          h += '<div class="row"><span class="dt">' + d + '</span>' +
+               '<span class="cc" style="color:var(--signal)">' + '★'.repeat(Math.min(c.hr, 3)) + (c.hr > 1 ? ' ' + c.hr : '') + '</span>' +
+               '<span style="flex:1">' + (c.opp ? 'off ' + _hmEsc(c.opp) : '') + (c.ven ? ' · ' + _hmEsc(c.ven) : '') + '</span>' +
+               '<span style="width:160px;text-align:right">' +
+                 (c.c != null ? ('comp ' + c.c + ' · rank ' + (c.rk ?? '?')) : '<span class="na">no model score</span>') +
+                 (miss ? ' <span class="pill miss">MISS</span>' : '') +
+               '</span></div>';
+        });
+        h += '</div>';
+      } else h += '<div class="sub">No home runs in this window.</div>';
+      h += '</div></div>';
+      document.getElementById('hmModal').innerHTML = h;
+      document.getElementById('hmOvl').classList.add('on');
+    }
+    function _hmCloseModal() {
+      document.getElementById('hmOvl').classList.remove('on');
+    }
+    function _hmWireControls() {
+      if (_hmInit) return;
+      _hmInit = true;
+      document.getElementById('hmGrid').addEventListener('click', e => {
+        const cell = e.target.closest('td.cell');
+        if (cell) { _hmOpenCell(cell.dataset.b, cell.dataset.d); return; }
+        const nm = e.target.closest('th.name');
+        if (nm) _hmOpenBatter(nm.dataset.b);
+      });
+      document.getElementById('hmOvl').addEventListener('click', e => {
+        if (e.target.id === 'hmOvl') _hmCloseModal();
+      });
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && document.getElementById('hmOvl').classList.contains('on')) _hmCloseModal();
+      });
+      document.getElementById('hmMode').addEventListener('change', e => {
+        _hmS.mode = e.target.value; _hmRender();
+      });
+      document.getElementById('hmGroupby').addEventListener('change', e => {
+        _hmS.group = e.target.value; _hmRender();
+      });
+      const dfrom = document.getElementById('hmDfrom'), dto = document.getElementById('hmDto');
+      dfrom.addEventListener('change', e => {
+        _hmS.from = +e.target.value;
+        if (_hmS.from > _hmS.to) { _hmS.to = _hmS.from; dto.value = _hmS.to; }
+        _hmRender();
+      });
+      dto.addEventListener('change', e => {
+        _hmS.to = +e.target.value;
+        if (_hmS.to < _hmS.from) { _hmS.from = _hmS.to; dfrom.value = _hmS.from; }
+        _hmRender();
+      });
+      document.getElementById('hmMinhr').addEventListener('click', e => {
+        const btn = e.target.closest('button'); if (!btn) return;
+        _hmS.minhr = +btn.dataset.v;
+        [...e.currentTarget.children].forEach(x => x.classList.toggle('on', x === btn));
+        _hmRender();
+      });
+      let stmr;
+      document.getElementById('hmSearch').addEventListener('input', e => {
+        clearTimeout(stmr); stmr = setTimeout(() => { _hmS.search = e.target.value; _hmRender(); }, 140);
+      });
+      document.getElementById('hmFocushr').addEventListener('change', e => {
+        _hmS.focushr = e.target.checked; _hmRender();
+      });
+      document.getElementById('hmFlagmiss').addEventListener('change', e => {
+        _hmS.flagmiss = e.target.checked; _hmRender();
+      });
+    }
     async function renderHitters() {
-      const data = await fetchJSON('hr_leaderboard');
-      if (!data || !data.rows || data.rows.length === 0) {
-        document.getElementById('hittersTable').innerHTML = '<div class="empty">No HR leaderboard data yet.</div>';
+      // Idempotent: if data is already loaded, just ensure the DOM is in
+      // sync (covers tab re-activation after a window resize).
+      if (_hmData) { _hmRender(); return; }
+      try {
+        const resp = await fetch('data/heatmap.json');
+        if (!resp.ok) throw new Error('heatmap.json HTTP ' + resp.status);
+        _hmData = await resp.json();
+      } catch (err) {
+        document.querySelector('#panel-hitters .hm-wrap').innerHTML =
+          '<div class="hm-empty">Heatmap data not available yet. ' +
+          'Run <code>python export_site_data.py</code> after the noon pipeline.</div>';
         return;
       }
-      const days = data.days || [];
-      const rows = data.rows;
-      const window = data.window_days || 14;
-
-      const totalHRs = rows.reduce((s, r) => s + r.total_hr, 0);
-      const picked = rows.reduce((s, r) => s + Object.values(r.by_date || {}).filter(c => c.selected).length, 0);
-      document.getElementById('hittersStats').innerHTML = `
-        <div class="stat-card"><div class="label">Window</div><div class="value">${window}d</div></div>
-        <div class="stat-card"><div class="label">Top Hitters</div><div class="value accent">${rows.length}</div></div>
-        <div class="stat-card"><div class="label">Total HRs</div><div class="value orange">${totalHRs}</div></div>
-        <div class="stat-card"><div class="label">We Caught</div><div class="value green">${picked}</div></div>
-      `;
-
-      let html = `<div class="hitters-scoreboard">
-        <div class="hitters-scoreboard-head">
-          <div class="title">Hot Sheet · Last ${window} Days</div>
-          <div class="legend">
-            <span class="lg-item"><span class="lg-symbol lg-picked">★</span> picked &amp; HR'd</span>
-            <span class="lg-item"><span class="lg-symbol lg-onboard">●</span> on board, HR'd</span>
-            <span class="lg-item"><span class="lg-symbol lg-faint">·</span> off board, HR'd</span>
-          </div>
-        </div>
-        <div class="hitters-scoreboard-body">
-          <table class="hitters-innings-table"><thead><tr>
-            <th class="col-batter">Batter</th>
-            <th class="col-total">HR</th>`;
-      // UTC-safe date label (parse Y/M/D explicitly, no timezone shift)
-      const _dayLbl = (s) => {
-        const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
-        return m ? (parseInt(m[2], 10) + '/' + parseInt(m[3], 10)) : s;
-      };
-      days.forEach(d => {
-        html += `<th class="col-day">${_dayLbl(d)}</th>`;
+      const D = _hmData;
+      if (!D.dates || !D.dates.length) {
+        document.querySelector('#panel-hitters .hm-wrap').innerHTML =
+          '<div class="hm-empty">No outcomes recorded yet.</div>';
+        return;
+      }
+      _hmS.from = 0;
+      _hmS.to = D.dates.length - 1;
+      const dfrom = document.getElementById('hmDfrom'), dto = document.getElementById('hmDto');
+      D.dates.forEach((d, i) => {
+        dfrom.add(new Option(d, i));
+        dto.add(new Option(d, i));
       });
-      html += '</tr></thead><tbody>';
-
-      rows.forEach(r => {
-        const pid = r.batter_id;
-        html += `<tr data-pid="${pid}" class="clickable-row">`;
-        html += `<td class="col-batter">
-          <span class="player-link">${r.batter_name}</span>
-          <span class="batter-team">${r.team || ''}</span>
-        </td>`;
-        html += `<td class="col-total"><span class="hr-total">${r.total_hr}</span></td>`;
-        days.forEach(d => {
-          const c = r.by_date[d];
-          if (!c) {
-            html += '<td class="col-day cell-blank">·</td>';
-          } else if (c.selected) {
-            html += `<td class="col-day cell-picked" title="Picked at #${c.rank ?? '?'} · ${c.hr_count} HR">
-              <span class="symbol">★</span>
-              <span class="rank">#${c.rank ?? '?'}</span>
-            </td>`;
-          } else if (c.rank != null) {
-            html += `<td class="col-day cell-onboard" title="On board at #${c.rank} · ${c.hr_count} HR · missed">
-              <span class="symbol">●</span>
-              <span class="rank">#${c.rank}</span>
-            </td>`;
-          } else {
-            html += `<td class="col-day cell-offboard" title="${c.hr_count} HR · off our board">
-              <span class="symbol">·</span>
-            </td>`;
-          }
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table></div></div>';
-      document.getElementById('hittersTable').innerHTML = html;
-      bindPlayerClicks();
+      dfrom.value = String(_hmS.from);
+      dto.value = String(_hmS.to);
+      document.getElementById('hmRangeNote').textContent =
+        '— ' + D.through.start + ' through ' + D.through.outcomes;
+      document.getElementById('hmGenNote').innerHTML =
+        'Generated ' + D.generated + ' — outcomes through <b>' + D.through.outcomes +
+        '</b>, model scores through <b>' + D.through.model + '</b>.';
+      _hmWireControls();
+      _hmRenderLegend();
+      _hmRender();
     }
 
     // ── Player detail modal ──
@@ -5922,7 +6655,7 @@
     renderBoard();
     renderLab();
     renderHRRecap();
-    renderHitters();
+    // Hitters tab loads on first activation (heatmap.json is large).
     renderHistory();
     renderPerformance();
   </script>

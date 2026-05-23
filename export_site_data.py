@@ -1920,6 +1920,35 @@ def export_hr_recap(conn, out_dir, days=60):
 
 
 
+def export_heatmap(conn, out_dir: Path) -> None:
+    """
+    Per-batter season heatmap data — powers the Hitters tab heatmap.
+    Reuses diagnostics/batter_ab_heatmap.py::build_dataset(), which already
+    encodes the full cell-by-cell join logic (outcomes × daily_picks ×
+    pick_inputs × hr_events × season_batting × daily_slate × daily_lineup).
+    """
+    # batter_ab_heatmap is a script, not a package; the diagnostics
+    # directory has no __init__.py. We use importlib to load it from its
+    # known relative path so we don't need to touch the diagnostics module
+    # layout.
+    import importlib.util
+    diag_path = Path(__file__).parent / "diagnostics" / "batter_ab_heatmap.py"
+    if not diag_path.exists():
+        print(f"  Skipped heatmap.json (diagnostics/batter_ab_heatmap.py not found)")
+        return
+    spec = importlib.util.spec_from_file_location("batter_ab_heatmap", diag_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # build_dataset wants its own read-only connection to the file. Resolve
+    # the DB path from our open connection (PRAGMA database_list returns it
+    # as the 'main' DB).
+    db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    data = mod.build_dataset(db_path)
+    atomic_write_json(out_dir / "heatmap.json", data, indent=0)
+    print(f"  Exported heatmap.json ({len(data.get('batters', []))} batters, "
+          f"{len(data.get('dates', []))} dates)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export DB data to static JSON for the dashboard")
     parser.add_argument("--out", default=None,
@@ -1944,6 +1973,7 @@ def main():
         export_factor_trends(conn, out_dir, days=min(args.days, 30))
         export_hr_recap(conn, out_dir, days=args.days)
         export_hr_leaderboard(conn, out_dir, days=14, top_n=40)
+        export_heatmap(conn, out_dir)
     finally:
         conn.close()
     print("\nDone.")
