@@ -870,6 +870,59 @@ _OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 # with a 5-day buffer to stay safely on the side that has the data.
 _OPEN_METEO_ARCHIVE_THRESHOLD_DAYS = 5
 
+# Disk cache for historical (archive-endpoint) weather only. Historical
+# weather for a (venue, date) is immutable - once fetched, it never needs
+# re-fetching. With Open-Meteo's free archive being flaky (multiple multi-
+# hour outages observed May 2026), the cache means:
+#   - A partial-recovery window that gets SOME venues durably saves them.
+#   - --force re-runs of weather-degraded dates only re-fetch actual misses.
+#   - Future outages can't undo data already cached.
+# Cache lives in data/cache/weather_archive/ and is NOT synced to R2.
+# Production noon runs hit the FORECAST endpoint, so this cache is never
+# written or read by production - it's a backfill-only optimization.
+_WEATHER_ARCHIVE_CACHE_DIR = (
+    Path(__file__).parent.parent / "data" / "cache" / "weather_archive"
+)
+
+
+def _weather_archive_cache_path(venue: str, date_str: str) -> Path:
+    """Filesystem-safe path for a (venue, date) archive cache entry."""
+    slug = "".join(c if c.isalnum() else "_" for c in venue)
+    return _WEATHER_ARCHIVE_CACHE_DIR / f"{slug}_{date_str}.json"
+
+
+def _weather_archive_cache_get(venue: str, date_str: str) -> dict | None:
+    """Cached archive response or None. No TTL - historical weather is
+    immutable, so a successful fetch is correct forever."""
+    p = _weather_archive_cache_path(venue, date_str)
+    if not p.exists():
+        return None
+    try:
+        with p.open(encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _weather_archive_cache_set(venue: str, date_str: str, data: dict) -> None:
+    """Best-effort persist of a successful archive response. Silent on
+    failure (a cache miss next time is harmless)."""
+    try:
+        _WEATHER_ARCHIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        p = _weather_archive_cache_path(venue, date_str)
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+# Retryable HTTP statuses: 5xx (server problems) + 429 (rate limit) =
+# transient. Other 4xx (400/401/404) are client errors and bubble out to
+# the api_failed_default fallback immediately - retrying just burns time.
+_WEATHER_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+# Sleep BEFORE attempt N. attempt 0 = no sleep. Total backoff budget 10s.
+_WEATHER_RETRY_BACKOFF_S = (0, 2, 8)
+
 
 def get_weather(venue_name: str, game_time_iso: str) -> dict:
     """
@@ -918,6 +971,15 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
         # is conservative enough that a few hours of slop don't matter.
         age_days = (datetime.now(dt_utc.tzinfo) - dt_utc).days
         use_archive = age_days >= _OPEN_METEO_ARCHIVE_THRESHOLD_DAYS
+
+        # Cache short-circuit: archive endpoint only (historical weather is
+        # immutable). Forecast path never hits this; production runs are
+        # unaffected.
+        if use_archive:
+            cached = _weather_archive_cache_get(venue_name, date_str)
+            if cached is not None:
+                return cached
+
         url = _OPEN_METEO_ARCHIVE_URL if use_archive else _OPEN_METEO_FORECAST_URL
         source_tag = "open_meteo_archive" if use_archive else "open_meteo"
 
@@ -932,24 +994,35 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
             "timezone": tz_name,  # Align hourly array to venue-local time
         }
         # Timeout is a (connect, read) split. A healthy Open-Meteo host
-        # connects in ~0.1s, so a 5s connect cap fails fast when a host
-        # is unreachable (e.g. an archive-api.open-meteo.com outage),
-        # instead of burning 30s x 2 attempts x ~8 venues = ~8 min of
-        # dead waiting per backfill date. The 30s READ budget stays
-        # generous: a connected-but-slow archive query is worth the wait.
-        # One retry still clears a transient single-call blip; a fully-
-        # down host now fails fast on both attempts.
+        # connects in ~0.1s, so a 5s connect cap fails fast on an unreachable
+        # host. The 30s READ budget stays generous - a connected-but-slow
+        # archive query is worth the wait.
+        #
+        # Retry on transient errors: Timeout/ConnectionError AND HTTP 5xx /
+        # 429 (Open-Meteo archive flaps between 504 and 200 during recovery).
+        # Non-retryable 4xx (400/401/404) bubbles out immediately to the
+        # outer except - retrying client errors just burns time.
+        # Backoff: 0s / 2s / 8s before attempts 1 / 2 / 3 (~10s total budget).
         resp = None
-        for attempt in range(2):
+        last_err: Exception | None = None
+        for attempt, backoff in enumerate(_WEATHER_RETRY_BACKOFF_S):
+            if backoff:
+                time.sleep(backoff)
             try:
                 resp = requests.get(url, params=params, timeout=(5, 30))
+                if resp.status_code in _WEATHER_RETRYABLE_STATUSES:
+                    last_err = requests.HTTPError(
+                        f"HTTP {resp.status_code} (retryable)", response=resp,
+                    )
+                    resp = None
+                    continue
                 resp.raise_for_status()
                 break
-            except (requests.Timeout, requests.ConnectionError):
-                if attempt == 0:
-                    time.sleep(1.5)
-                    continue
-                raise
+            except (requests.Timeout, requests.ConnectionError) as e:
+                last_err = e
+                continue
+        if resp is None:
+            raise last_err or RuntimeError("weather fetch exhausted retries")
         hourly = resp.json().get("hourly", {})
 
         temps = hourly.get("temperature_2m", []) or [68]
@@ -960,7 +1033,7 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
         # Clamp hour index to the hourly array we got back
         idx = max(0, min(game_hour, len(temps) - 1))
 
-        return {
+        result = {
             "temperature_f": temps[idx] if idx < len(temps) else 68,
             "wind_mph": winds[idx] if idx < len(winds) else 5,
             "wind_direction_deg": wind_dirs[idx] if idx < len(wind_dirs) else 0,
@@ -970,6 +1043,12 @@ def get_weather(venue_name: str, game_time_iso: str) -> dict:
             "local_hour": game_hour,
             "_source": source_tag,
         }
+        # Cache successful archive responses (immutable historical data).
+        # Forecast responses are time-sensitive and intentionally NOT cached
+        # - a stale forecast for "tonight's game" would be wrong.
+        if use_archive:
+            _weather_archive_cache_set(venue_name, date_str, result)
+        return result
     except Exception as e:
         print(f"  [WEATHER] {venue_name}: fetch failed ({e}), using neutral defaults")
         return {"temperature_f": 68, "wind_mph": 5, "wind_direction_deg": 0,

@@ -1050,6 +1050,89 @@ def pin_aggregate_victim_profile_no_arsenal_fallback() -> Result:
     )
 
 
+def pin_weather_archive_cache_roundtrip() -> Result:
+    """get_weather's archive cache round-trips data correctly and tolerates
+    missing keys. Cache is the durability layer for the Open-Meteo archive
+    outages observed multiple times in May 2026."""
+    from fetch_daily_data import (
+        _weather_archive_cache_get,
+        _weather_archive_cache_set,
+        _weather_archive_cache_path,
+    )
+    failures = []
+
+    # Path safety: filenames must not contain spaces or special chars
+    # (real venue names like "Globe Life Field" must produce safe filenames).
+    p = _weather_archive_cache_path("Globe Life Field", "1999-01-01")
+    if " " in p.name or "/" in p.name or "\\" in p.name:
+        failures.append(f"unsafe cache filename: {p.name!r}")
+
+    # Round-trip. Use a sentinel venue that won't collide with real data.
+    venue = "__PIN_TEST_VENUE__"
+    date = "1999-01-01"
+    sample = {
+        "temperature_f": 72.5, "wind_mph": 8.0,
+        "_source": "open_meteo_archive",
+    }
+    _weather_archive_cache_set(venue, date, sample)
+    got = _weather_archive_cache_get(venue, date)
+    if got != sample:
+        failures.append(f"round-trip mismatch: got {got!r}")
+
+    # Clean up the test cache file so we don't pollute the cache dir.
+    try:
+        _weather_archive_cache_path(venue, date).unlink()
+    except Exception:
+        pass
+
+    # Missing key must return None, not raise.
+    missing = _weather_archive_cache_get("__NO_SUCH_VENUE__", "1900-01-01")
+    if missing is not None:
+        failures.append(f"missing key returned {missing!r}, expected None")
+
+    if not failures:
+        return Result(
+            "weather archive cache round-trips + missing -> None", Result.PASS,
+        )
+    return Result(
+        "weather archive cache", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_weather_retry_config() -> Result:
+    """get_weather retries on 5xx + 429 with a sane backoff schedule, and
+    does NOT retry 4xx client errors."""
+    from fetch_daily_data import (
+        _WEATHER_RETRYABLE_STATUSES, _WEATHER_RETRY_BACKOFF_S,
+    )
+    failures = []
+    # Must retry the 5xx codes Open-Meteo's archive actually emits + 429.
+    for code in (429, 500, 502, 503, 504):
+        if code not in _WEATHER_RETRYABLE_STATUSES:
+            failures.append(f"retryable set missing {code}")
+    # Must NOT retry 4xx client errors — they bubble straight to the default.
+    for code in (400, 401, 403, 404):
+        if code in _WEATHER_RETRYABLE_STATUSES:
+            failures.append(f"retryable set should NOT include {code}")
+    # Backoff schedule: >=3 attempts, non-decreasing, first attempt no-sleep.
+    if len(_WEATHER_RETRY_BACKOFF_S) < 3:
+        failures.append(f"backoff too short: {_WEATHER_RETRY_BACKOFF_S!r}")
+    if list(_WEATHER_RETRY_BACKOFF_S) != sorted(_WEATHER_RETRY_BACKOFF_S):
+        failures.append(f"backoff not monotone: {_WEATHER_RETRY_BACKOFF_S!r}")
+    if _WEATHER_RETRY_BACKOFF_S and _WEATHER_RETRY_BACKOFF_S[0] != 0:
+        failures.append(
+            f"first attempt should have no backoff, got {_WEATHER_RETRY_BACKOFF_S[0]}"
+        )
+    if not failures:
+        return Result(
+            f"weather retry config: codes={sorted(_WEATHER_RETRYABLE_STATUSES)}, "
+            f"backoff={_WEATHER_RETRY_BACKOFF_S}", Result.PASS,
+        )
+    return Result(
+        "weather retry config", Result.HALT, "; ".join(failures),
+    )
+
+
 def pin_backtest_power_inputs_isolates_variants() -> Result:
     """B6 harness: backtest_power_inputs imports, exposes its entry points,
     and its synthetic vs. real input-key sets are disjoint — the property
@@ -1440,6 +1523,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_aggregate_victim_profile_no_arsenal_fallback,
     # 2026-05-22: B6 power input-source backtest harness
     pin_backtest_power_inputs_isolates_variants,
+    # 2026-05-23: weather resilience (archive cache + broader retry)
+    pin_weather_archive_cache_roundtrip,
+    pin_weather_retry_config,
 ]
 
 
