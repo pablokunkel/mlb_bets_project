@@ -275,6 +275,34 @@ def export_latest_picks(conn, out_dir: Path):
     """, (latest_date, latest_date)).fetchall()
     recent_hr_7d_by_id = {r["batter_id"]: r["hr_7d"] for r in recent_hr_7d_rows}
 
+    # Per-batter game log for the last 14 days — powers the modal's
+    # "Last X Games" table (replaces the previous "last N picked days"
+    # view, which only listed days we picked the player). Sourced from
+    # the outcomes table; one row per game played, sorted date desc.
+    # Pull more than 14 days so doubleheaders and gap days don't shrink
+    # the visible count below 14.
+    last_games_rows = conn.execute("""
+        SELECT batter_id, date, game_pk, ab, hits, hr_count, rbi, total_bases
+        FROM outcomes
+        WHERE date >= date(?, '-21 days') AND date < ?
+        ORDER BY date DESC
+    """, (latest_date, latest_date)).fetchall()
+    last_games_by_id: dict = {}
+    for r in last_games_rows:
+        bid = r["batter_id"]
+        bucket = last_games_by_id.setdefault(bid, [])
+        if len(bucket) >= 14:
+            continue
+        bucket.append({
+            "date":        r["date"],
+            "game_pk":     r["game_pk"],
+            "ab":          r["ab"],
+            "hits":        r["hits"],
+            "hr":          r["hr_count"],
+            "rbi":         r["rbi"],
+            "total_bases": r["total_bases"],
+        })
+
     # Augment each batter row with season stats + model track + game info.
     def _augment(b: dict) -> dict:
         season = season_by_id.get(b.get("batter_id"), {})
@@ -304,6 +332,9 @@ def export_latest_picks(conn, out_dir: Path):
         # the Lab tab's Hot Streak view. None when batter had zero HRs
         # in the window (most batters); the JS treats None as 0.
         b["recent_hr_7d"] = recent_hr_7d_by_id.get(b.get("batter_id"))
+        # Last 14 games (most recent first), from the outcomes table.
+        # Modal renders this as a hitting/HR cadence table.
+        b["last_games"] = last_games_by_id.get(b.get("batter_id"), [])
         b["game_time"]  = game.get("game_time")
         b["venue"]      = game.get("venue")
         b["dome"]       = game.get("dome")
