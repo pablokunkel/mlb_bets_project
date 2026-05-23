@@ -138,25 +138,73 @@ LEAGUE_AVG_VICTIM = {
 
 
 # ---------------------------------------------------------------------------
-# Pitcher recency blend (added 2026-05-13)
+# Pitcher recency blend (added 2026-05-13, extended 2026-05-21 for B4)
 # ---------------------------------------------------------------------------
-# Season HR/9 lags 3-4 bad starts — a pitcher whose recent stretch has
-# collapsed (Brady Singer on 2026-05-12: 9 HR over 4 starts vs. season
-# 1.89 HR/9) was invisible to the model. The pitcher recency signal
-# (rolling 21-day HR/9 from MLB API gameLog) is blended into the effective
-# HR/9 used by score_pitcher_vulnerability and compute_slate_context.
+# Season-aggregate pitcher stats lag 3-4 bad starts — a pitcher whose recent
+# stretch has collapsed (Brady Singer on 2026-05-12: 9 HR over 4 starts vs.
+# season 1.89 HR/9) was invisible to the model. The pitcher-recency signal
+# is blended into the effective HR/9 / ERA / K/9 used by
+# score_pitcher_vulnerability and compute_slate_context.
 #
-# Tune these two constants together; the refit will be able to learn
-# coefficients on pitcher_recent_hr9_21d as its own column once it's
-# persisted in pick_inputs (Phase 2).
-RECENT_HR9_BLEND_WEIGHT = 0.60   # recent weight; season gets (1 - this)
-RECENT_HR9_MIN_STARTS   = 2      # below this, fall back to season-only
+# B4 (2026-05-21): generalized from a fixed 21d / 60-40 / 2-start blend
+# into a configurable last-N-starts mode. The DB columns + slate-level
+# dict keys retain the *_21d suffix for backward compat — the value now
+# reflects the *configured* window (PITCHER_RECENT_WINDOW_TYPE +
+# PITCHER_RECENT_WINDOW_N). Document the active config in WEIGHT_REFIT_LOG
+# when flipping.
+#
+# Also extended to ERA + K/9 — the same gameLog payload that returns HR
+# allowed also returns ER and K, so blending those is ~free and aligns the
+# whole pitcher pipeline on consistent recent windows.
+RECENT_HR9_BLEND_WEIGHT = 0.60     # recent weight; season gets (1 - this)
+RECENT_HR9_MIN_STARTS   = 2        # below this, fall back to season-only
+
+# B4 (2026-05-21): window configuration. 'days' is the legacy behavior;
+# 'starts' uses last-N-starts (sample-size-aware, not calendar-dependent).
+# Tune via WEIGHT_REFIT_LOG.md after the backtest harness picks a winner;
+# defaults keep production behavior unchanged on this PR's land.
+PITCHER_RECENT_WINDOW_TYPE = "days"   # "days" | "starts"
+PITCHER_RECENT_WINDOW_N    = 21       # days when "days"; starts when "starts"
+
+
+def _blend(
+    season_val: float | None,
+    recent_val: float | None,
+    recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
+    recent_ok_at_zero: bool = True,
+) -> float | None:
+    """Shared recent/season blend logic. Returns None when neither input usable.
+
+    *recent_ok_at_zero* — True for rate stats where 0 is meaningful (a
+    pitcher giving up 0 HR in 25 IP is real signal). False for guard
+    cases (caller wants > 0 strictly).
+    """
+    if recent_ok_at_zero:
+        has_recent = recent_val is not None and recent_val >= 0
+    else:
+        has_recent = recent_val is not None and recent_val > 0
+    has_season = season_val is not None and season_val > 0
+    starts = recent_starts or 0
+
+    if has_recent and has_season and starts >= min_starts:
+        return blend_weight * recent_val + (1.0 - blend_weight) * season_val
+    if has_season:
+        return season_val
+    if has_recent and starts >= min_starts:
+        return recent_val
+    return None
 
 
 def effective_hr9(
     season_hr9: float | None,
     recent_hr9: float | None,
     recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
 ) -> float | None:
     """
     Blend season + recent HR/9 into a single "effective" value for the
@@ -164,25 +212,63 @@ def effective_hr9(
     usable (caller treats as missing signal).
 
     Rules:
-      - recent_starts < RECENT_HR9_MIN_STARTS → season only (one bad start
+      - recent_starts < min_starts → season only (one bad start
         shouldn't yank the score)
       - recent missing but season present → season only
       - season missing but recent present → recent only (rare; brand-new
         starter without season HR/9 yet)
-      - both present and recent_starts >= MIN → 60/40 recent-leaning blend
-    """
-    has_season = season_hr9 is not None and season_hr9 > 0
-    has_recent = recent_hr9 is not None and recent_hr9 >= 0
-    starts = recent_starts or 0
+      - both present and recent_starts >= min_starts → weighted blend
 
-    if has_recent and has_season and starts >= RECENT_HR9_MIN_STARTS:
-        w = RECENT_HR9_BLEND_WEIGHT
-        return w * recent_hr9 + (1.0 - w) * season_hr9
-    if has_season:
-        return season_hr9
-    if has_recent and starts >= RECENT_HR9_MIN_STARTS:
-        return recent_hr9
-    return None
+    B4 (2026-05-21): blend_weight and min_starts are now keyword overrides
+    so the backtest harness can sweep candidates without mutating module
+    constants. Defaults preserve the original 60/40, min-2-starts behavior.
+    """
+    return _blend(
+        season_hr9, recent_hr9, recent_starts,
+        blend_weight=blend_weight, min_starts=min_starts,
+    )
+
+
+def effective_era(
+    season_era: float | None,
+    recent_era: float | None,
+    recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
+) -> float | None:
+    """Recent/season ERA blend (parallel to effective_hr9).
+
+    B4 (2026-05-21): ERA recency rides along with HR/9 because the same
+    gameLog query returns both. A pitcher whose ERA has collapsed but HR/9
+    stayed flat (high-walk meltdown, BABIP variance) still shows season ERA
+    today — this blend catches it for the vulnerability score.
+    """
+    return _blend(
+        season_era, recent_era, recent_starts,
+        blend_weight=blend_weight, min_starts=min_starts,
+    )
+
+
+def effective_k9(
+    season_k9: float | None,
+    recent_k9: float | None,
+    recent_starts: int | None,
+    *,
+    blend_weight: float = RECENT_HR9_BLEND_WEIGHT,
+    min_starts: int = RECENT_HR9_MIN_STARTS,
+) -> float | None:
+    """Recent/season K/9 blend (parallel to effective_hr9).
+
+    B4 (2026-05-21): K/9 recency catches the inverse case — a strikeout
+    pitcher whose stuff has backed up over the last few starts (declining
+    velo, hittable, more contact) shows the same season K/9 in the DB
+    until the aggregate catches up.
+    """
+    return _blend(
+        season_k9, recent_k9, recent_starts,
+        blend_weight=blend_weight, min_starts=min_starts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -213,29 +299,71 @@ def _classify_pitch_mix(arsenal: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# As-of-date filter helper (2026-05-21, PR 3 infrastructure)
+# ---------------------------------------------------------------------------
+# Used by every Statcast fetcher in this module to drop pitch-level events
+# on or after a given date — the convention that lets the 2025-season
+# backfill reconstruct historical predictions without look-ahead bias.
+# Production callers pass as_of_date=None (= today, no filter) and behave
+# exactly as before. Backfill callers pass a historical YYYY-MM-DD to
+# simulate "what did the model know that morning at noon."
+
+def _filter_before(df, as_of_date: str | None):
+    """Drop pitch rows on/after as_of_date. as_of_date=None is a no-op.
+
+    pybaseball.statcast_*() returns a DataFrame with a `game_date` column
+    formatted YYYY-MM-DD (string compare works correctly). Returns the
+    df unchanged if it's None / empty / missing the column.
+    """
+    if as_of_date is None or df is None:
+        return df
+    try:
+        if df.empty or "game_date" not in df.columns:
+            return df
+        return df[df["game_date"].astype(str) < as_of_date]
+    except Exception:
+        return df
+
+
+# ---------------------------------------------------------------------------
 # Data fetching: Batter HR events
 # ---------------------------------------------------------------------------
 
-def _fetch_batter_hr_events(player_id: int, season: int) -> list[dict]:
+def _fetch_batter_hr_events(
+    player_id: int,
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> list[dict]:
     """
     Fetch all HR events for a batter via statcast_batter().
     Returns list of dicts with pitcher_id, pitcher hand, pitch type, velo, etc.
     Pulls current season + prior season for rolling coverage.
+
+    *as_of_date* — YYYY-MM-DD; events on or after this date are excluded.
+    Used by historical backfill to prevent look-ahead bias. None (default)
+    = today = current behavior. The cache key includes as_of_date so
+    daily noon runs and backfill runs don't share entries.
     """
-    cache_key = f"{player_id}_{season}"
+    cache_key = (
+        f"{player_id}_{season}"
+        if as_of_date is None
+        else f"{player_id}_{season}_asof_{as_of_date}"
+    )
     cached = _cache_get("batter_hr_events", cache_key, TTL_BATTER_HR_EVENTS)
     if cached is not None:
         return cached
 
     hr_events = []
+    end_cur = (as_of_date or datetime.now().strftime("%Y-%m-%d"))
 
     try:
         from pybaseball import statcast_batter
 
         # Current season
         start_cur = f"{season}-03-20"
-        end_cur = datetime.now().strftime("%Y-%m-%d")
         df = statcast_batter(start_cur, end_cur, player_id)
+        df = _filter_before(df, as_of_date)
         if df is not None and not df.empty:
             hrs = df[df["events"] == "home_run"]
             for _, row in hrs.iterrows():
@@ -249,7 +377,8 @@ def _fetch_batter_hr_events(player_id: int, season: int) -> list[dict]:
                     "game_date": str(row.get("game_date", "")),
                 })
 
-        # Prior season backfill
+        # Prior season backfill — entirely before as_of_date in any
+        # reconstruction scenario, so no additional filter needed.
         start_prior = f"{season - 1}-03-20"
         end_prior = f"{season - 1}-10-01"
         df2 = statcast_batter(start_prior, end_prior, player_id)
@@ -277,28 +406,51 @@ def _fetch_batter_hr_events(player_id: int, season: int) -> list[dict]:
 # Data fetching: Pitcher arsenal
 # ---------------------------------------------------------------------------
 
-def _fetch_pitcher_arsenal_statcast(pitcher_id: int, season: int) -> dict | None:
+def _fetch_pitcher_arsenal_statcast(
+    pitcher_id: int,
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> dict | None:
     """
     Fetch pitcher's pitch arsenal from Statcast via pybaseball.
     Returns dict with velo, usage, spin, extension — or None.
+
+    *as_of_date* — YYYY-MM-DD; pitch events on or after this date are
+    excluded from the aggregate. Used by the 2025-season backfill to
+    reconstruct what the model would have known at noon on a historical
+    date, without look-ahead bias. None (default) = today = current
+    behavior. The cache key includes as_of_date so daily noon runs and
+    backfill runs don't poison each other.
     """
-    cache_key = f"arsenal_{pitcher_id}_{season}"
+    cache_key = (
+        f"arsenal_{pitcher_id}_{season}"
+        if as_of_date is None
+        else f"arsenal_{pitcher_id}_{season}_asof_{as_of_date}"
+    )
     cached = _cache_get("pitcher_arsenal", cache_key, TTL_PITCHER_ARSENAL)
     if cached is not None:
         return cached
+
+    # Cap the current-season window at as_of_date (exclusive) so historical
+    # reconstruction never sees future pitches. Falls back to today for
+    # production runs.
+    end_cur = (as_of_date or datetime.now().strftime("%Y-%m-%d"))
 
     try:
         from pybaseball import statcast_pitcher
 
         start = f"{season}-03-20"
-        end = datetime.now().strftime("%Y-%m-%d")
-        df = statcast_pitcher(start, end, pitcher_id)
+        df = statcast_pitcher(start, end_cur, pitcher_id)
+        df = _filter_before(df, as_of_date)
 
         if df is None or df.empty:
             # Try prior season
             start = f"{season - 1}-03-20"
             end = f"{season - 1}-10-01"
             df = statcast_pitcher(start, end, pitcher_id)
+            # Prior-season data is entirely before as_of_date in any
+            # reconstruction scenario, so no additional filter needed.
             if df is None or df.empty:
                 return None
 
@@ -390,20 +542,33 @@ def _fetch_pitcher_arsenal_mlb_api(pitcher_id: int, season: int) -> dict | None:
 # Victim profile construction
 # ---------------------------------------------------------------------------
 
-def build_victim_profile(player_id: int, season: int) -> dict:
+def build_victim_profile(
+    player_id: int,
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> dict:
     """
     Build a "victim profile" for a batter — the archetype of pitcher
     they tend to hit home runs against.
 
     Returns a profile dict with the same dimensions as a pitcher profile,
     plus metadata (hr_count, confidence).
+
+    *as_of_date* — YYYY-MM-DD; HR events on or after this date are
+    excluded, AND the per-victim-pitcher arsenal lookups are also
+    as-of-date-filtered. None (default) = today.
     """
-    cache_key = f"victim_{player_id}_{season}"
+    cache_key = (
+        f"victim_{player_id}_{season}"
+        if as_of_date is None
+        else f"victim_{player_id}_{season}_asof_{as_of_date}"
+    )
     cached = _cache_get("victim_profiles", cache_key, TTL_VICTIM_PROFILE)
     if cached is not None:
         return cached
 
-    hr_events = _fetch_batter_hr_events(player_id, season)
+    hr_events = _fetch_batter_hr_events(player_id, season, as_of_date=as_of_date)
 
     if len(hr_events) < 3:
         # Not enough data — blend heavily toward league average
@@ -439,8 +604,12 @@ def build_victim_profile(player_id: int, season: int) -> dict:
             hr_per_pitcher[pid] = hr_per_pitcher.get(pid, 0) + 1
 
     for pid in victim_pitcher_ids[:30]:  # Cap at 30 unique pitchers to avoid too many API calls
-        arsenal = _fetch_pitcher_arsenal_statcast(pid, season)
+        arsenal = _fetch_pitcher_arsenal_statcast(pid, season, as_of_date=as_of_date)
         if arsenal is None:
+            # MLB API fallback (season-aggregate stats) can't be honestly
+            # date-filtered for a historical reconstruction without a
+            # different endpoint — but it's a low-resolution league-avg
+            # estimate anyway. Accepted approximation for backfill.
             arsenal = _fetch_pitcher_arsenal_mlb_api(pid, season)
         if arsenal:
             arsenal["_weight"] = hr_per_pitcher.get(pid, 1)
@@ -500,21 +669,36 @@ def build_victim_profile(player_id: int, season: int) -> dict:
 # Today's pitcher profile
 # ---------------------------------------------------------------------------
 
-def build_pitcher_profile(pitcher_id: int, season: int) -> dict:
+def build_pitcher_profile(
+    pitcher_id: int,
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> dict:
     """
     Build the archetype vector for today's opposing pitcher.
     Tries Statcast first, falls back to MLB Stats API.
+
+    *as_of_date* — YYYY-MM-DD; Statcast pitches on/after this date are
+    excluded so historical reconstruction sees only what the model would
+    have known that morning. None (default) = today.
     """
-    cache_key = f"profile_{pitcher_id}_{season}"
+    cache_key = (
+        f"profile_{pitcher_id}_{season}"
+        if as_of_date is None
+        else f"profile_{pitcher_id}_{season}_asof_{as_of_date}"
+    )
     cached = _cache_get("pitcher_profiles", cache_key, TTL_PITCHER_PROFILE)
     if cached is not None:
         return cached
 
     # Try Statcast arsenal first (full granularity)
-    profile = _fetch_pitcher_arsenal_statcast(pitcher_id, season)
+    profile = _fetch_pitcher_arsenal_statcast(pitcher_id, season, as_of_date=as_of_date)
 
     if profile is None:
-        # Fall back to MLB Stats API (less detailed)
+        # Fall back to MLB Stats API (less detailed; season-aggregate
+        # only, so an as_of_date in the past gets the same season-final
+        # snapshot — accepted approximation for backfill).
         profile = _fetch_pitcher_arsenal_mlb_api(pitcher_id, season)
 
     if profile is None:
@@ -637,10 +821,12 @@ def score_pitcher_vulnerability(
     # only when nothing was measured.
     scores = []
 
-    # 2026-05-13: blend season + recent (21d) HR/9 via effective_hr9().
+    # 2026-05-13: blend season + recent HR/9 via effective_hr9().
     # Season-only HR/9 missed pitchers whose last 3-4 starts had collapsed
     # (Brady Singer on 2026-05-12: recent 3.07 vs. season 1.89). Blend
     # rules + ratio live in effective_hr9() so refits can tune them.
+    # B4 (2026-05-21): same blend applied to ERA + K/9 when recent values
+    # are populated — see effective_era / effective_k9.
     hr9_effective = effective_hr9(
         pitcher_stats.get("hr_per_9"),
         pitcher_stats.get("recent_hr9_21d"),
@@ -653,20 +839,28 @@ def score_pitcher_vulnerability(
         # for trending-bad pitchers, so the same cap applies cleanly.
         scores.append(max(0, min(100, (hr9_effective / 4.5) * 100)))
 
-    era = pitcher_stats.get("era")
-    if era is not None and era > 0:
+    era_effective = effective_era(
+        pitcher_stats.get("era"),
+        pitcher_stats.get("recent_era_21d"),
+        pitcher_stats.get("recent_starts_21d"),
+    )
+    if era_effective is not None and era_effective > 0:
         # ERA: 2.0–6.0 → 0–100
-        scores.append(max(0, min(100, (era - 2.0) / 4.0 * 100)))
+        scores.append(max(0, min(100, (era_effective - 2.0) / 4.0 * 100)))
 
     hh = pitcher_stats.get("hard_hit_pct_allowed")
     if hh is not None and hh > 0:
         # Hard-hit% allowed: 25–50% → 0–100
         scores.append(max(0, min(100, (hh - 25) / 25 * 100)))
 
-    k9 = pitcher_stats.get("k_per_9")
-    if k9 is not None and k9 > 0:
+    k9_effective = effective_k9(
+        pitcher_stats.get("k_per_9"),
+        pitcher_stats.get("recent_k9_21d"),
+        pitcher_stats.get("recent_starts_21d"),
+    )
+    if k9_effective is not None and k9_effective > 0:
         # K/9 inverse: range ~4–14, higher K = less vulnerable
-        scores.append(max(0, min(100, (14 - k9) / 10 * 100)))
+        scores.append(max(0, min(100, (14 - k9_effective) / 10 * 100)))
 
     # IP as a season sample size indicator (don't trust stats on < 10 IP).
     # Only fires when IP is measured + low; missing IP no longer collapses
@@ -872,6 +1066,8 @@ def _load_pitcher_arsenals_from_db(season: int) -> dict[int, dict]:
 def build_pitcher_profiles_batch(
     pitcher_ids: dict[str, int],
     season: int,
+    *,
+    as_of_date: str | None = None,
 ) -> dict[str, dict]:
     """
     Build pitcher profiles for all starting pitchers on today's slate.
@@ -880,8 +1076,17 @@ def build_pitcher_profiles_batch(
 
     pitcher_ids: {pitcher_name: pitcher_id}
     Returns: {pitcher_name: profile_dict}
+
+    *as_of_date* — YYYY-MM-DD. When set, BYPASSES the DB cache and routes
+    every pitcher through the per-player Statcast path with the same
+    as_of_date filter — the DB rows are snapshots of "as of nightly ETL,"
+    not as_of_date, so they'd silently inject future-knowledge data into
+    a historical reconstruction. Slow but correct for backfill. None
+    (default) = today = DB-first as before.
     """
-    db_arsenals = _load_pitcher_arsenals_from_db(season)
+    today = datetime.now().strftime("%Y-%m-%d")
+    bypass_db = as_of_date is not None and as_of_date != today
+    db_arsenals = {} if bypass_db else _load_pitcher_arsenals_from_db(season)
 
     profiles = {}
     db_hits = 0
@@ -906,13 +1111,16 @@ def build_pitcher_profiles_batch(
             db_hits += 1
         else:
             # Rookie / fresh-callup / mid-season trade not yet picked up
-            # by the nightly arsenal sync. Fall through to the slow path
-            # so today's starters still get a real profile.
-            profiles[name] = build_pitcher_profile(pid, season)
+            # by the nightly arsenal sync — OR backfill mode (DB bypassed
+            # above). Fall through to the slow path so the profile is
+            # honest for the requested date.
+            profiles[name] = build_pitcher_profile(pid, season, as_of_date=as_of_date)
             api_hits += 1
 
+    mode = f"as_of={as_of_date}" if bypass_db else "live"
     print(
-        f"  [ARCHETYPE] Pitcher arsenals: {db_hits} from DB, {api_hits} via API"
+        f"  [ARCHETYPE] Pitcher arsenals ({mode}): {db_hits} from DB, "
+        f"{api_hits} via API"
     )
     return profiles
 
@@ -920,6 +1128,8 @@ def build_pitcher_profiles_batch(
 def build_victim_profiles_batch(
     batter_ids: list[tuple[str, int]],
     season: int,
+    *,
+    as_of_date: str | None = None,
 ) -> dict[int, dict]:
     """
     Build victim profiles for a batch of batters.
@@ -936,16 +1146,31 @@ def build_victim_profiles_batch(
 
     batter_ids: [(name, player_id), ...]
     Returns: {player_id: victim_profile_dict}
+
+    *as_of_date* — YYYY-MM-DD. When set, BYPASSES the DB cache and routes
+    every batter through build_victim_profile with the same as_of_date
+    filter. DB rows are snapshots of "as of nightly ETL," not as_of_date,
+    so they'd inject future HRs into a historical reconstruction. Slow
+    but correct for backfill. None (default) = today = DB-first as before.
     """
-    if not _DB_PATH.exists():
-        print(
-            f"  [ARCHETYPE] DB not found at {_DB_PATH}, "
-            "falling back to per-batter Statcast"
-        )
+    today = datetime.now().strftime("%Y-%m-%d")
+    bypass_db = as_of_date is not None and as_of_date != today
+
+    if bypass_db or not _DB_PATH.exists():
+        if not bypass_db:
+            print(
+                f"  [ARCHETYPE] DB not found at {_DB_PATH}, "
+                "falling back to per-batter Statcast"
+            )
+        else:
+            print(
+                f"  [ARCHETYPE] backfill mode (as_of={as_of_date}): "
+                "bypassing DB cache, per-batter Statcast with date filter"
+            )
         profiles = {}
         for _name, pid in batter_ids:
             if pid and pid > 0:
-                profiles[pid] = build_victim_profile(pid, season)
+                profiles[pid] = build_victim_profile(pid, season, as_of_date=as_of_date)
         return profiles
 
     db_profiles = _load_victim_profiles_from_db(season)
