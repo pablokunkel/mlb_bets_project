@@ -234,7 +234,7 @@
     .hm-wrap th, .hm-wrap td { padding: 0; margin: 0; }
     .hm-wrap thead th {
       position: sticky; top: 0; z-index: 20; background: var(--paper-2);
-      color: var(--ink-muted); font-weight: 600; font-size: 10px;
+      color: var(--ink-soft); font-weight: 600; font-size: 10px;
       border-bottom: 1px solid var(--rule); border-right: 1px solid var(--rule-soft);
       height: 34px; min-width: 30px; width: 30px;
     }
@@ -273,8 +273,13 @@
         rgba(140, 122, 82, 0.18) 0 5px,
         rgba(140, 122, 82, 0.08) 5px 10px);
     }
-    .hm-wrap .g { font-weight: 700; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5); }
-    .hm-wrap .g.hr { color: var(--signal); font-size: 13px; }
+    .hm-wrap .g { font-weight: 700; }
+    /* HR star carries a cream halo so it pops against the hot end of the
+       heat ramp (clay/red), where a red star alone would blend in. */
+    .hm-wrap .g.hr {
+      color: var(--signal); font-size: 13px;
+      text-shadow: 0 0 2px var(--paper), 0 0 2px var(--paper), 0 0 1px var(--paper);
+    }
     .hm-wrap .g.xb { color: var(--ink); }
     .hm-wrap .g.s1 { color: var(--ink-soft); font-weight: 600; }
     .hm-wrap .g.out { color: var(--ink-muted); font-weight: 400; }
@@ -5822,9 +5827,11 @@
     const _HM_MODE_LABEL = {c:'Composite',rk:'Board rank',rg:'Rank within game',
       pw:'Power',mu:'Matchup',fm:'Form',wx:'Weather',pk:'Park',ln:'Lineup'};
     const _HM_INVERT = new Set(['rk','rg']);
-    // 2026-05-23: ramped from the diagnostic tool's cyan→amber→red but
-    // pulled cooler end toward site's navy and warmer end toward clay.
-    const _HM_RAMP = [[29,45,80],[68,90,128],[140,135,118],[180,128,72],[196,99,31],[185,71,45]];
+    // Heat ramp, fully in-palette with the cream/clay site theme.
+    // Goes from light paper-cream (cold) → warm tan → clay → signal red
+    // (hot). Earlier version started at dark navy which both clashed with
+    // the cream theme and made dark glyphs disappear on cold cells.
+    const _HM_RAMP = [[241,228,200],[224,200,158],[210,170,116],[200,140,80],[196,99,31],[185,71,45]];
     let _HM_DOMAIN = {};
 
     function _hmRamp(t) {
@@ -5946,11 +5953,33 @@
         `<span style="box-shadow:inset 0 0 0 2px var(--signal);padding:0 6px">red outline = flagged miss</span>`;
       document.getElementById('hmLgmode').textContent = _HM_MODE_LABEL[_hmS.mode];
     }
-    function _hmVisibleBatters(visSet) {
+    // Per-batter HR + games count restricted to the visible date window.
+    // Computed once per render and used for the row badge, the "n+ HR"
+    // filter, and the row sort — all three need to agree, otherwise the
+    // user sees "Schwarber 5 hr" above "Raleigh 8 hr" because the list
+    // is sorted by season-total but the badge shows window-total.
+    function _hmWindowStats(visSet) {
+      const out = new Map();
+      const C = _hmData.cells;
+      for (const b of _hmData.batters) {
+        const row = C[String(b.id)] || {};
+        let hr = 0, g = 0;
+        for (const d in row) {
+          if (!visSet.has(d)) continue;
+          const c = row[d];
+          if (c.ab != null || (c.hr || 0) > 0 || c.h != null) g++;
+          hr += (c.hr || 0);
+        }
+        out.set(b.id, { hr, g });
+      }
+      return out;
+    }
+    function _hmVisibleBatters(visSet, winStats) {
       const q = _hmS.search.trim().toLowerCase();
       const C = _hmData.cells;
       return _hmData.batters.filter(b => {
-        if (b.hr < _hmS.minhr) return false;
+        const ws = winStats.get(b.id);
+        if (!ws || ws.hr < _hmS.minhr) return false;
         if (q) {
           const hay = (b.name + ' ' + (b.team || '')).toLowerCase();
           if (!hay.includes(q)) return false;
@@ -5959,6 +5988,10 @@
         if (!row) return false;
         for (const d in row) if (visSet.has(d)) return true;
         return false;
+      }).sort((a, b) => {
+        const ha = winStats.get(a.id).hr, hb = winStats.get(b.id).hr;
+        if (hb !== ha) return hb - ha;
+        return a.name.localeCompare(b.name);
       });
     }
     function _hmAvgMetric(b, visSet) {
@@ -6036,13 +6069,15 @@
       } else t += '  — no model score';
       return _hmEsc(t);
     }
-    function _hmRowHTML(b, idx, visList) {
+    function _hmRowHTML(b, idx, visList, winStats) {
       const C = _hmData.cells;
-      let s = `<tr><th class="name" data-b="${b.id}">` +
+      const ws = winStats.get(b.id);
+      let s = `<tr><th class="name" data-b="${b.id}" ` +
+        `title="${_hmEsc(b.name)} — ${ws.hr} HR in window · ${b.hr} HR season">` +
         `<div class="nm"><span class="rk">${idx}</span>` +
         `<span class="who">${_hmEsc(b.name)}</span>` +
         `<span class="tm">${_hmEsc(b.team || '')}</span>` +
-        `<span class="hrn">${b.hr}<small> hr</small></span></div></th>`;
+        `<span class="hrn">${ws.hr}<small> hr</small></span></div></th>`;
       const row = C[String(b.id)] || {};
       visList.forEach(d => {
         const cell = row[d];
@@ -6067,7 +6102,8 @@
         .classList.toggle('focushr', _hmS.focushr);
       document.getElementById('hmLgmode').textContent = _HM_MODE_LABEL[_hmS.mode];
 
-      const bs = _hmVisibleBatters(visSet);
+      const winStats = _hmWindowStats(visSet);
+      const bs = _hmVisibleBatters(visSet, winStats);
       const groups = (_hmS.group === 'none')
         ? [{ label: null, batters: bs }]
         : _hmGroupBatters(bs, visList, visSet);
@@ -6091,7 +6127,7 @@
             `<span class="ghs">${g.batters.length} batters · ${st.games} games · ` +
             `${st.ghr} HR games · ${st.rate}% of games went yard</span></th></tr>`;
         }
-        g.batters.forEach(b => { idx++; body += _hmRowHTML(b, idx, visList); });
+        g.batters.forEach(b => { idx++; body += _hmRowHTML(b, idx, visList, winStats); });
       });
       body += '</tbody>';
 
@@ -6214,7 +6250,7 @@
       let h = '';
       h += `<div class="mhd"><div><h2>${_hmEsc(b.name)} <span class="sub">` +
            `${_hmEsc(b.team || '')}${b.bats ? ' · bats ' + b.bats : ''}</span></h2>` +
-           `<div class="sub">${b.hr} HR · ${b.g} games in window ` +
+           `<div class="sub">${b.hr} HR · ${b.g} games season-to-date ` +
            `(${D.through.start} → ${D.through.outcomes})</div></div>` +
            `<button class="x" onclick="_hmCloseModal()">×</button></div>`;
       h += '<div class="mbody">';
@@ -6331,7 +6367,9 @@
           '<div class="hm-empty">No outcomes recorded yet.</div>';
         return;
       }
-      _hmS.from = 0;
+      // Default to last 30 dates — full-season view was overwhelming on
+      // open and the recent window is what people actually want first.
+      _hmS.from = Math.max(0, D.dates.length - 30);
       _hmS.to = D.dates.length - 1;
       const dfrom = document.getElementById('hmDfrom'), dto = document.getElementById('hmDto');
       D.dates.forEach((d, i) => {
