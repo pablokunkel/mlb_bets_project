@@ -109,6 +109,8 @@ Originating case: 2026-05-02 HR autopsy showed real power hitters being muffled 
 
 A second related flag, `USE_CAREER_PRIOR`, exists in `score_batters.py` (off by default). It would Bayesian-shrink small-sample per-PA rates toward career mean — a complementary fix to the floor for "his rates LOOK bad due to small sample" cases. Parked off until backtest validation; the harness can compare floor-only vs floor+prior to tell whether stacking both adds signal.
 
+**B6a real recent-Statcast inputs (collected but not scored, gated behind `USE_RECENT_STATCAST_BLEND`).** Three rolling 14-day Statcast metrics — `recent_barrel_real_14d`, `recent_xwoba_contact_14d`, `recent_iso_14d` — are populated nightly into `pick_inputs` by the bulk Statcast ETL. The intent was for these to blend into `score_power` alongside the season inputs (a slow-starter-now-hot hitter would get credit before his season aggregate catches up). As of 2026-05-23, **the blend flag stays off**: `backtest_power_inputs.py` shows the 14d window is too noisy to discriminate HR hitters from the field — synthetic season inputs (which are essentially smoothed past performance) beat the 14d real metrics by ~0.10 AUC across multiple probe variants (anchor-tightening, dropping the HR-rate-encoded synthetic inputs). The infrastructure is preserved (inputs collected, harness exists, columns in `pick_inputs`) and a wider-window variant (21d/28d) is queued as B12 before declaring B6's blend permanently dead. See WEIGHT_REFIT_LOG.md 2026-05-25 for the empirical detail.
+
 ### Factor 2 — Matchup Score (weight: 0.264 — the heaviest factor)
 
 "How vulnerable is today's pitcher, and does his style match the kind of arm this batter feasts on?"
@@ -117,7 +119,11 @@ This is the smartest factor. When archetype data is available (the daily path wi
 
 **Signal A: Pitcher vulnerability.** Combines HR/9, ERA, hard-hit percentage allowed, strikeout rate, and fly-ball percentage allowed. An ace gets a vulnerability score of 10-15; a back-end starter gets 70-80. All within-slate-percentile-ranked so the day's best matchup is always near 100 and the worst near 0, regardless of slate quality.
 
+Vulnerability inputs use a season + recent-window blend (`effective_hr9` / `effective_era` / `effective_k9` in `pitcher_profile.py`, added 2026-05-13 for HR/9 and extended 2026-05-21 to ERA + K/9). When the pitcher has 2+ starts in the configured recent window, the recent value blends in at 0.60 weight against the season number. Catches collapsed-form pitchers whose season aggregate hasn't caught up yet (e.g., Brady Singer on 2026-05-12: season HR/9 of 1.89 vs. recent 3.07 across 4 starts — effective HR/9 lands at 2.6, properly midway). The recency window is configurable (`PITCHER_RECENT_WINDOW_TYPE` = "days" | "starts", `PITCHER_RECENT_WINDOW_N` defaulting to 21 days) — alternate windows tunable via the B4 backtest harness.
+
 **Signal B: Archetype similarity.** For every batter, we look at every HR he's hit over the last 18 months and build a "victim profile" — the weighted-average pitcher type he crushes (fastball velo, pitch mix, handedness, spin, extension). That profile gets compared against today's pitcher across seven dimensions. A higher similarity score means today's pitcher matches the archetype this batter has historically homered off.
+
+Victim-profile + pitcher-arsenal lookups read from the local SQLite cache, refreshed nightly by `etl_nightly`. The 2026-05-22 DB-backed-as-of-date path (`pitcher_profile._build_victim_profiles_from_db`) means historical reconstruction (backfill, backtest) can grade archetype matchups in seconds per date instead of hours — the per-player Statcast roundtrip that used to dominate backfill runtime is gone. The live noon path still falls through to per-pitcher Statcast for any starter not yet picked up by the nightly arsenal sync (rookies, fresh callups).
 
 **Signal C: Vegas implied team total.** The percentile rank of this team's expected runs across the slate. Captures "this is a slugfest game in Coors with Vegas at 11.5" vs. "this is a 7.5-total pitching duel."
 
@@ -147,13 +153,22 @@ So in practice the park score contributes 0-5 points to the final composite. The
 
 "Is this batter hot right now?"
 
-Three inputs from the last 14 days of game logs:
+Four inputs drawn from MLB Stats API game logs over split game-count windows (rebuilt 2026-05-19, PR #56):
 
-- **HRs in the last 14 days.** Zero is cold, 5+ is on fire.
-- **Recent barrel rate (14d estimate).** Are the batted balls trending harder and at better angles than season average?
-- **Exit velocity trend (14d vs. season).** Is the bat speeding up or slowing down?
+| Input              | Window           | Anchor (low → high) | Notes |
+|--------------------|------------------|---------------------|-------|
+| `recent_hr_10g`    | 10 games         | 0 → 5 HR            | Short window; HRs are lumpy. |
+| `recent_iso_30g`   | 30 games         | 0.100 → 0.300       | Power-specific, longer sample. |
+| `recent_avg_30g`   | 30 games         | 0.210 → 0.330       | Contact signal. **Note: empirical backtest (2026-05-23) shows this term is net-noise for HR prediction — drop pending under BACKLOG.md B11.** |
+| `ev_trend`         | nightly Statcast | -3.0 → +3.0 mph     | Real exit-velocity trend vs. season. **Currently always NULL — gated on the A2 nightly Statcast ETL.** |
 
-Each scaled to 0-100, averaged. This factor turns out to carry more signal than the model's earlier versions assumed — the regression refit pushed form's weight from ~0.15 to ~0.28.
+Each populated input is scaled to 0-100 against its anchor; available inputs are equally-weight averaged. A None input is SKIPPED (no data); a real 0 is scored honestly. Score is the mean of however many inputs were measured; falls back to 50 if all four are NULL.
+
+**Long-rest dampener.** After the mean, `_layoff_dampener` reads the `recent_window_days` value attached to the form fetch. When the window stretches > 55 days (IL absence, long roster gap), the score is pulled toward 50 — ramping to 60% pull at 90 days. Prevents stale 30-game windows from carrying a hot reading that's actually months old.
+
+This factor turns out to carry more signal than earlier versions assumed — the regression refit pushed form's weight from ~0.15 to ~0.28.
+
+**Pre-PR-#56 history.** The pre-#56 form factor used estimated 14-day barrel% (`recent_barrel_pct_14d`) and a synthetic EV-trend (`ev_trend_14d`) on the same 14-day window. Both were dropped: barrel estimation on a 14-day game-log window is mostly noise (PR #56 backtest), and the EV trend was always a hand-wave proxy waiting for the nightly Statcast ETL to ship. Legacy columns `recent_hr_14d` / `recent_barrel_pct_14d` / `ev_trend_14d` remain in `pick_inputs` (NULL for new rows) for backtest replay of pre-#56 days.
 
 ### Factor 5 — Weather Score (weight: 0.057 — small but real)
 
@@ -332,7 +347,8 @@ To run: `python etl/historical_calibration.py --seasons 2024 2025` (or `--weathe
 A few things we know we're missing:
 
 - **Park's regression weight is still zero.** Park signal now reaches the composite via the additive `+0.05 × park_score` bonus (PR #25, see Factor 3) — that's a deliberate workaround, not a real fix. The next refit on a larger / cleaner training window may bring park back into the weighted average if we can isolate the signal from correlated effects (pitcher vulnerability already captures most of "homer park" through inflated HR/9).
-- **Per-pitcher Statcast can hang.** When the daily run hits a cold pitcher arsenal cache, fetching all ~30 pitchers' Statcast pitch logs can take 30-50 minutes. Mitigated by overnight cache pre-warming, but still a fragile path.
+- **Per-pitcher Statcast on live noon runs.** Cold pitcher arsenal cache on the daily path can still take a few minutes for new starters (rookies, fresh callups). The historical-reconstruction path (backfill, backtest) is fixed as of 2026-05-22 — `pitcher_profile._build_victim_profiles_from_db` reads everything from local SQLite. The live noon path's cold-callup case is the remaining cost; mitigated by overnight cache pre-warming.
+- **B6 real-recent Statcast blend is collected but off.** `pick_inputs.recent_barrel_real_14d` / `_xwoba_contact_14d` / `_iso_14d` populate nightly; `USE_RECENT_STATCAST_BLEND=False`. Empirically the 14d window under-discriminates vs. season aggregates (see WEIGHT_REFIT_LOG.md 2026-05-25). The wider-window variant (21d/28d) is queued as B12 before declaring the blend permanently dead.
 - **No actual handedness splits.** We use woba_vs_hand (the batter's wOBA against their pitcher's handedness, season average), but not granular pitch-type splits. A batter who's .310 vs. RHP fastballs but .180 vs. LHP breaking balls scores the same against both today.
 - **No bullpen factor.** If the starter only goes 5 innings, the batter might face very different pitchers later. We only score against the starter.
 - **No lineup-context expected PAs.** We use batting_order as a proxy for PAs, but a batter behind two .400-OBP guys gets more bases-loaded chances than the same hitter behind two .280-OBP guys.

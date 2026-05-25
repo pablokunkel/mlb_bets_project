@@ -129,7 +129,9 @@ Background context: `CLAUDE.md` ("Current work" section), the #56/#57 PR descrip
 
 ### A1. Refit composite weights after the Form + Matchup changes
 
-**Status.** Gated — blocked until **B6 + B8 + B9 land** AND ~1–2 weeks of pipeline runs accrue on the new code. Previously gated on #56 + #57 only; widened 2026-05-20 after the scoring audit (`docs/scoring_audit_2026-05-20.md`) revealed that `backtest_factors.rescore_row` has never been able to apply the season-HR floor (no `hr` column in `pick_inputs` — finding #3). That means every refit since 2026-05-03 (when the floor went on) was calibrated against backtest data that scored *without* the floor while production *has* it. Refitting now would inherit the same divergence.
+**Status (2026-05-25).** Partially unblocked. B6 + B8 + B9 have shipped on the `claude/backfill-2025` branch. The 2025-season backfill (replacing the "raw_data.csv extension" original gate) provides training data directly from `pick_inputs`. Two backtest harnesses (`backtest_power_inputs.py` + `backtest_form_anchors.py`) have produced preliminary verdicts on a 90-date partial sample — see WEIGHT_REFIT_LOG.md 2026-05-25. Remaining gates: (1) finish the in-progress backfill re-run + re-confirm both verdicts on the full 188-date sample, (2) the wider-real-Statcast variant (21d/28d) — tracked as B12 — before declaring on `USE_RECENT_STATCAST_BLEND`, (3) update `refit_weights.py` to read from `pick_inputs` directly and refresh its stale `current_default` baseline.
+
+**Prior status (2026-05-20).** Gated — blocked until **B6 + B8 + B9 land** AND ~1–2 weeks of pipeline runs accrue on the new code. Previously gated on #56 + #57 only; widened 2026-05-20 after the scoring audit (`docs/scoring_audit_2026-05-20.md`) revealed that `backtest_factors.rescore_row` has never been able to apply the season-HR floor (no `hr` column in `pick_inputs` — finding #3). That means every refit since 2026-05-03 (when the floor went on) was calibrated against backtest data that scored *without* the floor while production *has* it. Refitting now would inherit the same divergence.
 
 **Why it matters.** `WEIGHT_CONFIGS["default"]` (power 0.250, matchup 0.264, park 0.000, form 0.279, weather 0.057, lineup 0.150) was logistic-regression-fit on the *old* Form and Matchup inputs **and** on backtest data that under-applied Power. #56 replaced Form's inputs wholesale (recent HR/ISO/AVG on new game-count windows, vs the old capped-barrel + SLG-delta proxies); #57 changed Matchup's vulnerability input set (added FB%) and redistributed the rookie bonus; B6 will rebuild Power (recent quality-contact + smooth floor curve). The 0.279 / 0.264 / 0.250 coefficients now sit on inputs that are about to change again. The composite is mis-weighted until refit.
 
@@ -391,6 +393,56 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** TBD pitcher games visibly flagged and not scored against synthetic. Weather scoring skips on partial data. Smaller items resolved and documented.
 
+### B11. Drop `recent_avg_30g` from `score_form` (Form A1 pre-commit)
+
+**Status.** Gated on full-backfill re-confirmation. Standalone, small PR.
+
+**Why it matters.** `backtest_form_anchors` shows `no_avg` lifts AUC +0.018 on both 90-date and 148-date partial samples — consistent across two independent runs. Mechanism is defensible: AVG is mostly singles + groundballs falling in, and ISO already captures the power dimension. Feast-or-famine power hitters (Bader 5/23 grand slam, Form 35.1) have lower AVG by definition; the term anti-correlates with the HR signal we want.
+
+**Spec.** Remove the `recent_avg_30g` block from `score_form` in `score_batters.py` (~5-line change). Revisit the layoff dampener anchors (`_layoff_dampener`, kicks in at >55d ramping to 60% at 90d) — calibrated against the 3-input form; with 2 inputs the dampener's behavior may need a re-look.
+
+**Files.** `score_batters.py::score_form`, possibly `score_batters.py::_layoff_dampener`.
+
+**Done when.** Form harness re-run on full 188-date sample re-confirms `no_avg` win, PR lands, WEIGHT_REFIT_LOG entry written.
+
+### B12. Wider real-Statcast window — 21d / 28d B6 variant
+
+**Status.** Required before final A1 call on `USE_RECENT_STATCAST_BLEND`. Independent.
+
+**Why it matters.** `backtest_power_inputs` baseline shows the 14d real metrics under-discriminate vs. synthetic season inputs by ~0.10 AUC. Skepticism probes ruled out HR-rate auto-correlation (`synthetic-no-hr-encoded` ties synthetic-only) and anchor calibration (`real-tight-anchors` ≈ `real-only`) as confounds; the remaining hypothesis is "14d is too noisy at the per-row level — a wider window may smooth enough to unlock the signal." This is the last open variable before declaring on B6's blend.
+
+**Spec.** Extend `features_v2.fetch_batter_recent_statcast` to compute 21d and 28d windows alongside the existing 14d. Add `recent_*_21d` / `recent_*_28d` columns to `pick_inputs` (or a sibling table). Backfill against the 2025 season. Extend `backtest_power_inputs.py` with two new variants on the new columns + tight-anchor sweep on each.
+
+**Files.** `features_v2.py`, `etl/db.py` (new columns), `load_picks_to_db.py`, `etl/etl_nightly.py` (recent Statcast pull), `diagnostics/backtest_power_inputs.py` (new variants).
+
+**Done when.** Verdict on 21d/28d real vs. synthetic documented in WEIGHT_REFIT_LOG. Either flip `USE_RECENT_STATCAST_BLEND=True` with the winning window or document that all real-window variants trail synthetic.
+
+### B13. QA cleanup bundle (from 2025-backfill QA)
+
+**Status.** Ready to start — independent. Small.
+
+**Why it matters.** Surfaced in the 2025-backfill QA pass (2026-05-23). None are blockers but they're real:
+
+1. **`datetime.utcnow()` deprecation** in `etl/backfill_2025.py:278` — 1-line fix to `datetime.now(datetime.UTC)`.
+2. **`pitcher_fb_pct_allowed > 100`** on 23 rows (102.5 on 2025-09-21 + 2025-09-27). Either bad source data or unit confusion. Add a clamp in `_splits_to_batters` and log when it fires.
+3. **T4-untiered path doesn't stamp `barrel_pct_source`** — 710 rows on ASB + 2025-09-29 have NULL provenance. Should stamp `untiered_season_batting` (or similar) for clean filtering in downstream analysis.
+
+**Files.** `etl/backfill_2025.py`, `fetch_daily_data.py::_splits_to_batters`, `generate_picks.py::score_untiered_starters`.
+
+**Done when.** All three sub-items resolved; QA query against backfill data shows zero `pitcher_fb_pct_allowed > 100`, zero NULL `barrel_pct_source` on scored rows, and no deprecation warning during a backfill run.
+
+### B14. Production weather forecast failures (2026-05-12+)
+
+**Status.** Ready to investigate — independent. Diagnostic-first.
+
+**Why it matters.** Production daily-picks rows have `weather_source=api_failed_default` on every date from 2026-05-12 onwards (50–237 rows/date affected). Forecast endpoint (`api.open-meteo.com`), not the archive — and the forecast tier is at 100% uptime per Open-Meteo's status page, so this is GH-Actions-runner-specific. Matches the long-standing "GH Actions egress IPs get deprioritized" comment in `get_weather`. Previous mitigation (30s read timeout + 1 retry) is no longer enough on flaky days.
+
+**Spec.** Pull the `[WEATHER] ... fetch failed (<error>)` lines from GH Actions logs for `daily-picks.yml` runs 2026-05-12..present. Classify by error type (read timeout / connect timeout / 5xx / 4xx). If read timeouts: bump read budget + exponential backoff. If different pattern: address per the error class. The `(venue, date)` archive cache shipped 2026-05-23 is forecast-tier-agnostic but only fires on archive — won't help production forecast directly.
+
+**Files.** `fetch_daily_data.py::get_weather`, possibly `etl/etl_morning.py` (which has a duplicate weather code path also subject to this issue).
+
+**Done when.** Root-cause documented; mitigation PR'd; production noon runs show `api_failed_default` < 5 rows/date on stable days.
+
 ### C1. Heatmap as a dashboard tab — replace the Hitters tab
 
 **Status.** Ready to start — independent.
@@ -464,7 +516,7 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 ### From `WEIGHT_REFIT_LOG.md` (2026-05-01 + 2026-05-03 entries)
 
-1. **Wire a job that appends each completed day's `daily_picks ⨝ outcomes` rows into `raw_data.csv`.** Until this lands, monthly refits are no-ops because the training data window doesn't extend past 2026-04-15. Two options: append nightly via `run_outcomes.bat` after `etl_outcomes` succeeds, OR refit `refit_weights.py` directly off the SQLite DB instead of CSV. The DB-direct path is cleaner architecturally but requires touching the refit script. The CSV-append path is mechanical (one new step in `run_outcomes.bat`).
+1. **Wire a job that appends each completed day's `daily_picks ⨝ outcomes` rows into `raw_data.csv`.** Until this lands, monthly refits are no-ops because the training data window doesn't extend past 2026-04-15. Two options: append nightly via `run_outcomes.bat` after `etl_outcomes` succeeds, OR refit `refit_weights.py` directly off the SQLite DB instead of CSV. The DB-direct path is cleaner architecturally but requires touching the refit script. The CSV-append path is mechanical (one new step in `run_outcomes.bat`). **Update (2026-05-25):** effectively addressed — the 2025-season backfill (`etl/backfill_2025.py`, see Recently Shipped 2026-05-23) writes the full season directly into `pick_inputs`. The DB-direct path (option B) is now the cleaner move and is captured in A1's remaining gates. See WEIGHT_REFIT_LOG.md 2026-05-25.
 
 2. **Update `refit_weights.py`'s hardcoded `current_default` baseline (lines 161-167) to mirror the actual shipped `WEIGHT_CONFIGS["default"]`.** Currently it uses v1_learned weights, so the reported `+1.25 pp lift_vs_current` is really lift-vs-v1, not lift-vs-shipped. Future refit comparisons aren't apples-to-apples until this lands.
 
@@ -487,6 +539,10 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-05-23
+
+- **`claude/backfill-2025` branch (PR pending, multiple commits):** full 2025-season backfill of `pick_inputs` for the A1 refit, plus a stack of supporting infra. As-of-date convention threaded through every fetcher (no look-ahead bias). DB-backed archetype path in `pitcher_profile._build_victim_profiles_from_db` (eliminated the per-player-Statcast hang — hours/date → seconds/date). Backfill orchestrator `etl/backfill_2025.py` with `--max-runtime` chunking + R2-bookended wrapper (`run_backfill_local.py` / `run_backfill_2025.bat`). Form look-ahead fix in `get_recent_game_log`. Weather resilience layer in `fetch_daily_data.get_weather`: archive endpoint disk cache `data/cache/weather_archive/` + broader retry on 5xx/429 with 0s/2s/8s backoff (Open-Meteo's free archive had multiple multi-hour outages mid-month). UTF-8 stdio hardening in `run_backfill_local._force_utf8_io` so redirected logs can't crash on cp1252. Two backtest harnesses: `diagnostics/backtest_power_inputs.py` (synthetic vs. real Statcast, 6 variants including skepticism probes) and `diagnostics/backtest_form_anchors.py` (Form anchor + weighting sweep, 6 variants). See WEIGHT_REFIT_LOG.md 2026-05-25 for empirical findings.
 
 ### 2026-05-20
 
