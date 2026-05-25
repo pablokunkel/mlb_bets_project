@@ -231,21 +231,23 @@ def export_latest_picks(conn, out_dir: Path):
     """, (latest_date,)).fetchall()
     games_by_pk = {r["game_pk"]: dict(r) for r in game_rows}
 
-    # Vegas implied totals per team — same source the matchup score uses.
-    # We pull from the cache the morning ETL hit, which lives in slate_ctx
-    # at scoring time but isn't persisted per-team. Approximation here:
-    # if pick_inputs has vegas_team_total_pct for any batter on this team
-    # today, that's their team's percentile rank (already 0-100).
+    # Vegas implied totals per GAME (percentile rank of avg team total).
+    # Key by game_pk so we can look up directly when building slate_games —
+    # the previous per-team dict was keyed on the abbrev ("PHI"), but
+    # slate_games uses the full team name ("Philadelphia Phillies") so
+    # every lookup missed and the modal showed "—" forever.
+    # pick_inputs has no game_pk column, so join through daily_picks.
     # 2026-05-03: column renamed from vegas_implied_total — see migration
     # in etl/db.py. Old DBs are auto-renamed on first create_tables call.
     vegas_rows = conn.execute("""
-        SELECT DISTINCT dp.team, AVG(pi.vegas_team_total_pct) AS team_total_pct
+        SELECT dp.game_pk, AVG(pi.vegas_team_total_pct) AS game_total_pct
         FROM daily_picks dp
         LEFT JOIN pick_inputs pi ON pi.date = dp.date AND pi.batter_id = dp.batter_id
         WHERE dp.date = ? AND pi.vegas_team_total_pct IS NOT NULL
-        GROUP BY dp.team
+              AND dp.game_pk IS NOT NULL
+        GROUP BY dp.game_pk
     """, (latest_date,)).fetchall()
-    vegas_by_team = {r["team"]: r["team_total_pct"] for r in vegas_rows}
+    vegas_by_gamepk = {r["game_pk"]: r["game_total_pct"] for r in vegas_rows}
 
     # Top-25 board members per game_pk — for the slate sidebar's
     # "X in top 25" badge that flags where today's HRs are coming from.
@@ -272,6 +274,34 @@ def export_latest_picks(conn, out_dir: Path):
         HAVING SUM(hr_count) > 0
     """, (latest_date, latest_date)).fetchall()
     recent_hr_7d_by_id = {r["batter_id"]: r["hr_7d"] for r in recent_hr_7d_rows}
+
+    # Per-batter game log for the last 14 days — powers the modal's
+    # "Last X Games" table (replaces the previous "last N picked days"
+    # view, which only listed days we picked the player). Sourced from
+    # the outcomes table; one row per game played, sorted date desc.
+    # Pull more than 14 days so doubleheaders and gap days don't shrink
+    # the visible count below 14.
+    last_games_rows = conn.execute("""
+        SELECT batter_id, date, game_pk, ab, hits, hr_count, rbi, total_bases
+        FROM outcomes
+        WHERE date >= date(?, '-21 days') AND date < ?
+        ORDER BY date DESC
+    """, (latest_date, latest_date)).fetchall()
+    last_games_by_id: dict = {}
+    for r in last_games_rows:
+        bid = r["batter_id"]
+        bucket = last_games_by_id.setdefault(bid, [])
+        if len(bucket) >= 14:
+            continue
+        bucket.append({
+            "date":        r["date"],
+            "game_pk":     r["game_pk"],
+            "ab":          r["ab"],
+            "hits":        r["hits"],
+            "hr":          r["hr_count"],
+            "rbi":         r["rbi"],
+            "total_bases": r["total_bases"],
+        })
 
     # Augment each batter row with season stats + model track + game info.
     def _augment(b: dict) -> dict:
@@ -302,6 +332,9 @@ def export_latest_picks(conn, out_dir: Path):
         # the Lab tab's Hot Streak view. None when batter had zero HRs
         # in the window (most batters); the JS treats None as 0.
         b["recent_hr_7d"] = recent_hr_7d_by_id.get(b.get("batter_id"))
+        # Last 14 games (most recent first), from the outcomes table.
+        # Modal renders this as a hitting/HR cadence table.
+        b["last_games"] = last_games_by_id.get(b.get("batter_id"), [])
         b["game_time"]  = game.get("game_time")
         b["venue"]      = game.get("venue")
         b["dome"]       = game.get("dome")
@@ -315,13 +348,10 @@ def export_latest_picks(conn, out_dir: Path):
     for gpk, g in sorted(games_by_pk.items(), key=lambda kv: (kv[1].get("game_time") or "")):
         # How many top-25 board members are in this game?
         top25_count = top25_per_game.get(gpk, 0)
-        # Avg Vegas implied total across the two teams (if present)
-        vegas_home = vegas_by_team.get(g.get("home_team"))
-        vegas_away = vegas_by_team.get(g.get("away_team"))
-        vegas_avg  = None
-        present = [v for v in (vegas_home, vegas_away) if v is not None]
-        if present:
-            vegas_avg = round(sum(present) / len(present), 1)
+        # Vegas implied total %ile for this game (avg across both teams'
+        # batters, computed in vegas_by_gamepk above).
+        v = vegas_by_gamepk.get(gpk)
+        vegas_avg = round(v, 1) if v is not None else None
         slate_games.append({
             "game_pk":       gpk,
             "home_team":     g.get("home_team"),
@@ -1920,6 +1950,35 @@ def export_hr_recap(conn, out_dir, days=60):
 
 
 
+def export_heatmap(conn, out_dir: Path) -> None:
+    """
+    Per-batter season heatmap data — powers the Hitters tab heatmap.
+    Reuses diagnostics/batter_ab_heatmap.py::build_dataset(), which already
+    encodes the full cell-by-cell join logic (outcomes × daily_picks ×
+    pick_inputs × hr_events × season_batting × daily_slate × daily_lineup).
+    """
+    # batter_ab_heatmap is a script, not a package; the diagnostics
+    # directory has no __init__.py. We use importlib to load it from its
+    # known relative path so we don't need to touch the diagnostics module
+    # layout.
+    import importlib.util
+    diag_path = Path(__file__).parent / "diagnostics" / "batter_ab_heatmap.py"
+    if not diag_path.exists():
+        print(f"  Skipped heatmap.json (diagnostics/batter_ab_heatmap.py not found)")
+        return
+    spec = importlib.util.spec_from_file_location("batter_ab_heatmap", diag_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # build_dataset wants its own read-only connection to the file. Resolve
+    # the DB path from our open connection (PRAGMA database_list returns it
+    # as the 'main' DB).
+    db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    data = mod.build_dataset(db_path)
+    atomic_write_json(out_dir / "heatmap.json", data, indent=0)
+    print(f"  Exported heatmap.json ({len(data.get('batters', []))} batters, "
+          f"{len(data.get('dates', []))} dates)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export DB data to static JSON for the dashboard")
     parser.add_argument("--out", default=None,
@@ -1944,6 +2003,7 @@ def main():
         export_factor_trends(conn, out_dir, days=min(args.days, 30))
         export_hr_recap(conn, out_dir, days=args.days)
         export_hr_leaderboard(conn, out_dir, days=14, top_n=40)
+        export_heatmap(conn, out_dir)
     finally:
         conn.close()
     print("\nDone.")

@@ -111,6 +111,134 @@ Option A is the smallest change. Option B is the most accurate but doubles the p
 
 ---
 
+## Mobile UI cleanup pass (2026-05-23 session)
+
+Annotated screenshot pass on `mobile_edits.pdf` (user-supplied 2026-05-23). Mobile-first cuts and polish across every tab plus a Hitters-tab rebuild on top of the diagnostic heatmap. Pure presentation work — no scoring, ETL, or worker changes — safe to land in parallel with the model-factor sequence above. Split into four batches by risk/scope so each can ship and roll back independently.
+
+### M1. Batch A — pure cuts (lowest risk)
+
+**Status.** Ready to start.
+
+**Scope.**
+- Today's Picks header: cut PICKS card and AVG COMPOSITE card. Keep BOARD SIZE + EXPECTED HRs.
+- Today's Picks rows: cut tier badges (T1/T2/T3/T4 chips). Tier qualification (B5) still filters server-side; the visible badge is vestigial.
+- Big Board header: cut SHOWING and SELECTED cards. Fix the center divider line. Remove gridlines from the stats block.
+- Big Board advanced filters: remove the Barrel % and ISO sliders under "Underlying skill · minimum" — the score sliders already capture contact quality.
+- Lab cards: remove the descriptive paragraph under each card title (Homerun Leaders, Power × Matchup, Hot Streak Watch, Park × Pitcher Exploit, Pure Longshots, Game Stacks). The card title + scoreboard tells the story.
+- Game-detail modal: remove the "Composite Distribution" histogram on mobile (`@media (max-width: 768px)`). Keep on desktop.
+- HR Recap subtitle copy: change `"22 batters went deep this day"` → `"22 Dingers"`.
+
+**Files.** `mlb_hr_bet_site/index.html` only. Touch points map (from 2026-05-23 exploration):
+- Today's Picks stat cards: `renderToday()` ~line 2774-2782.
+- Tier badges: `tierBadge()` ~line 2551 and the row render ~line 2823.
+- Big Board stats: `renderBoard()` ~line 4465-4474.
+- Big Board filter sliders: HTML ~line 2156-2169.
+- Lab descriptions: ~line 3110-3149 in `renderLab()`.
+- Composite Distribution: `#railHistogram` block in `renderBoard()` ~line 4617-4654.
+- HR Recap subtitle: `_renderRecapDay()` ~line 5348.
+
+**Done when.** All cuts land, no console errors, visual diff on mobile + desktop in screenshots.
+
+### M2. Batch B — mobile-aware sort + filter restructure
+
+**Status.** Ready to start. Depends on Batch A landing first to avoid merge churn on the same regions.
+
+**Scope.**
+- Big Board: replace the "All teams" dropdown with an "All games" dropdown (e.g. `WAS @ ATL`, `LAD @ SF`). User confirmed: replace (not add). Same filter-state field, different source list and label rendering.
+- Big Board: add a "Season" option to the HR window control (currently Last/Off + 7d/14d).
+- Big Board: when a user sorts by a factor column on mobile, that column becomes visible in the row even though desktop shows all columns. Track which column is "currently sorted" and reveal it on the mobile expandable row.
+- Today's Slate rail (`renderSlateRail`, ~line 4579): convert to a dropdown at the top of the Big Board tab on mobile. Desktop keeps the rail.
+- HR Recap "HR Hitters · {date}" table: sort by `our_comp` instead of `hr_count`. Fix the `${h.hr_count}⚾` formatting — the emoji should have proper spacing/alignment (currently mashed against the number).
+
+**Files.** `mlb_hr_bet_site/index.html`.
+- Filter row: `#boardTeamFilter` ~line 2108, filter state `_boardFilters` ~line 4380-4390.
+- HR window: HTML ~line 2171-2184, state field `_boardFilters.hrWindow`.
+- Mobile sort column: media query at line 627, sort cycle `cycleBoardSort(field)` at line 4687.
+- Slate dropdown: `renderSlateRail(cache)` line 4579.
+- HR Recap table: sort + emoji format `_renderRecapDay()` line 5326, HR cell ~line 5394.
+
+**Done when.** Big Board filter is per-game on mobile + desktop, HR window has Season, mobile sort reveals the sorted column, slate is a dropdown on mobile, HR Recap rows are sorted by comp with clean `⚾ N` formatting.
+
+### M3. Batch C — game modal + Lab polish + History/Performance formatting
+
+**Status.** Ready to start.
+
+**Scope.**
+- Game-detail modal (`openGameModal` line 5767):
+  - Investigate why `VEGAS TEAM TOTAL` is always N/A in the modal. Trace from `export_site_data.py` through the per-game JSON. Either fix data wiring or remove the field if it's not coming.
+  - Add an "Avg matchup score" (or similar) line to the Pitching Matchup section. Computed as the mean `matchup` factor across the visible batters in the game (already in the modal's data).
+  - Cap "TOP N BATTERS IN THIS GAME" at 5 instead of 25. Keep the `OUR RANK` column so users still see global rank.
+- Lab tab:
+  - "Game Stacks" stack-score formatting: round to one decimal max, add a colored stat-pill treatment so it doesn't read as a free-floating number. Render at `${s.score.toFixed(1)}` ~line 3072.
+  - Hot Streak Watch (`renderLab`-driven view): single-digit scores look misleading. User said: **replace the score column with the composite score** for now; defer the underlying calc question to another session. Keep the rank.
+- History tab Pick-Rank Heat Map (`renderHistory` line 3170, heat-map render line 3223-3247): cap the visible date columns at **Last 10** instead of the current full window. Clean up the baseball-emoji `⚾` formatting inside cells (line 3239) — proper spacing and consistent rendering with text.
+- Performance tab backtest tables (`renderPerformance` line 3438, factor tables ~line 3390): same formatting cleanup as History — cap dates at Last 10, fix `⚾` formatting.
+
+**Files.** `mlb_hr_bet_site/index.html`, possibly `export_site_data.py` for the vegas-team-total wiring.
+
+**Done when.** Vegas team total either populated or removed; pitching matchup carries an avg score; game modal lists top 5; stack-score is a clean stat; Hot Streak shows composite; History + Performance show last 10 dates with proper emoji rendering.
+
+### M4. Batch D — Hitters tab → diagnostic heatmap (restyled)
+
+**Status.** Ready to start. This is the implementing form of existing item **C1** ("Heatmap as a dashboard tab — replace the Hitters tab"); on landing, mark C1 shipped.
+
+**Scope.** Replace the entire Hitters tab body with the diagnostic heatmap from `diagnostics/batter_ab_heatmap.html`, restyled to match the site's clay/cream/Inter aesthetic. All filters and functionality of the standalone heatmap are kept; only the visual treatment changes.
+
+**Data path.** User confirmed: regenerate `heatmap.json` daily. Add a `build_heatmap_payload()` function reusing `diagnostics/batter_ab_heatmap.py::build_dataset()` query logic, called from `export_site_data.py` so the noon pipeline drops a fresh `heatmap.json` next to `picks_latest.json` and friends. The dashboard fetches it on tab open.
+
+**Restyle checklist.**
+- Drop the dark `--bg:#0e1116` palette; map to the site's `--bg / --paper / --surface / --border / --ink / --signal` variables.
+- `.card` → reuse site's stat-card treatment (cream surface, statbook border).
+- `.ctl` (filter rail) → match `.board-controls` styling — sticky top, light surface, same border-radius and padding.
+- `.cell` glyphs: replace `#dfe6f0 / #ffd23f / #5c6675` with `--ink / --signal / --ink-muted`.
+- Heatmap ramp: keep the 6-stop blue→amber→red gradient (it's information-bearing), but warm the cool end toward the site's blues.
+- `.modal` → reuse the existing `#gameModal` chrome instead of the heatmap's own modal styling. Single shared modal pattern across the dashboard.
+- Sticky table headers: keep, but recolor with `--paper-2 / --border`.
+- Fonts: replace the system stack with Inter throughout; use JetBrains Mono only for the per-cell numeric glyphs.
+
+**Files.**
+- `mlb_hr_bet_site/index.html` — port the heatmap HTML + CSS + JS into `#panel-hitters` (line 2250). Delete the existing `renderHitters()` Hot Sheet table.
+- `export_site_data.py` — new `heatmap.json` export step, reusing `diagnostics/batter_ab_heatmap.py::build_dataset()`.
+- `diagnostics/batter_ab_heatmap.py` — refactor `build_dataset()` to be importable (currently a script) without breaking the standalone tool.
+- `run_daily.bat` / pipeline orchestration — confirm the new export runs in the daily flow.
+
+**Risks.**
+- Standalone HTML is ~5 MB because it inlines the dataset. The JSON-fetch version will still be large — verify the payload is acceptable on mobile (consider trimming per-cell `in` / `hrs` arrays, or lazy-loading the per-cell modal data).
+- Sticky-header z-index interactions with the site's tab nav need a real browser check.
+
+**Done when.** The Hitters tab on the live site shows the restyled heatmap, refreshed by the noon pipeline, with all standalone filters working. C1 in the backlog gets marked shipped.
+
+### M5. HR Recap header reshape (cuts + hit-rate trio)
+
+**Status.** Ready to start. Independent of A-D but ships easiest with Batch A.
+
+**Scope.** Replace the four-card HR Recap header (DAYS TRACKED / HR HITTERS / WE PICKED / CAPTURE RATE) with a three-card hit-rate trio. User decision 2026-05-23: keep hit rate, drop the rest, show it three ways:
+- **Season hit rate** — % of season HR events caught by our daily top-N.
+- **14d hit rate** — same metric on the last 14 days.
+- **Top-50 hit rate** — % of HR events whose hitter was in our top 50 by composite that day (a wider net signal).
+
+**Files.** `mlb_hr_bet_site/index.html` (`renderHRRecap` line 5285, stat cards line 5303-5308). `export_site_data.py` if the 14d / top-50 cuts aren't already in `hr_leaderboard.json` — compute them in the export step alongside the existing capture rate so the dashboard stays a thin renderer.
+
+**Done when.** HR Recap header shows three hit-rate cards, all computed from existing outcomes data, refreshed by the pipeline.
+
+### M6. HR Recap "Recent picked days" → batter Last X Games
+
+**Status.** Ready to start. Pairs naturally with M5 since both touch `renderHRRecap`.
+
+**Scope.** The current per-batter card on HR Recap shows the last 11 dates on which we picked that hitter (DATE / VS / COMP / RESULT / LINE columns). User wants instead: the batter's **last 7-14 actual games**, regardless of whether we picked them, so a user can see recent hitting form / HR cadence at a glance. Reuses `outcomes` data already loaded by the pipeline.
+
+**Spec.**
+- Window: prefer 14 if the outcomes-cumulative join makes it cheap, else 7. Confirm during build.
+- Columns: DATE / VS (opponent abbrev) / AB / H / HR. Maybe an "OUR PICK" star/badge column to retain the prior signal (we picked him that day) without spending a whole column on it.
+- Sort: most recent at top.
+- Render: replace the existing recent-picked-days table in `_renderRecapDay()` at line 5326 with the new last-games table.
+
+**Files.** `mlb_hr_bet_site/index.html` (`_renderRecapDay` line 5326). `export_site_data.py` if the per-batter game log isn't already in `hr_leaderboard.json` — emit a `last_games` array per hitter.
+
+**Done when.** Each HR-Recap day's batter card shows the hitter's last 7-14 games with hit / HR signal, sortable by date, with our-pick callouts preserved.
+
+---
+
 ## Model factor review & heatmap (2026-05-19/20 sessions)
 
 A factor-by-factor audit of the 6-factor composite, plus tooling/data carry-forwards. **Form** and **Matchup** are done — PRs **#56** (`form-factor-rebuild`) and **#57** (`matchup-vulnerability-fix`). The 2026-05-20 scoring audit (`docs/scoring_audit_2026-05-20.md`) added B8/B9/B10 — see those entries for the audit findings they wrap.
@@ -445,7 +573,7 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 ### C1. Heatmap as a dashboard tab — replace the Hitters tab
 
-**Status.** Ready to start — independent.
+**Status.** Ready to start — independent. **Implementing form lives in M4** (Mobile UI cleanup pass) which adds the brand restyle scope on top of this. Land via M4; mark this shipped on M4's PR.
 
 **Why it matters.** The batter × game heatmap built this session (`diagnostics/batter_ab_heatmap.py`) is a strict superset of what the dashboard's **Hitters tab** already does — the Hitters tab carries a basic 14-day HR-hitter × day scoreboard (`.hitters-innings-table`, fed by `hr_leaderboard.json`). The heatmap adds every batter (not just recent HR hitters), the full season, heat-shading by composite / board rank / any factor / rank-within-game, result glyphs, click-through to full per-game model detail (every input), row grouping, a date filter, and headline calibration cards. Putting it on the public dashboard gives it the same diagnostic lens used all session.
 
