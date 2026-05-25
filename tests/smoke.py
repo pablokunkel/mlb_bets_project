@@ -962,6 +962,576 @@ def pin_as_of_date_signatures_present() -> Result:
     return Result("as_of_date signatures", Result.HALT, "; ".join(failures))
 
 
+def pin_aggregate_victim_profile_weighted() -> Result:
+    """DB-backed backfill path: _aggregate_victim_profile computes the
+    HR-weighted arsenal average and sample-size confidence correctly.
+
+    Synthetic input: 10 HR events across 3 victim pitchers — 5 off pitcher
+    1 (FB velo 95), 3 off pitcher 2 (velo 93), 2 off pitcher 3 (velo 91).
+    HR-weighted avg_fb_velo = (95*5 + 93*3 + 91*2) / 10 = 93.6.
+    hr_count = 10, n_victim_pitchers = 3 -> confidence tier 0.6
+    (hr_count >= 8 but n_victim_pitchers < 4, so not the 0.8 tier).
+    """
+    from pitcher_profile import _aggregate_victim_profile
+
+    def _event(pid):
+        return {
+            "pitcher_id": pid,
+            "p_throws": "R",
+            "pitch_type": "FF",
+            "release_speed": 93.0,
+            "release_spin_rate": 2250.0,
+            "release_extension": 6.2,
+        }
+    events = [_event(1)] * 5 + [_event(2)] * 3 + [_event(3)] * 2
+    arsenals = {
+        1: {"avg_fb_velo": 95.0, "fb_usage_pct": 0.55, "breaking_usage_pct": 0.30,
+            "offspeed_usage_pct": 0.15, "avg_fb_spin": 2300.0, "avg_extension": 6.3},
+        2: {"avg_fb_velo": 93.0, "fb_usage_pct": 0.50, "breaking_usage_pct": 0.30,
+            "offspeed_usage_pct": 0.20, "avg_fb_spin": 2250.0, "avg_extension": 6.2},
+        3: {"avg_fb_velo": 91.0, "fb_usage_pct": 0.45, "breaking_usage_pct": 0.35,
+            "offspeed_usage_pct": 0.20, "avg_fb_spin": 2200.0, "avg_extension": 6.0},
+    }
+    prof = _aggregate_victim_profile(events, arsenals.get)
+
+    failures = []
+    if abs(prof.get("avg_fb_velo", -1) - 93.6) > 0.05:
+        failures.append(f"avg_fb_velo got {prof.get('avg_fb_velo')}, want 93.6")
+    if prof.get("hr_count") != 10:
+        failures.append(f"hr_count got {prof.get('hr_count')}, want 10")
+    if prof.get("n_victim_pitchers") != 3:
+        failures.append(f"n_victim_pitchers got {prof.get('n_victim_pitchers')}, want 3")
+    if abs(prof.get("confidence", -1) - 0.6) > 1e-9:
+        failures.append(f"confidence got {prof.get('confidence')}, want 0.6")
+    # All 10 events p_throws=R -> hand_R_pct = 1.0
+    if abs(prof.get("hand_R_pct", -1) - 1.0) > 1e-9:
+        failures.append(f"hand_R_pct got {prof.get('hand_R_pct')}, want 1.0")
+    if not failures:
+        return Result(
+            "_aggregate_victim_profile HR-weighted avg + confidence tier",
+            Result.PASS,
+        )
+    return Result(
+        "_aggregate_victim_profile(synthetic)", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_aggregate_victim_profile_no_arsenal_fallback() -> Result:
+    """DB-backed backfill path: with no arsenal data,
+    _aggregate_victim_profile falls back to per-event release_speed and
+    still returns a usable profile (n_victim_pitchers = 0)."""
+    from pitcher_profile import _aggregate_victim_profile
+    events = [
+        {"pitcher_id": p, "p_throws": "L", "pitch_type": "SL",
+         "release_speed": 90.0, "release_spin_rate": 2100.0,
+         "release_extension": 6.0}
+        for p in (11, 12, 13, 14)
+    ]
+    prof = _aggregate_victim_profile(events, lambda pid: None)
+    failures = []
+    # No arsenals -> per-event velo mean = 90.0
+    if abs(prof.get("avg_fb_velo", -1) - 90.0) > 0.05:
+        failures.append(
+            f"avg_fb_velo got {prof.get('avg_fb_velo')}, want 90.0 (per-event fallback)"
+        )
+    if prof.get("n_victim_pitchers") != 0:
+        failures.append(f"n_victim_pitchers got {prof.get('n_victim_pitchers')}, want 0")
+    # All events p_throws=L -> hand_R_pct = 0.0
+    if abs(prof.get("hand_R_pct", -1) - 0.0) > 1e-9:
+        failures.append(f"hand_R_pct got {prof.get('hand_R_pct')}, want 0.0")
+    if not failures:
+        return Result(
+            "_aggregate_victim_profile no-arsenal -> per-event velo fallback",
+            Result.PASS,
+        )
+    return Result(
+        "_aggregate_victim_profile no-arsenal fallback", Result.HALT,
+        "; ".join(failures),
+    )
+
+
+def pin_weather_archive_cache_roundtrip() -> Result:
+    """get_weather's archive cache round-trips data correctly and tolerates
+    missing keys. Cache is the durability layer for the Open-Meteo archive
+    outages observed multiple times in May 2026."""
+    from fetch_daily_data import (
+        _weather_archive_cache_get,
+        _weather_archive_cache_set,
+        _weather_archive_cache_path,
+    )
+    failures = []
+
+    # Path safety: filenames must not contain spaces or special chars
+    # (real venue names like "Globe Life Field" must produce safe filenames).
+    p = _weather_archive_cache_path("Globe Life Field", "1999-01-01")
+    if " " in p.name or "/" in p.name or "\\" in p.name:
+        failures.append(f"unsafe cache filename: {p.name!r}")
+
+    # Round-trip. Use a sentinel venue that won't collide with real data.
+    venue = "__PIN_TEST_VENUE__"
+    date = "1999-01-01"
+    sample = {
+        "temperature_f": 72.5, "wind_mph": 8.0,
+        "_source": "open_meteo_archive",
+    }
+    _weather_archive_cache_set(venue, date, sample)
+    got = _weather_archive_cache_get(venue, date)
+    if got != sample:
+        failures.append(f"round-trip mismatch: got {got!r}")
+
+    # Clean up the test cache file so we don't pollute the cache dir.
+    try:
+        _weather_archive_cache_path(venue, date).unlink()
+    except Exception:
+        pass
+
+    # Missing key must return None, not raise.
+    missing = _weather_archive_cache_get("__NO_SUCH_VENUE__", "1900-01-01")
+    if missing is not None:
+        failures.append(f"missing key returned {missing!r}, expected None")
+
+    if not failures:
+        return Result(
+            "weather archive cache round-trips + missing -> None", Result.PASS,
+        )
+    return Result(
+        "weather archive cache", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_weather_retry_config() -> Result:
+    """get_weather retries on 5xx + 429 with a sane backoff schedule, and
+    does NOT retry 4xx client errors."""
+    from fetch_daily_data import (
+        _WEATHER_RETRYABLE_STATUSES, _WEATHER_RETRY_BACKOFF_S,
+    )
+    failures = []
+    # Must retry the 5xx codes Open-Meteo's archive actually emits + 429.
+    for code in (429, 500, 502, 503, 504):
+        if code not in _WEATHER_RETRYABLE_STATUSES:
+            failures.append(f"retryable set missing {code}")
+    # Must NOT retry 4xx client errors — they bubble straight to the default.
+    for code in (400, 401, 403, 404):
+        if code in _WEATHER_RETRYABLE_STATUSES:
+            failures.append(f"retryable set should NOT include {code}")
+    # Backoff schedule: >=3 attempts, non-decreasing, first attempt no-sleep.
+    if len(_WEATHER_RETRY_BACKOFF_S) < 3:
+        failures.append(f"backoff too short: {_WEATHER_RETRY_BACKOFF_S!r}")
+    if list(_WEATHER_RETRY_BACKOFF_S) != sorted(_WEATHER_RETRY_BACKOFF_S):
+        failures.append(f"backoff not monotone: {_WEATHER_RETRY_BACKOFF_S!r}")
+    if _WEATHER_RETRY_BACKOFF_S and _WEATHER_RETRY_BACKOFF_S[0] != 0:
+        failures.append(
+            f"first attempt should have no backoff, got {_WEATHER_RETRY_BACKOFF_S[0]}"
+        )
+    if not failures:
+        return Result(
+            f"weather retry config: codes={sorted(_WEATHER_RETRYABLE_STATUSES)}, "
+            f"backoff={_WEATHER_RETRY_BACKOFF_S}", Result.PASS,
+        )
+    return Result(
+        "weather retry config", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backtest_form_anchors_variants_isolate() -> Result:
+    """Form harness: backtest_form_anchors imports and each variant scores
+    the Bader 2026-05-23 worked example correctly (hr_10g=3, iso_30g=0.186,
+    avg_30g=0.163 - the slumping-AVG-but-HR-active pattern that motivated
+    the harness)."""
+    try:
+        from diagnostics import backtest_form_anchors as bfa
+    except Exception as e:
+        return Result(
+            "backtest_form_anchors import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in ("fetch_rows", "score_variants", "compute_metrics", "main"):
+        if not hasattr(bfa, name):
+            failures.append(f"missing {name}")
+    for must in ("current", "avg_floor_180", "no_avg", "2x_hr",
+                 "hr_iso_only", "hr_only"):
+        if must not in bfa.VARIANTS:
+            failures.append(f"VARIANTS missing {must!r}")
+
+    # Bader 2026-05-23 worked example. avg_30g=0.163 is below BOTH the
+    # current floor (0.210) and the avg_floor_180 candidate (0.180), so
+    # those two variants should match. Dropping AVG entirely should
+    # nearly double the score (mean of just HR+ISO, no zero-clamp drag).
+    bader = {"recent_hr_10g": 3, "recent_iso_30g": 0.186,
+             "recent_avg_30g": 0.163, "ev_trend": None}
+    expected = {
+        "current":       34.33,    # (60+43+0)/3
+        "avg_floor_180": 34.33,    # same - 0.163 still sub-floor
+        "no_avg":        51.5,     # (60+43)/2
+        "2x_hr":         40.75,    # (2*60+43+0)/4
+        "hr_iso_only":   51.5,     # same as no_avg (same inputs)
+        "hr_only":       60.0,     # just the HR term
+    }
+    for variant, want in expected.items():
+        got = bfa._form_score(bader, variant)
+        if abs(got - want) > 0.5:
+            failures.append(f"{variant}: got {got:.2f}, want {want:.2f}")
+
+    if not failures:
+        return Result(
+            "backtest_form_anchors: 6 variants isolate inputs (Bader worked example)",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_form_anchors variants", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backtest_power_inputs_isolates_variants() -> Result:
+    """B6 harness: backtest_power_inputs imports, exposes 6 variants, has
+    disjoint synthetic/real key sets, and _compute_power produces distinct
+    scores under tight-anchor overrides."""
+    try:
+        from diagnostics import backtest_power_inputs as bpi
+    except Exception as e:
+        return Result(
+            "backtest_power_inputs import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+
+    # Variant list exposes all six expected names.
+    expected_variants = {
+        "synthetic-only", "real-only", "blended",
+        "real-tight-anchors", "blended-tight-anchors",
+        "synthetic-no-hr-encoded",
+    }
+    got = set(bpi.VARIANT_NAMES)
+    if got != expected_variants:
+        failures.append(
+            f"VARIANT_NAMES = {sorted(got)}, want {sorted(expected_variants)}"
+        )
+
+    # Key sets disjoint (the honest A/B property).
+    syn = set(bpi.SYNTHETIC_KEYS)
+    real = set(bpi.REAL_KEYS)
+    if syn & real:
+        failures.append(f"synthetic/real key sets overlap: {sorted(syn & real)}")
+
+    # Entry points present.
+    for name in ("fetch_rows", "score_variants", "compute_metrics",
+                 "_compute_power", "TIGHT_REAL_ANCHORS", "main"):
+        if not hasattr(bpi, name):
+            failures.append(f"missing {name}")
+
+    # _has_signal correctness.
+    if bpi._has_signal({"iso": None}, ("iso",)):
+        failures.append("_has_signal True on None")
+    if bpi._has_signal({"iso": 0}, ("iso",)):
+        failures.append("_has_signal True on 0")
+    if not bpi._has_signal({"iso": 0.2}, ("iso",)):
+        failures.append("_has_signal False on a real value")
+
+    # Tight-anchor override changes the score when the value sits between
+    # the default floor (8.0) and the tight floor (10.0).
+    row = {"recent_barrel_real_14d": 9.0}
+    default = bpi._compute_power(row, ("recent_barrel_real_14d",), None)
+    tight = bpi._compute_power(
+        row, ("recent_barrel_real_14d",), bpi.TIGHT_REAL_ANCHORS,
+    )
+    # default: scale(9, 8, 18) -> 10.0
+    # tight:   scale(9, 10, 22) -> clamped to 0.0
+    if abs(default - 10.0) > 0.1:
+        failures.append(f"default barrel=9 got {default:.2f}, want 10.0")
+    if abs(tight - 0.0) > 0.1:
+        failures.append(f"tight barrel=9 got {tight:.2f}, want 0.0 (clamped)")
+
+    # synthetic-no-hr-encoded variant must NOT include the HR-rate-encoded
+    # synthetic inputs (barrel_pct, hr_fb_pct) - that's the point.
+    nohr = [v for v in bpi.VARIANTS if v[0] == "synthetic-no-hr-encoded"]
+    if not nohr:
+        failures.append("synthetic-no-hr-encoded variant absent")
+    else:
+        keys = set(nohr[0][1])
+        leaks = keys & {"barrel_pct", "hr_fb_pct"}
+        if leaks:
+            failures.append(f"synthetic-no-hr-encoded leaks HR-encoded keys: {leaks}")
+        if not {"exit_velo", "iso"} <= keys:
+            failures.append(f"synthetic-no-hr-encoded missing SLG-encoded: {keys}")
+
+    if not failures:
+        return Result(
+            "backtest_power_inputs: 6 variants, tight anchors + no-HR-encoded wired",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_power_inputs variants", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backfill_orchestrator_imports() -> Result:
+    """PR 4: backfill_2025 orchestrator imports cleanly + exposes the
+    documented entry points."""
+    try:
+        from etl import backfill_2025 as bf
+    except Exception as e:
+        return Result(
+            "backfill_2025 import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in (
+        "backfill_one_date", "backfill_window",
+        "ensure_2025_outcomes", "bridge_historical_to_outcomes",
+        "DEFAULT_START", "DEFAULT_END", "main",
+    ):
+        if not hasattr(bf, name):
+            failures.append(f"missing {name}")
+    if not failures:
+        return Result(
+            "etl.backfill_2025 imports + exposes entry points", Result.PASS,
+        )
+    return Result("backfill_2025 entry points", Result.HALT, "; ".join(failures))
+
+
+def pin_backfill_date_range_complete() -> Result:
+    """PR 4: _date_range yields every date inclusive of both endpoints."""
+    from etl.backfill_2025 import _date_range
+    dates = list(_date_range("2025-04-01", "2025-04-05"))
+    if dates == [
+        "2025-04-01", "2025-04-02", "2025-04-03",
+        "2025-04-04", "2025-04-05",
+    ]:
+        return Result(
+            "_date_range yields inclusive [start, end]", Result.PASS,
+        )
+    return Result(
+        "_date_range coverage", Result.HALT,
+        f"got {dates}, expected 5 consecutive dates",
+    )
+
+
+def pin_backfill_default_window_full_season() -> Result:
+    """PR 4: defaults cover the 2025 regular season start through end."""
+    from etl.backfill_2025 import DEFAULT_START, DEFAULT_END
+    if DEFAULT_START == "2025-03-27" and DEFAULT_END == "2025-09-30":
+        return Result(
+            "backfill default window = 2025-03-27..2025-09-30", Result.PASS,
+        )
+    return Result(
+        "backfill default window", Result.HALT,
+        f"got ({DEFAULT_START!r}..{DEFAULT_END!r}); the 2025 regular "
+        "season runs 2025-03-27 to 2025-09-30",
+    )
+
+
+def pin_generate_card_accepts_as_of_date() -> Result:
+    """PR 4: generate_card has the as_of_date kwarg (default None)."""
+    import inspect
+    from generate_picks import generate_card
+    sig = inspect.signature(generate_card)
+    if "as_of_date" not in sig.parameters:
+        return Result(
+            "generate_card(as_of_date)", Result.HALT,
+            "missing as_of_date kwarg",
+        )
+    param = sig.parameters["as_of_date"]
+    if param.default is not None:
+        return Result(
+            "generate_card(as_of_date) default = None", Result.HALT,
+            f"got default={param.default!r}",
+        )
+    return Result(
+        "generate_card accepts as_of_date kwarg (default None)", Result.PASS,
+    )
+
+
+def pin_backfill_parse_duration() -> Result:
+    """PR 4 chunk flags: parse_duration handles the documented forms.
+
+    Verifies '3h', '90m', '1h30m', '7200' (int as seconds), and rejects
+    malformed input with ValueError.
+    """
+    from etl.backfill_2025 import parse_duration
+    cases = [
+        (None,       None),
+        ("",         None),
+        ("3h",       3 * 3600),
+        ("90m",      90 * 60),
+        ("1h30m",    3600 + 30 * 60),
+        ("30m15s",   30 * 60 + 15),
+        ("7200",     7200.0),
+    ]
+    failures = []
+    for inp, want in cases:
+        got = parse_duration(inp)
+        if got != want and not (got is None and want is None):
+            failures.append(f"parse_duration({inp!r}) -> {got}, want {want}")
+    # Malformed inputs should raise
+    raised = False
+    try:
+        parse_duration("3xyz")
+    except ValueError:
+        raised = True
+    if not raised:
+        failures.append("parse_duration('3xyz') did not raise ValueError")
+    raised = False
+    try:
+        parse_duration("h")  # unit without a number
+    except ValueError:
+        raised = True
+    if not raised:
+        failures.append("parse_duration('h') did not raise ValueError")
+    if not failures:
+        return Result("parse_duration handles '3h' / '90m' / '1h30m' / int", Result.PASS)
+    return Result("parse_duration", Result.HALT, "; ".join(failures))
+
+
+def pin_run_backfill_local_wrapper_present() -> Result:
+    """PR 4: the run_backfill_local.py wrapper is present, importable, and
+    exposes the documented entry points (pull / push / run_orchestrator / main)."""
+    from pathlib import Path
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    wrapper = repo / "run_backfill_local.py"
+    if not wrapper.exists():
+        return Result("run_backfill_local.py present", Result.HALT,
+                      f"missing at {wrapper}")
+    # Import as a module so we can poke its functions without spawning subprocs
+    spec = importlib.util.spec_from_file_location("run_backfill_local", wrapper)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    failures = []
+    for name in ("pull", "push", "run_orchestrator", "main", "_load_dotenv"):
+        if not hasattr(mod, name):
+            failures.append(f"missing {name}")
+    # Verify the .bat shim exists alongside (Windows convention)
+    bat = repo / "run_backfill_2025.bat"
+    if not bat.exists():
+        failures.append(f"run_backfill_2025.bat shim missing at {bat}")
+    if not failures:
+        return Result(
+            "run_backfill_local.py + run_backfill_2025.bat shim present",
+            Result.PASS,
+        )
+    return Result(
+        "run_backfill_local.py wrapper", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backfill_window_accepts_chunk_flags() -> Result:
+    """PR 4 chunk flags: backfill_window has max_dates + max_runtime_s kwargs."""
+    import inspect
+    from etl.backfill_2025 import backfill_window
+    sig = inspect.signature(backfill_window)
+    failures = []
+    for name in ("max_dates", "max_runtime_s"):
+        if name not in sig.parameters:
+            failures.append(f"missing {name}")
+            continue
+        p = sig.parameters[name]
+        if p.default is not None:
+            failures.append(f"{name} default = {p.default!r}, want None")
+    if not failures:
+        return Result(
+            "backfill_window accepts max_dates + max_runtime_s (default None)",
+            Result.PASS,
+        )
+    return Result("backfill_window chunk kwargs", Result.HALT, "; ".join(failures))
+
+
+def pin_fetch_live_slate_accepts_as_of_date() -> Result:
+    """PR 4: fetch_live_slate + score_live_slate + score_untiered_starters
+    all accept as_of_date with default None."""
+    import inspect
+    from generate_picks import (
+        fetch_live_slate, score_live_slate, score_untiered_starters,
+    )
+    failures = []
+    for fn in (fetch_live_slate, score_live_slate, score_untiered_starters):
+        sig = inspect.signature(fn)
+        if "as_of_date" not in sig.parameters:
+            failures.append(f"{fn.__name__} missing as_of_date")
+            continue
+        if sig.parameters["as_of_date"].default is not None:
+            failures.append(f"{fn.__name__}.as_of_date default != None")
+    if not failures:
+        return Result(
+            "fetch/score_*_slate accept as_of_date (default None)", Result.PASS,
+        )
+    return Result(
+        "fetch_live_slate signature", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_form_fetch_as_of_date_threaded() -> Result:
+    """PR 4 fix (2026-05-22): the batter Form fetch path is as-of-date-aware.
+
+    get_recent_game_log + fetch_form_data_batch must accept as_of_date
+    (default None). Without it the 2025 backfill's Form factor — the
+    joint-heaviest at weight 0.279 — silently uses end-of-season games
+    for a mid-season reconstruction (look-ahead bias).
+    """
+    import inspect
+    from fetch_daily_data import get_recent_game_log
+    from generate_picks import fetch_form_data_batch
+    failures = []
+    for fn in (get_recent_game_log, fetch_form_data_batch):
+        sig = inspect.signature(fn)
+        p = sig.parameters.get("as_of_date")
+        if p is None:
+            failures.append(f"{fn.__name__} missing as_of_date kwarg")
+        elif p.default is not None:
+            failures.append(f"{fn.__name__}.as_of_date default = {p.default!r}, want None")
+    if not failures:
+        return Result(
+            "Form fetch (get_recent_game_log + batch) accepts as_of_date",
+            Result.PASS,
+        )
+    return Result("Form fetch as_of_date threading", Result.HALT, "; ".join(failures))
+
+
+def pin_get_recent_game_log_filters_before_date() -> Result:
+    """PR 4 fix: get_recent_game_log's as_of_date cutoff drops on/after games.
+
+    Exercises the filter logic against a synthetic gameLog so we don't
+    need a network call. Monkeypatches requests.get to return a canned
+    season log of 5 games; with as_of_date set, only the games strictly
+    before it should feed the windows.
+    """
+    import fetch_daily_data as fdd
+
+    class _FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            # 5 games; HR on the LAST two (the "future" ones).
+            mk = lambda d, hr: {"date": d, "stat": {
+                "atBats": 4, "hits": 1, "doubles": 0, "triples": 0, "homeRuns": hr}}
+            return {"stats": [{"splits": [
+                mk("2025-04-01", 0), mk("2025-04-05", 0), mk("2025-04-10", 0),
+                mk("2025-09-01", 1), mk("2025-09-05", 1),
+            ]}]}
+
+    orig = fdd.requests.get
+    fdd.requests.get = lambda *a, **k: _FakeResp()
+    try:
+        # as_of_date cutoff at 2025-05-01: the two September games (each
+        # with a HR) must be excluded -> recent_hr_10g should be 0.
+        cut = fdd.get_recent_game_log(12345, 2025, as_of_date="2025-05-01")
+        # no cutoff: all 5 games -> 2 HR.
+        full = fdd.get_recent_game_log(12345, 2025)
+    finally:
+        fdd.requests.get = orig
+
+    failures = []
+    if cut.get("recent_hr_10g") != 0:
+        failures.append(f"as_of_date=2025-05-01 -> recent_hr_10g={cut.get('recent_hr_10g')}, "
+                        "want 0 (Sept HRs are look-ahead, must be excluded)")
+    if full.get("recent_hr_10g") != 2:
+        failures.append(f"no cutoff -> recent_hr_10g={full.get('recent_hr_10g')}, want 2")
+    if not failures:
+        return Result(
+            "get_recent_game_log(as_of_date) excludes future games", Result.PASS,
+        )
+    return Result("get_recent_game_log as_of_date cutoff", Result.HALT, "; ".join(failures))
+
+
 def pin_weather_archive_threshold_present() -> Result:
     """PR 3: get_weather has the archive-endpoint threshold constant set
     to a non-trivial value (5+ days), and both endpoint URLs are defined.
@@ -1032,6 +1602,27 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_filter_before_empty_safe,
     pin_as_of_date_signatures_present,
     pin_weather_archive_threshold_present,
+    # 2026-05-21: PR 4 — 2025 backfill orchestrator
+    pin_backfill_orchestrator_imports,
+    pin_backfill_date_range_complete,
+    pin_backfill_default_window_full_season,
+    pin_generate_card_accepts_as_of_date,
+    pin_fetch_live_slate_accepts_as_of_date,
+    pin_form_fetch_as_of_date_threaded,
+    pin_get_recent_game_log_filters_before_date,
+    pin_backfill_parse_duration,
+    pin_backfill_window_accepts_chunk_flags,
+    pin_run_backfill_local_wrapper_present,
+    # 2026-05-22: DB-backed victim/arsenal backfill path
+    pin_aggregate_victim_profile_weighted,
+    pin_aggregate_victim_profile_no_arsenal_fallback,
+    # 2026-05-22: B6 power input-source backtest harness
+    pin_backtest_power_inputs_isolates_variants,
+    # 2026-05-23: weather resilience (archive cache + broader retry)
+    pin_weather_archive_cache_roundtrip,
+    pin_weather_retry_config,
+    # 2026-05-23: Form anchor + weighting backtest harness
+    pin_backtest_form_anchors_variants_isolate,
 ]
 
 

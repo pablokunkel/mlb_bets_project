@@ -106,7 +106,7 @@ def _require_env(name: str) -> str:
     if not val:
         raise SystemExit(
             f"ERROR: required env var {name} is not set. "
-            f"In GH Actions, add it under repo Settings → Secrets and variables → Actions."
+            f"In GH Actions, add it under repo Settings -> Secrets and variables -> Actions."
         )
     return val
 
@@ -128,7 +128,7 @@ def pull(dry_run: bool = False) -> None:
     dest = Path(DB_PATH)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[r2_sync] pull  s3://{bucket}/{key} → {dest}")
+    print(f"[r2_sync] pull  s3://{bucket}/{key} -> {dest}")
     if dry_run:
         print("[r2_sync] dry-run; no download performed.")
         return
@@ -181,7 +181,7 @@ def push(dry_run: bool = False) -> None:
             f"Did the pipeline steps run before this?"
         )
 
-    print(f"[r2_sync] push  {src} → s3://{bucket}/{key}")
+    print(f"[r2_sync] push  {src} -> s3://{bucket}/{key}")
 
     # --- Checkpoint WAL into the main DB file. ---
     # Without this, .db-wal can contain unfinished transactions that
@@ -232,7 +232,7 @@ def push(dry_run: bool = False) -> None:
         # Non-fatal — the live key has the new bytes. Log and move on.
         print(f"[r2_sync] WARN: failed to delete staging blob: {e}")
 
-    print(f"[r2_sync] push OK  → s3://{bucket}/{key}")
+    print(f"[r2_sync] push OK  -> s3://{bucket}/{key}")
 
 
 # ────────────────────────────────────────────────────────────────────────────

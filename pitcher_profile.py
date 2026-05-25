@@ -355,13 +355,16 @@ def _fetch_batter_hr_events(
         return cached
 
     hr_events = []
-    end_cur = (as_of_date or datetime.now().strftime("%Y-%m-%d"))
 
+    # PR 4 perf fix (2026-05-21): fetch the FULL season window so the
+    # pybaseball cache is shared across every backfill date for the
+    # same batter. Then _filter_before clips in memory.
     try:
         from pybaseball import statcast_batter
 
         # Current season
         start_cur = f"{season}-03-20"
+        end_cur = datetime.now().strftime("%Y-%m-%d")
         df = statcast_batter(start_cur, end_cur, player_id)
         df = _filter_before(df, as_of_date)
         if df is not None and not df.empty:
@@ -432,15 +435,17 @@ def _fetch_pitcher_arsenal_statcast(
     if cached is not None:
         return cached
 
-    # Cap the current-season window at as_of_date (exclusive) so historical
-    # reconstruction never sees future pitches. Falls back to today for
-    # production runs.
-    end_cur = (as_of_date or datetime.now().strftime("%Y-%m-%d"))
-
+    # PR 4 perf fix (2026-05-21): fetch the FULL season window from
+    # Statcast (cached by pybaseball under one (pitcher_id, season-window)
+    # key), then clip in memory with _filter_before. Each backfill date
+    # for the same pitcher hits the same pybaseball cache entry instead
+    # of N separate (start, as_of_date) entries — drops 2025 backfill
+    # runtime from ~30h to ~6h.
     try:
         from pybaseball import statcast_pitcher
 
         start = f"{season}-03-20"
+        end_cur = datetime.now().strftime("%Y-%m-%d")
         df = statcast_pitcher(start, end_cur, pitcher_id)
         df = _filter_before(df, as_of_date)
 
@@ -542,41 +547,22 @@ def _fetch_pitcher_arsenal_mlb_api(pitcher_id: int, season: int) -> dict | None:
 # Victim profile construction
 # ---------------------------------------------------------------------------
 
-def build_victim_profile(
-    player_id: int,
-    season: int,
-    *,
-    as_of_date: str | None = None,
-) -> dict:
+def _aggregate_victim_profile(hr_events: list[dict], get_arsenal) -> dict:
     """
-    Build a "victim profile" for a batter — the archetype of pitcher
-    they tend to hit home runs against.
+    Aggregate a victim profile from a batter's HR events plus an arsenal
+    lookup. Shared by the live Statcast path (build_victim_profile) and the
+    DB-backed backfill path (_build_victim_profiles_from_db) so both produce
+    byte-identical aggregation math.
 
-    Returns a profile dict with the same dimensions as a pitcher profile,
-    plus metadata (hr_count, confidence).
+    *hr_events* — list of HR-event dicts. Each needs: pitcher_id, p_throws,
+    pitch_type, release_speed, release_spin_rate, release_extension.
+    *get_arsenal* — callable pid -> arsenal dict | None. Abstracts the
+    arsenal source: live = per-pitcher Statcast / MLB-API; backfill = the
+    pitcher_arsenals DB table.
 
-    *as_of_date* — YYYY-MM-DD; HR events on or after this date are
-    excluded, AND the per-victim-pitcher arsenal lookups are also
-    as-of-date-filtered. None (default) = today.
+    Callers guarantee len(hr_events) >= 3 — the <3 LEAGUE_AVG_VICTIM
+    fallback lives in build_victim_profile / _build_victim_profiles_from_db.
     """
-    cache_key = (
-        f"victim_{player_id}_{season}"
-        if as_of_date is None
-        else f"victim_{player_id}_{season}_asof_{as_of_date}"
-    )
-    cached = _cache_get("victim_profiles", cache_key, TTL_VICTIM_PROFILE)
-    if cached is not None:
-        return cached
-
-    hr_events = _fetch_batter_hr_events(player_id, season, as_of_date=as_of_date)
-
-    if len(hr_events) < 3:
-        # Not enough data — blend heavily toward league average
-        profile = {**LEAGUE_AVG_VICTIM, "hr_count": len(hr_events), "confidence": 0.3}
-        _cache_set("victim_profiles", cache_key, profile)
-        return profile
-
-    # Aggregate across all HR events
     # Per-event stats (from the pitch that was hit for a HR)
     velos = [e["release_speed"] for e in hr_events if e["release_speed"] > 0]
     spins = [e["release_spin_rate"] for e in hr_events if e["release_spin_rate"] > 0]
@@ -604,15 +590,12 @@ def build_victim_profile(
             hr_per_pitcher[pid] = hr_per_pitcher.get(pid, 0) + 1
 
     for pid in victim_pitcher_ids[:30]:  # Cap at 30 unique pitchers to avoid too many API calls
-        arsenal = _fetch_pitcher_arsenal_statcast(pid, season, as_of_date=as_of_date)
-        if arsenal is None:
-            # MLB API fallback (season-aggregate stats) can't be honestly
-            # date-filtered for a historical reconstruction without a
-            # different endpoint — but it's a low-resolution league-avg
-            # estimate anyway. Accepted approximation for backfill.
-            arsenal = _fetch_pitcher_arsenal_mlb_api(pid, season)
+        arsenal = get_arsenal(pid)
         if arsenal:
-            arsenal["_weight"] = hr_per_pitcher.get(pid, 1)
+            # Copy before tagging the weight — the DB path hands back shared
+            # dict objects from the arsenal cache, and mutating one in place
+            # would corrupt every other batter that also faced this pitcher.
+            arsenal = {**arsenal, "_weight": hr_per_pitcher.get(pid, 1)}
             pitcher_arsenals.append(arsenal)
 
     if pitcher_arsenals:
@@ -648,7 +631,7 @@ def build_victim_profile(
     else:
         confidence = 0.3
 
-    profile = {
+    return {
         "avg_fb_velo": round(avg_fb_velo, 1),
         "fb_usage_pct": round(fb_usage, 3),
         "breaking_usage_pct": round(brk_usage, 3),
@@ -661,6 +644,57 @@ def build_victim_profile(
         "confidence": confidence,
     }
 
+
+def build_victim_profile(
+    player_id: int,
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> dict:
+    """
+    Build a "victim profile" for a batter — the archetype of pitcher
+    they tend to hit home runs against.
+
+    Returns a profile dict with the same dimensions as a pitcher profile,
+    plus metadata (hr_count, confidence).
+
+    *as_of_date* — YYYY-MM-DD; HR events on or after this date are
+    excluded, AND the per-victim-pitcher arsenal lookups are also
+    as-of-date-filtered. None (default) = today.
+
+    This is the per-batter live path — one Statcast roundtrip for the HR
+    events plus up to 30 more for the victim pitchers' arsenals. The 2025
+    backfill does NOT come through here: build_victim_profiles_batch routes
+    historical dates to _build_victim_profiles_from_db (DB-backed, no API).
+    """
+    cache_key = (
+        f"victim_{player_id}_{season}"
+        if as_of_date is None
+        else f"victim_{player_id}_{season}_asof_{as_of_date}"
+    )
+    cached = _cache_get("victim_profiles", cache_key, TTL_VICTIM_PROFILE)
+    if cached is not None:
+        return cached
+
+    hr_events = _fetch_batter_hr_events(player_id, season, as_of_date=as_of_date)
+
+    if len(hr_events) < 3:
+        # Not enough data — blend heavily toward league average
+        profile = {**LEAGUE_AVG_VICTIM, "hr_count": len(hr_events), "confidence": 0.3}
+        _cache_set("victim_profiles", cache_key, profile)
+        return profile
+
+    def _live_arsenal(pid: int) -> dict | None:
+        arsenal = _fetch_pitcher_arsenal_statcast(pid, season, as_of_date=as_of_date)
+        if arsenal is None:
+            # MLB API fallback (season-aggregate stats) can't be honestly
+            # date-filtered for a historical reconstruction without a
+            # different endpoint — but it's a low-resolution league-avg
+            # estimate anyway. Accepted approximation for backfill.
+            arsenal = _fetch_pitcher_arsenal_mlb_api(pid, season)
+        return arsenal
+
+    profile = _aggregate_victim_profile(hr_events, _live_arsenal)
     _cache_set("victim_profiles", cache_key, profile)
     return profile
 
@@ -1063,6 +1097,98 @@ def _load_pitcher_arsenals_from_db(season: int) -> dict[int, dict]:
         return {}
 
 
+def _build_victim_profiles_from_db(
+    batter_ids: list[int],
+    season: int,
+    as_of_date: str,
+) -> dict[int, dict]:
+    """
+    Build victim profiles entirely from the local DB — zero Statcast calls.
+    This is the 2025-backfill fast path.
+
+    The per-batter live path (build_victim_profile) costs one Statcast
+    roundtrip for the HR events plus up to 30 more for the victim pitchers'
+    arsenals — for a ~150-batter slate that is thousands of API calls and
+    hours per reconstructed date. This function reproduces the same
+    aggregation from data already in SQLite:
+
+      - HR events: batter_hr_events filtered game_date < as_of_date.
+        Honest as-of-date — every HR event carries its own game_date.
+      - Victim-pitcher arsenals: the pitcher_arsenals table. This is a
+        season-aggregate snapshot, NOT an as-of-date arsenal, so it is a
+        small, deliberate look-ahead approximation. Acceptable because
+        (a) pitcher arsenals move very slowly across a season — velo /
+        spin / pitch-mix in April vs September barely shift — and (b) the
+        archetype-similarity signal is coarse (a 0-100 distance score,
+        blended 50/50 with vulnerability). Current-season arsenals are
+        preferred; the prior season is merged in as a fallback for
+        pitchers without a current-season row.
+
+    Returns {batter_id: victim_profile_dict} for every id in *batter_ids*.
+    Batters with <3 HR events before as_of_date get LEAGUE_AVG_VICTIM — the
+    same outcome build_victim_profile produces, without the API spend.
+    """
+    want = {int(b) for b in batter_ids if b and b > 0}
+    out: dict[int, dict] = {}
+    if not want:
+        return out
+
+    # Arsenal lookup: current season takes precedence, prior season fills
+    # gaps (a pitcher who threw in `season` but lacks a `season` row).
+    arsenals = {
+        **_load_pitcher_arsenals_from_db(season - 1),
+        **_load_pitcher_arsenals_from_db(season),
+    }
+
+    # HR events for current + prior season, clipped to before as_of_date.
+    # Lower bound mirrors _fetch_batter_hr_events' season + season-1 window.
+    events_by_batter: dict[int, list[dict]] = {}
+    if _DB_PATH.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(_DB_PATH))
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT batter_id, pitcher_id, p_throws, pitch_type,
+                       release_speed, release_spin, release_ext, game_date
+                FROM batter_hr_events
+                WHERE game_date >= ? AND game_date < ?
+                """,
+                (f"{season - 1}-03-01", as_of_date),
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                bid = r["batter_id"]
+                if bid not in want:
+                    continue
+                events_by_batter.setdefault(bid, []).append({
+                    "pitcher_id": int(r["pitcher_id"] or 0),
+                    "p_throws": r["p_throws"] or "R",
+                    "pitch_type": r["pitch_type"] or "FF",
+                    "release_speed": float(r["release_speed"] or 0),
+                    "release_spin_rate": float(r["release_spin"] or 0),
+                    "release_extension": float(r["release_ext"] or 0),
+                    "game_date": str(r["game_date"] or ""),
+                })
+        except Exception as e:
+            print(f"  [ARCHETYPE] DB batter_hr_events load failed: {e}")
+
+    for bid in want:
+        events = events_by_batter.get(bid, [])
+        if len(events) < 3:
+            # Mirror build_victim_profile's <3 fallback exactly.
+            out[bid] = {
+                **LEAGUE_AVG_VICTIM,
+                "hr_count": len(events),
+                "n_victim_pitchers": 0,
+                "confidence": 0.3,
+            }
+        else:
+            out[bid] = _aggregate_victim_profile(events, arsenals.get)
+    return out
+
+
 def build_pitcher_profiles_batch(
     pitcher_ids: dict[str, int],
     season: int,
@@ -1077,20 +1203,32 @@ def build_pitcher_profiles_batch(
     pitcher_ids: {pitcher_name: pitcher_id}
     Returns: {pitcher_name: profile_dict}
 
-    *as_of_date* — YYYY-MM-DD. When set, BYPASSES the DB cache and routes
-    every pitcher through the per-player Statcast path with the same
-    as_of_date filter — the DB rows are snapshots of "as of nightly ETL,"
-    not as_of_date, so they'd silently inject future-knowledge data into
-    a historical reconstruction. Slow but correct for backfill. None
-    (default) = today = DB-first as before.
+    *as_of_date* — YYYY-MM-DD. When set (2025 backfill), arsenals come
+    from the pitcher_arsenals DB table only — current season preferred,
+    prior season merged in as a fallback. A starter missing from both
+    gets the league-average archetype default; the per-pitcher Statcast
+    fallback is deliberately NOT used for backfill (that per-player
+    roundtrip is the hang this path exists to eliminate). The
+    pitcher_arsenals table is a season-aggregate snapshot — the same
+    small, accepted look-ahead approximation _build_victim_profiles_from_db
+    documents. None (default) = today = DB-first, per-pitcher Statcast
+    fallback for rookies/callups, as before.
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    bypass_db = as_of_date is not None and as_of_date != today
-    db_arsenals = {} if bypass_db else _load_pitcher_arsenals_from_db(season)
+    backfill = as_of_date is not None and as_of_date != today
+
+    db_arsenals = _load_pitcher_arsenals_from_db(season)
+    if backfill:
+        # Prior season fills gaps for pitchers without a current-season row.
+        db_arsenals = {
+            **_load_pitcher_arsenals_from_db(season - 1),
+            **db_arsenals,
+        }
 
     profiles = {}
     db_hits = 0
     api_hits = 0
+    league_avg = 0
     for name, pid in pitcher_ids.items():
         if not (pid and pid > 0):
             profiles[name] = {
@@ -1109,19 +1247,39 @@ def build_pitcher_profiles_batch(
         if pid in db_arsenals:
             profiles[name] = db_arsenals[pid]
             db_hits += 1
+        elif backfill:
+            # Backfill: no Statcast fallback (the per-player roundtrip is
+            # the hang this path eliminates). League-average archetype
+            # default — matches build_pitcher_profile's own last resort.
+            profiles[name] = {
+                "avg_fb_velo": 93.5,
+                "fb_usage_pct": 0.53,
+                "breaking_usage_pct": 0.28,
+                "offspeed_usage_pct": 0.15,
+                "p_throws": "R",
+                "avg_fb_spin": 2250.0,
+                "avg_extension": 6.2,
+                "source": "league_avg_default",
+                "confidence": 0.2,
+            }
+            league_avg += 1
         else:
             # Rookie / fresh-callup / mid-season trade not yet picked up
-            # by the nightly arsenal sync — OR backfill mode (DB bypassed
-            # above). Fall through to the slow path so the profile is
-            # honest for the requested date.
+            # by the nightly arsenal sync. Fall through to the slow path
+            # so the live profile is honest for the requested date.
             profiles[name] = build_pitcher_profile(pid, season, as_of_date=as_of_date)
             api_hits += 1
 
-    mode = f"as_of={as_of_date}" if bypass_db else "live"
-    print(
-        f"  [ARCHETYPE] Pitcher arsenals ({mode}): {db_hits} from DB, "
-        f"{api_hits} via API"
-    )
+    if backfill:
+        print(
+            f"  [ARCHETYPE] Pitcher arsenals (as_of={as_of_date}): "
+            f"{db_hits} from DB, {league_avg} league-avg default"
+        )
+    else:
+        print(
+            f"  [ARCHETYPE] Pitcher arsenals (live): "
+            f"{db_hits} from DB, {api_hits} via API"
+        )
     return profiles
 
 
@@ -1147,26 +1305,59 @@ def build_victim_profiles_batch(
     batter_ids: [(name, player_id), ...]
     Returns: {player_id: victim_profile_dict}
 
-    *as_of_date* — YYYY-MM-DD. When set, BYPASSES the DB cache and routes
-    every batter through build_victim_profile with the same as_of_date
-    filter. DB rows are snapshots of "as of nightly ETL," not as_of_date,
-    so they'd inject future HRs into a historical reconstruction. Slow
-    but correct for backfill. None (default) = today = DB-first as before.
+    *as_of_date* — YYYY-MM-DD. When set (2025 backfill), routes through
+    _build_victim_profiles_from_db: HR events from batter_hr_events
+    filtered game_date < as_of_date, victim-pitcher arsenals from the
+    pitcher_arsenals table. The nightly victim_profiles table is NOT used
+    for backfill — its rows are "as of nightly ETL," which would inject
+    future HRs into a historical reconstruction. None (default) = today =
+    DB-first off the precomputed victim_profiles table, as before.
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    bypass_db = as_of_date is not None and as_of_date != today
+    backfill = as_of_date is not None and as_of_date != today
 
-    if bypass_db or not _DB_PATH.exists():
-        if not bypass_db:
+    if backfill:
+        if _DB_PATH.exists():
+            # Fast path: rebuild profiles from batter_hr_events +
+            # pitcher_arsenals, no per-player Statcast. Hours/date -> sec.
             print(
-                f"  [ARCHETYPE] DB not found at {_DB_PATH}, "
-                "falling back to per-batter Statcast"
+                f"  [ARCHETYPE] backfill mode (as_of={as_of_date}): victim "
+                "profiles from DB (batter_hr_events + pitcher_arsenals)"
             )
-        else:
+            ids = [pid for _name, pid in batter_ids if pid and pid > 0]
+            profiles = _build_victim_profiles_from_db(ids, season, as_of_date)
+            # _build_victim_profiles_from_db returns every requested id;
+            # patch defensively in case a caller passes a duplicate/oddity.
+            for pid in ids:
+                if pid not in profiles:
+                    profiles[pid] = {
+                        **LEAGUE_AVG_VICTIM,
+                        "hr_count": 0, "n_victim_pitchers": 0, "confidence": 0.3,
+                    }
+            with_history = sum(
+                1 for p in profiles.values() if p.get("n_victim_pitchers", 0) > 0
+            )
             print(
-                f"  [ARCHETYPE] backfill mode (as_of={as_of_date}): "
-                "bypassing DB cache, per-batter Statcast with date filter"
+                f"  [ARCHETYPE] Victim profiles (as_of={as_of_date}): "
+                f"{len(profiles)} built, {with_history} with HR history"
             )
+            return profiles
+        # No DB at all — can't do the fast path; per-batter Statcast.
+        print(
+            f"  [ARCHETYPE] backfill mode (as_of={as_of_date}): DB not found "
+            f"at {_DB_PATH}, falling back to per-batter Statcast"
+        )
+        profiles = {}
+        for _name, pid in batter_ids:
+            if pid and pid > 0:
+                profiles[pid] = build_victim_profile(pid, season, as_of_date=as_of_date)
+        return profiles
+
+    if not _DB_PATH.exists():
+        print(
+            f"  [ARCHETYPE] DB not found at {_DB_PATH}, "
+            "falling back to per-batter Statcast"
+        )
         profiles = {}
         for _name, pid in batter_ids:
             if pid and pid > 0:

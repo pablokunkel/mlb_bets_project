@@ -546,19 +546,29 @@ def try_fetch_statcast_recent(player_id: int, days: int = 14) -> dict:
         return {}
 
 
-def fetch_form_data_batch(player_ids: list[tuple[str, int]], season: int) -> dict:
+def fetch_form_data_batch(
+    player_ids: list[tuple[str, int]],
+    season: int,
+    *,
+    as_of_date: str | None = None,
+) -> dict:
     """
     Fetch recent game logs for a batch of players via the MLB Stats API.
     Much more reliable than per-batter Statcast calls.
 
     *player_ids* is a list of (name, player_id) tuples.
+    *as_of_date* — YYYY-MM-DD; forwarded to get_recent_game_log so the
+    Form windows exclude games on/after that date. Required for the
+    2025 backfill — without it the Form factor (the joint-heaviest at
+    weight 0.279) silently uses end-of-season games for a mid-season
+    reconstruction. None (default) = today = production behavior.
     Returns {player_id: game_log_dict}.
     """
     results = {}
     for name, pid in player_ids:
         if not pid or pid < 1000:
             continue
-        log = get_recent_game_log(pid, season)
+        log = get_recent_game_log(pid, season, as_of_date=as_of_date)
         if log:
             results[pid] = log
     return results
@@ -717,14 +727,32 @@ def fetch_pitcher_stats_mlb(pitcher_id: int, pitcher_name: str, season: int) -> 
     }
 
 
-def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
+def fetch_live_slate(
+    date_str: str,
+    status: DataSourceStatus = None,
+    *,
+    as_of_date: str | None = None,
+) -> dict:
     """
-    Fetch today's real MLB slate: games, lineups, pitchers, weather.
+    Fetch the real MLB slate for *date_str*: games, lineups, pitchers, weather.
     Returns a dict with all data needed for scoring, or None if APIs fail.
     Populates *status* tracker with per-source results.
+
+    *as_of_date* — YYYY-MM-DD; when set, threads as-of-date semantics through
+    every fetcher that supports them (per-batter / per-pitcher Statcast,
+    rolling-window Statcast, pitcher recency). Production callers pass
+    None (= today, no filter); the 2025-season backfill orchestrator
+    passes the historical date. The Vegas-odds fetch is skipped when
+    as_of_date != today because the-odds-api free tier has no historical
+    odds data — backfill rows get NULL vegas_team_total_pct and the
+    matchup scorer's skip-on-missing handles it cleanly.
     """
     if status is None:
         status = DataSourceStatus()
+
+    # PR 4 (2026-05-21): backfill mode flag for gating Vegas (no historical odds)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    is_backfill = as_of_date is not None and as_of_date != today_str
 
     # ── Schedule ──────────────────────────────────────────────────────
     print(f"  [LIVE] Fetching MLB schedule for {date_str}...")
@@ -893,7 +921,9 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
     if USE_PER_PLAYER_STATCAST:
         try:
             print(f"  [ARCHETYPE] Building pitcher profiles for {len(pitcher_id_map)} starters...")
-            pitcher_profiles = build_pitcher_profiles_batch(pitcher_id_map, season)
+            pitcher_profiles = build_pitcher_profiles_batch(
+                pitcher_id_map, season, as_of_date=as_of_date,
+            )
             statcast_count = sum(1 for p in pitcher_profiles.values() if p.get("source") == "statcast")
             estimate_count = sum(1 for p in pitcher_profiles.values() if p.get("source") != "statcast")
             if statcast_count > 0:
@@ -959,9 +989,12 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
     )
     try:
         pitcher_ids_for_recency = [(n, pid) for n, pid in pitcher_id_map.items() if pid]
+        # For backfill, use as_of_date as the "today" reference so the
+        # recent-window aggregation excludes games played on/after that
+        # date. Production passes date_str (today's slate date).
         bulk_pitcher_recency = fetch_pitcher_recent_form_batch(
             pitcher_ids_for_recency, season,
-            today_str=date_str,
+            today_str=(as_of_date or date_str),
             days=PITCHER_RECENT_WINDOW_N if PITCHER_RECENT_WINDOW_TYPE == "days" else 21,
             window_type=PITCHER_RECENT_WINDOW_TYPE,
             window_n=PITCHER_RECENT_WINDOW_N,
@@ -1000,15 +1033,30 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
 
     # ── Batter xwOBA on contact via BULK Savant CSV (one HTTP call) ────
     # Replaces per-batter Statcast in score_live_slate. Slate-level cache.
+    #
+    # PR 4 fix (2026-05-22): SKIP for backfill. fetch_batter_xwoba_bulk
+    # hits Savant's expected_statistics leaderboard, which only returns a
+    # SEASON-AGGREGATE xwOBA — for a historical reconstruction that's the
+    # season-FINAL number, i.e. look-ahead bias on xwoba_contact. We can't
+    # cheaply make it as-of-date. Leaving it empty -> xwoba_contact stays
+    # None -> score_power skip-on-missing. The as-of-date-correct recent
+    # contact signal still flows via B6a's recent_xwoba_contact_14d below.
     bulk_batter_xwoba: dict = {}
-    try:
-        bulk_batter_xwoba = fetch_batter_xwoba_bulk(season)
-        if bulk_batter_xwoba:
-            status.ok("Batter xwOBA (bulk)", f"{len(bulk_batter_xwoba)} batters via Savant")
-        else:
-            status.warn("Batter xwOBA (bulk)", "No data — power score falls back to ISO/EV")
-    except Exception as e:
-        status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
+    if is_backfill:
+        status.warn(
+            "Batter xwOBA (bulk)",
+            f"Skipped (backfill mode, as_of={as_of_date}) — season-aggregate "
+            "would be look-ahead; recent_xwoba_contact_14d carries the signal",
+        )
+    else:
+        try:
+            bulk_batter_xwoba = fetch_batter_xwoba_bulk(season)
+            if bulk_batter_xwoba:
+                status.ok("Batter xwOBA (bulk)", f"{len(bulk_batter_xwoba)} batters via Savant")
+            else:
+                status.warn("Batter xwOBA (bulk)", "No data — power score falls back to ISO/EV")
+        except Exception as e:
+            status.warn("Batter xwOBA (bulk)", f"Bulk fetch failed: {e}")
 
     # ── B6a: rolling 14d quality-contact Statcast (one bulk pull) ──────
     # Aggregated per-batter to {recent_barrel_real_14d,
@@ -1018,7 +1066,11 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
     # (skip-on-missing). Gated by USE_RECENT_STATCAST_BLEND in score_power.
     bulk_recent_statcast: dict = {}
     try:
-        bulk_recent_statcast = fetch_batter_recent_statcast_14d(as_of_date=date_str)
+        # For backfill, use as_of_date as the window endpoint; production
+        # uses date_str (today's slate date — same semantics there).
+        bulk_recent_statcast = fetch_batter_recent_statcast_14d(
+            as_of_date=(as_of_date or date_str)
+        )
         if bulk_recent_statcast:
             status.ok(
                 "Batter Recent 14d (bulk)",
@@ -1033,15 +1085,24 @@ def fetch_live_slate(date_str: str, status: DataSourceStatus = None) -> dict:
         status.warn("Batter Recent 14d (bulk)", f"Bulk fetch failed: {e}")
 
     # ── Vegas implied team totals ──────────────────────────────────────
+    # PR 4: skip Vegas for backfill — the-odds-api free tier has no
+    # historical odds. Backfill rows get NULL vegas_team_total_pct and
+    # score_matchup's skip-on-missing handles it cleanly.
     implied_totals: dict = {}
-    try:
-        implied_totals = fetch_vegas_implied_totals(date_str=date_str)
-        if implied_totals:
-            status.ok("Vegas Implied Totals", f"{len(implied_totals)} teams (the-odds-api)")
-        else:
-            status.warn("Vegas Implied Totals", "No data — set VEGAS_ODDS_API_KEY to enable")
-    except Exception as e:
-        status.warn("Vegas Implied Totals", f"Failed: {e}")
+    if is_backfill:
+        status.warn(
+            "Vegas Implied Totals",
+            f"Skipped (backfill mode, as_of={as_of_date})",
+        )
+    else:
+        try:
+            implied_totals = fetch_vegas_implied_totals(date_str=date_str)
+            if implied_totals:
+                status.ok("Vegas Implied Totals", f"{len(implied_totals)} teams (the-odds-api)")
+            else:
+                status.warn("Vegas Implied Totals", "No data — set VEGAS_ODDS_API_KEY to enable")
+        except Exception as e:
+            status.warn("Vegas Implied Totals", f"Failed: {e}")
 
     # ── Live tiers (rolling window) ───────────────────────────────────
     # B5 (2026-05-20): pass today's lineup player_ids so build_live_tiers
@@ -1088,6 +1149,8 @@ def score_live_slate(
     config_name: str,
     pf,
     slate_ctx: dict | None = None,
+    *,
+    as_of_date: str | None = None,
 ) -> list:
     """
     Score all batters in a tier against the live slate.
@@ -1098,6 +1161,10 @@ def score_live_slate(
     When provided, park/weather/pitcher-vulnerability scoring uses
     within-slate percentile rankings rather than fixed-anchor scaling.
     Computed once in generate_card() and passed into all 3 tier passes.
+
+    *as_of_date* — YYYY-MM-DD; when set, the per-tier victim-profile
+    batch build filters Statcast HR events to before this date (PR 4
+    backfill mode). Production callers pass None.
     """
     # Use live tiers if available, otherwise fall back to hardcoded
     active_tiers = slate.get("live_tiers") or ALL_TIERS
@@ -1249,9 +1316,11 @@ def score_live_slate(
 
         eligible_batters.append((b, game, player_id, batting_order))
 
-    # Batch-fetch game logs for all eligible batters
+    # Batch-fetch game logs for all eligible batters. as_of_date forwards
+    # the backfill cutoff so the Form windows exclude games on/after the
+    # reconstructed date (look-ahead guard).
     player_id_list = [(b["name"], pid) for b, _, pid, _ in eligible_batters]
-    game_logs = fetch_form_data_batch(player_id_list, season)
+    game_logs = fetch_form_data_batch(player_id_list, season, as_of_date=as_of_date)
     log_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in game_logs)
     print(f"  [FORM] Fetched game logs for {log_hit}/{len(eligible_batters)} "
           f"T{tier} batters")
@@ -1285,7 +1354,9 @@ def score_live_slate(
     if pitcher_profiles and USE_PER_PLAYER_STATCAST:
         print(f"  [ARCHETYPE] Building victim profiles for {len(eligible_batters)} T{tier} batters...")
         try:
-            victim_profiles = build_victim_profiles_batch(player_id_list, season)
+            victim_profiles = build_victim_profiles_batch(
+                player_id_list, season, as_of_date=as_of_date,
+            )
             vp_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in victim_profiles)
             print(f"  [ARCHETYPE] Victim profiles built for {vp_hit}/{len(eligible_batters)} T{tier} batters")
         except Exception as e:
@@ -1404,6 +1475,8 @@ def score_untiered_starters(
     pf,
     slate_ctx: dict | None,
     already_scored_pids: set,
+    *,
+    as_of_date: str | None = None,
 ) -> list:
     """Score confirmed starters who didn't qualify for any tier.
 
@@ -1534,10 +1607,11 @@ def score_untiered_starters(
     print(f"  [UNTIERED] {len(stubs)} confirmed starters not in any tier — "
           f"scoring with season_batting fallback")
 
-    # Batch fetch game logs (recent form data)
+    # Batch fetch game logs (recent form data). as_of_date forwards the
+    # backfill cutoff (look-ahead guard) — same as the tiered path.
     player_id_list = [(s[0]["name"], s[0]["player_id"]) for s in stubs]
     try:
-        game_logs = fetch_form_data_batch(player_id_list, season)
+        game_logs = fetch_form_data_batch(player_id_list, season, as_of_date=as_of_date)
     except Exception as e:
         print(f"  [UNTIERED] form data batch failed: {e}")
         game_logs = {}
@@ -1720,23 +1794,36 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
 # Card generation — works for both live and offline
 # ---------------------------------------------------------------------------
 
-def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
+def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date: str | None = None):
     """
     Generate the full 8-pick card with tier blending.
     Tries live API data first; falls back to offline simulation.
+
+    *as_of_date* — YYYY-MM-DD; when set, threads as-of-date semantics
+    through fetch_live_slate / score_live_slate / score_untiered_starters
+    so the reconstructed slate only sees data that existed before that
+    morning. Used by the 2025-season backfill orchestrator. Sets
+    mode='backfill_<season>' on the return so downstream consumers can
+    distinguish backfill rows from production rows. Production callers
+    pass None (= today, no filter, mode='live').
     """
     pf = get_hardcoded_park_factors()
     mode = "offline_simulation"
     live_slate = None
     status = DataSourceStatus()
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    is_backfill = as_of_date is not None and as_of_date != today_str
+
     if not force_offline:
         print("\n  Attempting live data fetch...")
-        live_slate = fetch_live_slate(date_str, status=status)
+        live_slate = fetch_live_slate(date_str, status=status, as_of_date=as_of_date)
         if live_slate and live_slate["games"]:
-            mode = "live"
+            # PR 4: tag backfill rows so the A1 refit / dashboards can
+            # explicitly include / exclude them. Production stays 'live'.
+            mode = f"backfill_{date_str[:4]}" if is_backfill else "live"
             tier_src = "LIVE rolling" if live_slate.get("live_tiers") else "hardcoded 2025"
-            print(f"  Using LIVE data ({len(live_slate['games'])} games, tiers: {tier_src})")
+            print(f"  Using LIVE data ({len(live_slate['games'])} games, tiers: {tier_src}, mode={mode})")
         else:
             print("  Live fetch failed or no games — falling back to offline mode")
             live_slate = None
@@ -1801,6 +1888,7 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
             scored = score_live_slate(
                 live_slate, date_str, tier, config, pf,
                 slate_ctx=slate_ctx,
+                as_of_date=as_of_date,
             )
         else:
             scored = simulate_slate(date_str, tier, config, rng, pf, slate_ctx=slate_ctx)
@@ -1831,7 +1919,8 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False):
     if live_slate:
         already_scored_pids = {s.get("player_id") for s in full_board if s.get("player_id")}
         untiered = score_untiered_starters(
-            live_slate, date_str, config, pf, slate_ctx, already_scored_pids
+            live_slate, date_str, config, pf, slate_ctx, already_scored_pids,
+            as_of_date=as_of_date,
         )
         for s in untiered:
             s["tier_label"] = "T4-Untiered"
