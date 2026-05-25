@@ -119,15 +119,25 @@ def build_dataset(db_path: Path) -> dict:
     def q(sql):
         return [dict(r) for r in conn.execute(sql).fetchall()]
 
-    outcomes = q("SELECT date, batter_id, batter_name, game_pk, ab, hits, hr_count, "
-                 "rbi, doubles, triples, total_bases FROM outcomes")
-    picks = q("SELECT * FROM daily_picks")
-    inputs = q("SELECT * FROM pick_inputs")
-    hrev = q("SELECT date, batter_id, batter_name, inning, half_inning, pitcher_name, "
-             "launch_speed, launch_angle, total_distance, trajectory, hardness, "
-             "description, venue FROM hr_events")
-    slate = q("SELECT game_pk, date, home_team, away_team, venue, dome FROM daily_slate")
-    lineup = q("SELECT game_pk, player_id, side FROM daily_lineup")
+    # Season-to-date filter. The 2025 backfill (see WEIGHT_REFIT_LOG 2026-05-25)
+    # put pre-current-season rows in the DB for the A1 refit; including them
+    # in the dashboard heatmap (a) pushes heatmap.json past Cloudflare Workers'
+    # 25 MiB asset limit (CF build was failing at 26.1 MiB), and (b) clutters
+    # the view with data that's training material, not current-state-of-play.
+    cutoff = f"{SEASON}-01-01"
+
+    outcomes = q(f"SELECT date, batter_id, batter_name, game_pk, ab, hits, hr_count, "
+                 f"rbi, doubles, triples, total_bases FROM outcomes "
+                 f"WHERE date >= '{cutoff}'")
+    picks = q(f"SELECT * FROM daily_picks WHERE date >= '{cutoff}'")
+    inputs = q(f"SELECT * FROM pick_inputs WHERE date >= '{cutoff}'")
+    hrev = q(f"SELECT date, batter_id, batter_name, inning, half_inning, pitcher_name, "
+             f"launch_speed, launch_angle, total_distance, trajectory, hardness, "
+             f"description, venue FROM hr_events WHERE date >= '{cutoff}'")
+    slate = q(f"SELECT game_pk, date, home_team, away_team, venue, dome FROM daily_slate "
+              f"WHERE date >= '{cutoff}'")
+    lineup = q(f"SELECT game_pk, player_id, side FROM daily_lineup "
+               f"WHERE date >= '{cutoff}'")
     season = q(f"SELECT * FROM season_batting WHERE season = {SEASON}")
 
     conn.close()
