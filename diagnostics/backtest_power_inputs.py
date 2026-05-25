@@ -36,6 +36,16 @@ grades each variant against actual HR outcomes. Variants:
                                 purely past-HR-rate auto-correlation in
                                 barrel + hr_fb, or if the SLG-encoded inputs
                                 carry independent signal.
+  * real-21d  / real-28d     - same metric definitions as the 14d real
+                                inputs, just aggregated over a wider rolling
+                                window. Populated by
+                                etl/backfill_statcast_windows.py from a
+                                single bulk Statcast pull per date that's
+                                sliced to {14, 21, 28}d. Tests whether the
+                                per-row noise of the 14d window (~30-40
+                                batted balls per batter) is what's keeping
+                                real-only behind synthetic-only.
+  * blended-21d / blended-28d - synthetic + the wider real metrics.
 
 Headline numbers run on the COMMON SUBSET (rows that carry both
 synthetic and real signal) - apples-to-apples on identical rows.
@@ -84,6 +94,12 @@ from etl.db import DB_PATH
 
 SYNTHETIC_KEYS = ("barrel_pct", "exit_velo", "hr_fb_pct", "iso")
 REAL_KEYS = ("recent_barrel_real_14d", "recent_xwoba_contact_14d", "recent_iso_14d")
+# B12 (2026-05-25): wider real-Statcast windows. Same metric definitions as
+# _14d, just aggregated over a longer rolling window -- tests whether the
+# real-only variant's per-row noise problem (n_batted_balls ~30-40 at 14d)
+# eases with more samples.
+REAL_21D_KEYS = ("recent_barrel_real_21d", "recent_xwoba_contact_21d", "recent_iso_21d")
+REAL_28D_KEYS = ("recent_barrel_real_28d", "recent_xwoba_contact_28d", "recent_iso_28d")
 
 # Anchors mirror score_batters.score_power. Variants override individual entries.
 DEFAULT_ANCHORS = {
@@ -94,6 +110,15 @@ DEFAULT_ANCHORS = {
     "recent_barrel_real_14d":   (8.0, 18.0),
     "recent_xwoba_contact_14d": (0.330, 0.450),
     "recent_iso_14d":           (0.100, 0.300),
+    # B12 wider windows -- start with the same anchors as _14d. If a window
+    # wins on AUC, a tight-anchor follow-up sweep can re-fit the anchors to
+    # the new window's distribution (which is smoother with more samples).
+    "recent_barrel_real_21d":   (8.0, 18.0),
+    "recent_xwoba_contact_21d": (0.330, 0.450),
+    "recent_iso_21d":           (0.100, 0.300),
+    "recent_barrel_real_28d":   (8.0, 18.0),
+    "recent_xwoba_contact_28d": (0.330, 0.450),
+    "recent_iso_28d":           (0.100, 0.300),
 }
 
 # Widened anchors for the 14d real metrics. A 14d window has ~30-40
@@ -117,6 +142,15 @@ VARIANTS = (
     ("real-tight-anchors",      REAL_KEYS,                            TIGHT_REAL_ANCHORS),
     ("blended-tight-anchors",   SYNTHETIC_KEYS + REAL_KEYS,           TIGHT_REAL_ANCHORS),
     ("synthetic-no-hr-encoded", ("exit_velo", "iso"),                 None),
+    # B12 (2026-05-25): wider real-Statcast windows. Same metric
+    # definitions as _14d, longer rolling window. Tests whether the
+    # per-row noise problem of the 14d window (~30-40 batted balls per
+    # batter) eases at 21d / 28d. If "real-{21,28}d" decisively beats
+    # "real-only", USE_RECENT_STATCAST_BLEND may finally be worth on.
+    ("real-21d",                REAL_21D_KEYS,                        None),
+    ("real-28d",                REAL_28D_KEYS,                        None),
+    ("blended-21d",             SYNTHETIC_KEYS + REAL_21D_KEYS,       None),
+    ("blended-28d",             SYNTHETIC_KEYS + REAL_28D_KEYS,       None),
 )
 VARIANT_NAMES = tuple(v[0] for v in VARIANTS)
 
@@ -135,6 +169,10 @@ def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
             pi.barrel_pct, pi.exit_velo, pi.hr_fb_pct, pi.iso,
             pi.recent_barrel_real_14d, pi.recent_xwoba_contact_14d,
             pi.recent_iso_14d,
+            pi.recent_barrel_real_21d, pi.recent_xwoba_contact_21d,
+            pi.recent_iso_21d,
+            pi.recent_barrel_real_28d, pi.recent_xwoba_contact_28d,
+            pi.recent_iso_28d,
             CASE WHEN COALESCE(o.hr_count, 0) > 0 THEN 1 ELSE 0 END AS hit_hr
         FROM pick_inputs pi
         INNER JOIN outcomes o

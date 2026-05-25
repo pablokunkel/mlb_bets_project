@@ -1196,11 +1196,13 @@ def pin_backtest_power_inputs_isolates_variants() -> Result:
         )
     failures = []
 
-    # Variant list exposes all six expected names.
+    # Variant list exposes all expected names (6 baseline + 4 from B12 wider
+    # windows = 10 total).
     expected_variants = {
         "synthetic-only", "real-only", "blended",
         "real-tight-anchors", "blended-tight-anchors",
         "synthetic-no-hr-encoded",
+        "real-21d", "real-28d", "blended-21d", "blended-28d",
     }
     got = set(bpi.VARIANT_NAMES)
     if got != expected_variants:
