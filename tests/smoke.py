@@ -1133,6 +1133,56 @@ def pin_weather_retry_config() -> Result:
     )
 
 
+def pin_backtest_form_anchors_variants_isolate() -> Result:
+    """Form harness: backtest_form_anchors imports and each variant scores
+    the Bader 2026-05-23 worked example correctly (hr_10g=3, iso_30g=0.186,
+    avg_30g=0.163 - the slumping-AVG-but-HR-active pattern that motivated
+    the harness)."""
+    try:
+        from diagnostics import backtest_form_anchors as bfa
+    except Exception as e:
+        return Result(
+            "backtest_form_anchors import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in ("fetch_rows", "score_variants", "compute_metrics", "main"):
+        if not hasattr(bfa, name):
+            failures.append(f"missing {name}")
+    for must in ("current", "avg_floor_180", "no_avg", "2x_hr",
+                 "hr_iso_only", "hr_only"):
+        if must not in bfa.VARIANTS:
+            failures.append(f"VARIANTS missing {must!r}")
+
+    # Bader 2026-05-23 worked example. avg_30g=0.163 is below BOTH the
+    # current floor (0.210) and the avg_floor_180 candidate (0.180), so
+    # those two variants should match. Dropping AVG entirely should
+    # nearly double the score (mean of just HR+ISO, no zero-clamp drag).
+    bader = {"recent_hr_10g": 3, "recent_iso_30g": 0.186,
+             "recent_avg_30g": 0.163, "ev_trend": None}
+    expected = {
+        "current":       34.33,    # (60+43+0)/3
+        "avg_floor_180": 34.33,    # same - 0.163 still sub-floor
+        "no_avg":        51.5,     # (60+43)/2
+        "2x_hr":         40.75,    # (2*60+43+0)/4
+        "hr_iso_only":   51.5,     # same as no_avg (same inputs)
+        "hr_only":       60.0,     # just the HR term
+    }
+    for variant, want in expected.items():
+        got = bfa._form_score(bader, variant)
+        if abs(got - want) > 0.5:
+            failures.append(f"{variant}: got {got:.2f}, want {want:.2f}")
+
+    if not failures:
+        return Result(
+            "backtest_form_anchors: 6 variants isolate inputs (Bader worked example)",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_form_anchors variants", Result.HALT, "; ".join(failures),
+    )
+
+
 def pin_backtest_power_inputs_isolates_variants() -> Result:
     """B6 harness: backtest_power_inputs imports, exposes its entry points,
     and its synthetic vs. real input-key sets are disjoint — the property
@@ -1526,6 +1576,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     # 2026-05-23: weather resilience (archive cache + broader retry)
     pin_weather_archive_cache_roundtrip,
     pin_weather_retry_config,
+    # 2026-05-23: Form anchor + weighting backtest harness
+    pin_backtest_form_anchors_variants_isolate,
 ]
 
 
