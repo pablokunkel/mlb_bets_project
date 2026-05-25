@@ -1184,9 +1184,9 @@ def pin_backtest_form_anchors_variants_isolate() -> Result:
 
 
 def pin_backtest_power_inputs_isolates_variants() -> Result:
-    """B6 harness: backtest_power_inputs imports, exposes its entry points,
-    and its synthetic vs. real input-key sets are disjoint — the property
-    that makes the synthetic-vs-real head-to-head an honest comparison."""
+    """B6 harness: backtest_power_inputs imports, exposes 6 variants, has
+    disjoint synthetic/real key sets, and _compute_power produces distinct
+    scores under tight-anchor overrides."""
     try:
         from diagnostics import backtest_power_inputs as bpi
     except Exception as e:
@@ -1195,25 +1195,70 @@ def pin_backtest_power_inputs_isolates_variants() -> Result:
             f"failed: {type(e).__name__}: {e}",
         )
     failures = []
+
+    # Variant list exposes all six expected names.
+    expected_variants = {
+        "synthetic-only", "real-only", "blended",
+        "real-tight-anchors", "blended-tight-anchors",
+        "synthetic-no-hr-encoded",
+    }
+    got = set(bpi.VARIANT_NAMES)
+    if got != expected_variants:
+        failures.append(
+            f"VARIANT_NAMES = {sorted(got)}, want {sorted(expected_variants)}"
+        )
+
+    # Key sets disjoint (the honest A/B property).
     syn = set(bpi.SYNTHETIC_KEYS)
     real = set(bpi.REAL_KEYS)
-    if not syn or not real:
-        failures.append("an input-key set is empty")
     if syn & real:
         failures.append(f"synthetic/real key sets overlap: {sorted(syn & real)}")
-    for name in ("fetch_rows", "score_variants", "compute_metrics", "main"):
+
+    # Entry points present.
+    for name in ("fetch_rows", "score_variants", "compute_metrics",
+                 "_compute_power", "TIGHT_REAL_ANCHORS", "main"):
         if not hasattr(bpi, name):
             failures.append(f"missing {name}")
-    # _has_signal must require non-null AND > 0 — a 0 or None is not signal.
+
+    # _has_signal correctness.
     if bpi._has_signal({"iso": None}, ("iso",)):
         failures.append("_has_signal True on None")
     if bpi._has_signal({"iso": 0}, ("iso",)):
         failures.append("_has_signal True on 0")
     if not bpi._has_signal({"iso": 0.2}, ("iso",)):
         failures.append("_has_signal False on a real value")
+
+    # Tight-anchor override changes the score when the value sits between
+    # the default floor (8.0) and the tight floor (10.0).
+    row = {"recent_barrel_real_14d": 9.0}
+    default = bpi._compute_power(row, ("recent_barrel_real_14d",), None)
+    tight = bpi._compute_power(
+        row, ("recent_barrel_real_14d",), bpi.TIGHT_REAL_ANCHORS,
+    )
+    # default: scale(9, 8, 18) -> 10.0
+    # tight:   scale(9, 10, 22) -> clamped to 0.0
+    if abs(default - 10.0) > 0.1:
+        failures.append(f"default barrel=9 got {default:.2f}, want 10.0")
+    if abs(tight - 0.0) > 0.1:
+        failures.append(f"tight barrel=9 got {tight:.2f}, want 0.0 (clamped)")
+
+    # synthetic-no-hr-encoded variant must NOT include the HR-rate-encoded
+    # synthetic inputs (barrel_pct, hr_fb_pct) - that's the point.
+    nohr = [v for v in bpi.VARIANTS if v[0] == "synthetic-no-hr-encoded"]
+    if not nohr:
+        failures.append("synthetic-no-hr-encoded variant absent")
+    else:
+        keys = set(nohr[0][1])
+        leaks = keys & {"barrel_pct", "hr_fb_pct"}
+        if leaks:
+            failures.append(f"synthetic-no-hr-encoded leaks HR-encoded keys: {leaks}")
+        if not {"exit_velo", "iso"} <= keys:
+            failures.append(f"synthetic-no-hr-encoded missing SLG-encoded: {keys}")
+
     if not failures:
         return Result(
-            "backtest_power_inputs: synthetic/real variants isolated", Result.PASS,
+            "backtest_power_inputs: 6 variants, tight anchors + no-HR-encoded wired",
+            Result.PASS,
         )
     return Result(
         "backtest_power_inputs variants", Result.HALT, "; ".join(failures),

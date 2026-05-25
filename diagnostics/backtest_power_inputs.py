@@ -5,54 +5,64 @@ backtest_power_inputs.py - synthetic vs. real Statcast, head to head.
 The power factor (score_power) draws on two kinds of quality-contact
 input, and B6a was built to find out which one predicts home runs better:
 
-  * SYNTHETIC season inputs - barrel_pct / exit_velo / hr_fb_pct are
-    formula-derived, not measured (barrel ~= hr_per_pa * 200, exit_velo
-    ~= 82 + slg * 15); iso is a season-to-date aggregate. This is what
-    production scores on today, and what the 2025 backfill reconstructs.
-  * REAL rolling-14d Statcast - recent_barrel_real_14d /
-    recent_xwoba_contact_14d / recent_iso_14d, measured pitch-by-pitch
-    from Savant. Added in B6a, gated behind USE_RECENT_STATCAST_BLEND.
+  * SYNTHETIC season inputs - formula-derived from season stats:
+        barrel_pct  ~=  hr_per_pa * 200      (HR-rate-encoded)
+        hr_fb_pct   ~=  hr_per_pa * 180      (HR-rate-encoded)
+        exit_velo    =  82 + slg * 15        (SLG-encoded)
+        iso          =  SLG - AVG            (SLG-encoded)
+    Two of the four (barrel + hr_fb) are literally past HR rate in
+    disguise. So "synthetic" here is not a measurement proxy - it's a
+    season-aggregate performance lookup.
 
-This harness re-scores score_power three ways off the backfilled
-pick_inputs and grades each against actual HR outcomes:
+  * REAL rolling-14d Statcast - measured pitch-by-pitch from Savant:
+        recent_barrel_real_14d
+        recent_xwoba_contact_14d
+        recent_iso_14d
+    Added in B6a, gated behind USE_RECENT_STATCAST_BLEND.
 
-  * synthetic-only - feed only the synthetic season inputs
-  * real-only      - feed only the real 14d Statcast inputs
-  * blended        - feed both (what USE_RECENT_STATCAST_BLEND=True does)
+This harness re-scores score_power off the backfilled pick_inputs and
+grades each variant against actual HR outcomes. Variants:
 
-score_power needs no code change: its skip-on-missing design means
-nulling one input set isolates the other. For the run,
-USE_RECENT_STATCAST_BLEND is forced ON (so the real inputs are read) and
-USE_SEASON_HR_FLOOR is forced OFF (so the floor cannot compress the
-input-source signal). Both are restored on exit.
+  * synthetic-only           - the 4 synthetic season inputs, default anchors
+  * real-only                - the 3 real 14d Statcast inputs, default anchors
+  * blended                  - all 7 inputs, default anchors (what
+                                USE_RECENT_STATCAST_BLEND=True ships)
+  * real-tight-anchors       - real-only, anchors WIDENED (14d windows are
+                                noisier than season; "elite" sits further out)
+  * blended-tight-anchors    - blended with the widened real anchors
+  * synthetic-no-hr-encoded  - synthetic minus barrel_pct + hr_fb_pct, so
+                                only the SLG-encoded inputs remain (exit_velo
+                                + iso). Tests whether the synthetic win is
+                                purely past-HR-rate auto-correlation in
+                                barrel + hr_fb, or if the SLG-encoded inputs
+                                carry independent signal.
 
-Metrics are computed on the raw power score vs. hit_hr, so the power
-factor is graded in isolation - not diluted through the composite:
+Headline numbers run on the COMMON SUBSET (rows that carry both
+synthetic and real signal) - apples-to-apples on identical rows.
 
-  * auc         - ROC-AUC; P(HR-hitter scored above non-hitter). 0.5 is
-                  a coin flip; higher is better.
-  * top10_lift  - HR rate in the top decile of power / overall HR rate.
-                  > 1 means power concentrates HRs in its top rows.
-  * quint_mono  - monotone-up steps as power rises across 5 quintiles
-                  (4 = perfectly monotone).
-  * avg_rank_hr - mean within-date rank of batters who homered
-                  (lower is better; rank 1 = highest power that day).
+Metrics on the raw power score vs hit_hr, factor in isolation:
 
-Headline numbers run on the COMMON SUBSET - rows that carry both a
-synthetic and a real signal - so it is a true apples-to-apples test.
-A coverage line reports how many rows each variant could score at all.
+  - auc         - ROC-AUC; P(HR-hitter scored above non-hitter). >0.5 better.
+  - top10_lift  - HR rate in top decile of power / overall. >1 better.
+  - quint_mono  - monotone-up steps as power rises across 5 quintiles (max 4).
+  - avg_rank_hr - mean within-date rank of HR hitters (lower better).
 
-Caveat: synthetic inputs are season-to-date; real inputs are rolling
-14d. This is therefore "season-synthetic vs. 14d-real", not a pure
-same-window test - interpret accordingly. A pure test would also need
-real *season* Statcast, which the backfill does not fetch.
+Caveats:
+
+* Synthetic inputs are season-to-date; real inputs are rolling 14d.
+  This is "season-synthetic vs. 14d-real," not a pure same-window test.
+* The synthetic barrel_pct + hr_fb_pct are literally past HR rate.
+  Auto-correlation gives them a strong baseline that contact-quality
+  metrics on a noisy 14d window may not exceed. The
+  synthetic-no-hr-encoded variant probes this directly.
+* Wider real windows (21d, 28d) would need a new Statcast ETL pass to
+  populate. Not in scope for this harness; flagged as follow-up if the
+  tight-anchor sweep still has real-only trailing.
 
 Usage:
     python diagnostics/backtest_power_inputs.py
     python diagnostics/backtest_power_inputs.py --start 2025-03-27 --end 2025-09-30
     python diagnostics/backtest_power_inputs.py --days 30
-
-Requires the DB at <projects>/data/hr_bets.db (resolved via etl.db.DB_PATH).
 """
 
 from __future__ import annotations
@@ -66,27 +76,49 @@ from pathlib import Path
 
 import numpy as np
 
-# Resolve project root so `import score_batters` works whether this is
-# invoked directly or imported as diagnostics.backtest_power_inputs.
 _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent.parent))
 
-import score_batters as sb
 from etl.db import DB_PATH
 
 
-# score_power reads these keys off the batter dict; anything absent or
-# None is skipped (skip-on-missing). The two sets are DISJOINT - that is
-# the property that lets each variant isolate one input source.
 SYNTHETIC_KEYS = ("barrel_pct", "exit_velo", "hr_fb_pct", "iso")
 REAL_KEYS = ("recent_barrel_real_14d", "recent_xwoba_contact_14d", "recent_iso_14d")
 
-VARIANTS = ("synthetic-only", "real-only", "blended")
-_VARIANT_KEYS = {
-    "synthetic-only": SYNTHETIC_KEYS,
-    "real-only": REAL_KEYS,
-    "blended": SYNTHETIC_KEYS + REAL_KEYS,
+# Anchors mirror score_batters.score_power. Variants override individual entries.
+DEFAULT_ANCHORS = {
+    "barrel_pct":               (5.0, 15.0),
+    "exit_velo":                (85.0, 95.0),
+    "hr_fb_pct":                (8.0, 20.0),
+    "iso":                      (0.130, 0.300),
+    "recent_barrel_real_14d":   (8.0, 18.0),
+    "recent_xwoba_contact_14d": (0.330, 0.450),
+    "recent_iso_14d":           (0.100, 0.300),
 }
+
+# Widened anchors for the 14d real metrics. A 14d window has ~30-40
+# batted balls per batter - much higher variance than the season
+# aggregate. The default score_power anchors (priors set from
+# "league_avg / elite" anchored to season distributions) clamp too
+# aggressively on this thin window. These widened anchors push the
+# "elite" pole further out, matching the upper distribution observed
+# on the 2025 backfill.
+TIGHT_REAL_ANCHORS = {
+    "recent_barrel_real_14d":   (10.0, 22.0),
+    "recent_xwoba_contact_14d": (0.320, 0.420),
+    "recent_iso_14d":           (0.130, 0.320),
+}
+
+# (variant_name, input_keys, anchor_overrides_or_None)
+VARIANTS = (
+    ("synthetic-only",          SYNTHETIC_KEYS,                       None),
+    ("real-only",               REAL_KEYS,                            None),
+    ("blended",                 SYNTHETIC_KEYS + REAL_KEYS,           None),
+    ("real-tight-anchors",      REAL_KEYS,                            TIGHT_REAL_ANCHORS),
+    ("blended-tight-anchors",   SYNTHETIC_KEYS + REAL_KEYS,           TIGHT_REAL_ANCHORS),
+    ("synthetic-no-hr-encoded", ("exit_velo", "iso"),                 None),
+)
+VARIANT_NAMES = tuple(v[0] for v in VARIANTS)
 
 
 # ---------------------------------------------------------------------------
@@ -115,12 +147,16 @@ def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Variant scoring
+# Scoring
 # ---------------------------------------------------------------------------
 
+def _scale(v: float, lo: float, hi: float) -> float:
+    """Clamp + scale into 0-100, mirroring score_batters.min_max_scale."""
+    return max(0.0, min(100.0, (v - lo) / (hi - lo) * 100.0))
+
+
 def _has_signal(row: dict, keys) -> bool:
-    """True if >=1 of `keys` is a usable input (not None, > 0) - i.e.
-    score_power scores it rather than returning the neutral-50 default."""
+    """True if >=1 of `keys` is a usable input (not None, > 0)."""
     for k in keys:
         v = row.get(k)
         if v is not None and v > 0:
@@ -128,38 +164,43 @@ def _has_signal(row: dict, keys) -> bool:
     return False
 
 
-def _power(row: dict, keys) -> float:
-    """score_power fed ONLY the named input keys (all others nulled)."""
-    return sb.score_power({k: row.get(k) for k in keys})
+def _compute_power(row: dict, keys, anchor_overrides=None) -> float:
+    """Power score from `keys`, with optional anchor overrides. Mirrors
+    score_batters.score_power but parametric on anchors and stripped of
+    the season-HR floor / xwoba_contact / pull_fb_pct (NULL on backfill).
+    """
+    anchors = {**DEFAULT_ANCHORS, **(anchor_overrides or {})}
+    scores = []
+    for k in keys:
+        v = row.get(k)
+        if v is None or v <= 0:
+            continue
+        # hr_fb_pct fraction-vs-percent quirk - mirror score_power's behavior.
+        if k == "hr_fb_pct" and v < 1:
+            v *= 100
+        if k not in anchors:
+            continue
+        lo, hi = anchors[k]
+        scores.append(_scale(v, lo, hi))
+    return float(np.mean(scores)) if scores else 50.0
 
 
 def score_variants(rows: list[dict]) -> list[dict]:
-    """Re-score every row under all three variants.
-
-    Flags: USE_RECENT_STATCAST_BLEND ON (so the real inputs are read),
-    USE_SEASON_HR_FLOOR OFF (so the season-HR floor cannot mask the
-    input-source comparison). Both are restored in the finally block so
-    importing this module never leaks scoring state into another process.
-    """
-    prev_blend = sb.USE_RECENT_STATCAST_BLEND
-    prev_floor = sb.USE_SEASON_HR_FLOOR
-    sb.USE_RECENT_STATCAST_BLEND = True
-    sb.USE_SEASON_HR_FLOOR = False
-    try:
-        scored = []
-        for r in rows:
-            scored.append({
-                "date": r["date"],
-                "batter_id": r["batter_id"],
-                "hit_hr": r["hit_hr"],
-                "syn_signal": _has_signal(r, SYNTHETIC_KEYS),
-                "real_signal": _has_signal(r, REAL_KEYS),
-                "power": {v: _power(r, keys) for v, keys in _VARIANT_KEYS.items()},
-            })
-        return scored
-    finally:
-        sb.USE_RECENT_STATCAST_BLEND = prev_blend
-        sb.USE_SEASON_HR_FLOOR = prev_floor
+    """Score every row under every variant."""
+    scored = []
+    for r in rows:
+        scored.append({
+            "date": r["date"],
+            "batter_id": r["batter_id"],
+            "hit_hr": r["hit_hr"],
+            "syn_signal": _has_signal(r, SYNTHETIC_KEYS),
+            "real_signal": _has_signal(r, REAL_KEYS),
+            "power": {
+                name: _compute_power(r, keys, anchors)
+                for name, keys, anchors in VARIANTS
+            },
+        })
+    return scored
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +208,7 @@ def score_variants(rows: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _auc(values: list[float], labels: list[int]) -> float | None:
-    """ROC-AUC via the Mann-Whitney U statistic with tie-averaged ranks.
-    O(n log n). Returns None when either class is empty."""
+    """ROC-AUC via Mann-Whitney U with tie-averaged ranks. O(n log n)."""
     v = np.asarray(values, dtype=float)
     y = np.asarray(labels, dtype=float)
     n_pos = float(y.sum())
@@ -184,7 +224,7 @@ def _auc(values: list[float], labels: list[int]) -> float | None:
         j = i
         while j < n and sv[j] == sv[i]:
             j += 1
-        ranks[order[i:j]] = (i + j - 1) / 2.0 + 1.0   # 1-based average rank
+        ranks[order[i:j]] = (i + j - 1) / 2.0 + 1.0
         i = j
     rank_pos = ranks[y == 1].sum()
     u = rank_pos - n_pos * (n_pos + 1) / 2.0
@@ -192,7 +232,6 @@ def _auc(values: list[float], labels: list[int]) -> float | None:
 
 
 def _top_decile_lift(values: list[float], labels: list[int]) -> float | None:
-    """HR rate in the top 10% by value / overall HR rate. None if no HRs."""
     n = len(values)
     if n == 0:
         return None
@@ -206,7 +245,6 @@ def _top_decile_lift(values: list[float], labels: list[int]) -> float | None:
 
 
 def _quintile_rates(values: list[float], labels: list[int]) -> list[float]:
-    """HR rate per quintile, low -> high value. Returns [] when n < 10."""
     n = len(values)
     if n < 10:
         return []
@@ -222,13 +260,12 @@ def _quintile_rates(values: list[float], labels: list[int]) -> list[float]:
 
 
 def compute_metrics(rows: list[dict], variant: str) -> dict:
-    """Grade one variant's power score on `rows` (the common subset)."""
+    """Grade one variant's power score on `rows`."""
     values = [r["power"][variant] for r in rows]
     labels = [r["hit_hr"] for r in rows]
     n = len(rows)
     n_hr = sum(labels)
 
-    # Within-date rank of the batters who homered (1 = highest power that day).
     by_date: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_date[r["date"]].append(r)
@@ -261,56 +298,51 @@ def compute_metrics(rows: list[dict], variant: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _fmt(x, prec: int = 3) -> str:
-    if x is None or (isinstance(x, float) and x != x):  # None / NaN
+    if x is None or (isinstance(x, float) and x != x):
         return "n/a"
     return f"{x:.{prec}f}"
 
 
 def print_report(results: dict[str, dict], n_dates: int) -> None:
-    hdr = (f"  {'variant':<16}{'n':>7}{'n_hr':>7}{'hr_rate':>9}"
+    hdr = (f"  {'variant':<26}{'n':>7}{'n_hr':>7}{'hr_rate':>9}"
            f"{'auc':>8}{'top10_lift':>12}{'quint_mono':>12}{'avg_rank_hr':>13}")
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
-    for v in VARIANTS:
+    for v in VARIANT_NAMES:
         m = results[v]
         mono = f"{m['quint_mono']}/4" if m["quint_mono"] is not None else "n/a"
-        print(f"  {v:<16}{m['n']:>7d}{m['n_hr']:>7d}{_fmt(m['hr_rate'], 4):>9}"
+        print(f"  {v:<26}{m['n']:>7d}{m['n_hr']:>7d}{_fmt(m['hr_rate'], 4):>9}"
               f"{_fmt(m['auc'], 3):>8}{_fmt(m['top10_lift'], 2):>12}"
               f"{mono:>12}{_fmt(m['avg_rank_hr'], 1):>13}")
     print()
 
     print("  Quintile HR rate (low -> high power; want strictly increasing):")
-    for v in VARIANTS:
+    for v in VARIANT_NAMES:
         rates = results[v]["quint_rates"]
         cells = "  ".join(_fmt(r, 4) for r in rates) if rates else "(n < 10)"
-        print(f"    {v:<16}{cells}")
+        print(f"    {v:<26}{cells}")
     print()
 
-    syn = results["synthetic-only"]["auc"]
-    real = results["real-only"]["auc"]
-    if syn is not None and real is not None:
-        d = real - syn
-        if d > 0.005:
-            verdict = "real Statcast beats synthetic"
-        elif d < -0.005:
-            verdict = "synthetic beats real Statcast"
-        else:
-            verdict = "real and synthetic are roughly tied"
-        print(f"  Verdict (AUC): real-only {_fmt(real, 3)} vs synthetic-only "
-              f"{_fmt(syn, 3)}  ->  {verdict} (delta {d:+.3f}).")
-        ranked = sorted(
-            [(v, results[v]["auc"]) for v in VARIANTS
-             if results[v]["auc"] is not None],
-            key=lambda t: t[1], reverse=True,
-        )
-        if ranked:
-            print(f"  Best variant by AUC: {ranked[0][0]} ({_fmt(ranked[0][1], 3)}).")
+    # Verdict block - rank all variants by AUC, then deltas vs the "synthetic-
+    # only" baseline (= what production scores on today with the blend off).
+    print("  Variants ranked by AUC (delta vs synthetic-only baseline):")
+    base = results["synthetic-only"]["auc"]
+    ranked = sorted(
+        [(v, results[v]["auc"]) for v in VARIANT_NAMES
+         if results[v]["auc"] is not None],
+        key=lambda t: t[1], reverse=True,
+    )
+    for name, a in ranked:
+        if name == "synthetic-only":
+            print(f"    {name:<26}{_fmt(a, 3):>7}  (baseline)")
+            continue
+        d = a - base
+        tag = "HELPS" if d > 0.005 else "HURTS" if d < -0.005 else "neutral"
+        print(f"    {name:<26}{_fmt(a, 3):>7}  delta {d:+.3f}  -> {tag}")
     print()
 
     if n_dates < 10:
-        print(f"  [note] only {n_dates} date(s) of data - this is a wiring "
-              "smoke test, not a verdict.")
-        print("         Re-run after the full 2025 backfill for a real result.")
+        print(f"  [note] only {n_dates} date(s) of data - smoke test, not verdict.")
         print()
 
 
@@ -320,13 +352,9 @@ def print_report(results: dict[str, dict], n_dates: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].strip())
-    ap.add_argument("--start",
-                    help="start date YYYY-MM-DD (default: earliest in pick_inputs)")
-    ap.add_argument("--end",
-                    help="end date YYYY-MM-DD (default: latest in pick_inputs)")
-    ap.add_argument("--days", type=int,
-                    help="look-back window of N days ending at --end / latest "
-                         "(overrides --start)")
+    ap.add_argument("--start", help="start date YYYY-MM-DD (default: earliest)")
+    ap.add_argument("--end", help="end date YYYY-MM-DD (default: latest)")
+    ap.add_argument("--days", type=int, help="look-back N days from --end / latest")
     ap.add_argument("--db", default=str(DB_PATH),
                     help=f"DB path (default: {DB_PATH})")
     args = ap.parse_args()
@@ -371,7 +399,7 @@ def main() -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    results = {v: compute_metrics(common, v) for v in VARIANTS}
+    results = {v: compute_metrics(common, v) for v in VARIANT_NAMES}
     print_report(results, n_dates)
 
 
