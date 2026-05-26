@@ -106,9 +106,58 @@ def _require_env(name: str) -> str:
     if not val:
         raise SystemExit(
             f"ERROR: required env var {name} is not set. "
-            f"In GH Actions, add it under repo Settings -> Secrets and variables -> Actions."
+            f"In GH Actions, add it under repo Settings -> Secrets and variables -> Actions. "
+            f"On a laptop, put it in .env at the repo root."
         )
     return val
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# .env loader (no python-dotenv dep)
+# ────────────────────────────────────────────────────────────────────────────
+# This DELIBERATELY mirrors run_backfill_local.py's loader: .env wins over
+# the shell env. The wrapper-only loading was a footgun — calling
+# `python infra/r2_sync.py pull` directly from a Windows cmd shell failed
+# with "required env var R2_BUCKET is not set" even though the values
+# were sitting right there in .env (2026-05-26). The wrapper loaded .env
+# before invoking r2_sync, but a direct call doesn't get the wrapper.
+#
+# GH Actions: no .env present -> loader no-ops -> secrets in os.environ win.
+# Laptop wrapper: .env loaded by run_backfill_local -> .env loaded again
+#                 here -> same values, idempotent.
+# Laptop direct call: .env loaded here -> values now in os.environ -> works.
+#
+# Same .env-wins authoritative behavior as run_backfill_local._load_dotenv:
+# a stale `set R2_ACCESS_KEY_ID=...` in a cmd session can't silently
+# shadow .env.
+
+def _load_dotenv() -> None:
+    """Load KEY=VALUE lines from .env at the repo root. .env wins.
+
+    Computes the repo root relative to this file's location (infra/ is
+    one directory below the root). Silent no-op if .env is absent (GH
+    Actions case)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(here)  # infra/ -> repo root
+    env_path = os.path.join(repo_root, ".env")
+    if not os.path.exists(env_path):
+        return  # GH Actions or any env without a local .env — fine.
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if not key:
+                    continue
+                os.environ[key] = val
+    except Exception as e:
+        # Don't crash if .env is malformed — _require_env will give a clean
+        # error if the necessary keys are still missing.
+        print(f"  [WARN] .env parse failed: {e}", file=sys.stderr)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -240,6 +289,10 @@ def push(dry_run: bool = False) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
+    # Load .env BEFORE arg parsing or any env-var checks. No-op when absent
+    # (GH Actions); essential when called directly from a laptop shell.
+    _load_dotenv()
+
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     sub = p.add_subparsers(dest="cmd", required=True)
 
