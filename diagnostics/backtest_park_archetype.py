@@ -23,8 +23,11 @@ backtest_arsenal_inputs.py):
                              Current default threshold.
   * archetype_20hr         - sub-signal weight 0.5, threshold 20 HRs.
                              High-confidence threshold.
-  * archetype_weighted_low - threshold 10, sub-signal weight 0.25.
-  * archetype_weighted_high- threshold 10, sub-signal weight 0.75.
+  * archetype_weighted_0.25 - sub-signal weight 0.25 at the BEST
+                              threshold (selected dynamically from the
+                              5/10/20 sweep by AUC).
+  * archetype_weighted_0.75 - sub-signal weight 0.75 at the BEST
+                              threshold.
 
 Headline numbers run on the COMMON SUBSET - rows where the base park-
 handedness signal AND the archetype centroid are both computable. Apples-
@@ -82,17 +85,37 @@ sys.path.insert(0, str(_THIS.parent.parent))
 from etl.db import DB_PATH
 
 
-# Variant -> (threshold_min_hrs, subsignal_weight). The harness sweeps
-# both axes for the Phase 3 decision. `default` reproduces today's
-# score_park exactly (no archetype term).
+# Variant -> (threshold_min_hrs, subsignal_weight). `default`
+# reproduces today's score_park exactly (no archetype term). The two
+# `archetype_weighted_*` variants have placeholder threshold=10 here so
+# the dict is well-formed for foundation pin tests; main() re-pins them
+# to the WINNING threshold from the 5/10/20 sweep before scoring (see
+# _resolve_weighted_thresholds).
 VARIANTS: dict[str, dict] = {
-    "default":                {"threshold": None, "weight": 0.0},
-    "archetype_5hr":          {"threshold": 5,    "weight": 0.5},
-    "archetype_10hr":         {"threshold": 10,   "weight": 0.5},
-    "archetype_20hr":         {"threshold": 20,   "weight": 0.5},
-    "archetype_weighted_low": {"threshold": 10,   "weight": 0.25},
-    "archetype_weighted_high":{"threshold": 10,   "weight": 0.75},
+    "default":                 {"threshold": None, "weight": 0.0},
+    "archetype_5hr":           {"threshold": 5,    "weight": 0.5},
+    "archetype_10hr":          {"threshold": 10,   "weight": 0.5},
+    "archetype_20hr":          {"threshold": 20,   "weight": 0.5},
+    "archetype_weighted_0.25": {"threshold": 10,   "weight": 0.25},
+    "archetype_weighted_0.75": {"threshold": 10,   "weight": 0.75},
 }
+
+
+# Threshold-sweep variant names, ordered by min-HR. The "best" of these
+# (by AUC on the common subset) anchors the weighted variants.
+THRESHOLD_SWEEP_VARIANTS = ("archetype_5hr", "archetype_10hr", "archetype_20hr")
+WEIGHTED_VARIANTS = ("archetype_weighted_0.25", "archetype_weighted_0.75")
+
+
+def _resolve_weighted_thresholds(best_threshold: int) -> None:
+    """Re-pin the weighted-variant thresholds to *best_threshold* in place.
+
+    Called by main() after the threshold sweep -- the Phase 1 skeleton
+    seeded threshold=10 as a placeholder so the dict stays well-formed
+    for the pin tests; the runtime sweep substitutes the actual best.
+    """
+    for name in WEIGHTED_VARIANTS:
+        VARIANTS[name]["threshold"] = best_threshold
 
 
 # Imported at runtime from features_v2 so the harness stays in sync with
@@ -116,8 +139,15 @@ def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
 
     Phase 2 adds park_archetype_centroid_json + park_archetype_n_hrs to
     pick_inputs (so we can sweep thresholds at scoring time without
-    re-running the centroid builder). Until then this query fails on the
-    unknown column; main() handles the bail message.
+    re-running the centroid builder). The query fails on those missing
+    columns; main() handles the bail message.
+
+    `venue` lives on daily_slate (keyed by game_pk). We bridge through
+    daily_picks (pick_inputs has no game_pk column). Rows without a
+    resolvable venue fall back to NULL and the harness's _base_park_score
+    treats them as neutral (score 50) -- the archetype path needs a
+    venue to score, so those rows fall out of the archetype variants'
+    common subset automatically.
     """
     rows = conn.execute(
         """
@@ -125,13 +155,17 @@ def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
             pi.date,
             pi.batter_id,
             pi.bats,
-            pi.venue,
+            ds.venue AS venue,
             pi.park_archetype_centroid_json,
             pi.park_archetype_n_hrs,
             CASE WHEN COALESCE(o.hr_count, 0) > 0 THEN 1 ELSE 0 END AS hit_hr
         FROM pick_inputs pi
         INNER JOIN outcomes o
                 ON o.date = pi.date AND o.batter_id = pi.batter_id
+        LEFT JOIN daily_picks dp
+                ON dp.date = pi.date AND dp.batter_id = pi.batter_id
+        LEFT JOIN daily_slate ds
+                ON ds.game_pk = dp.game_pk
         WHERE pi.date >= ? AND pi.date <= ?
         """,
         (start, end),
@@ -337,6 +371,35 @@ def _quintile_rates(values: list[float], labels: list[int]) -> list[float]:
     return rates
 
 
+def _top_n_hit_rate(
+    by_date: dict[str, list[dict]],
+    variant: str,
+    n_top: int = 8,
+) -> float | None:
+    """Mean fraction of HR-hitters captured in the top-N of each date's slate
+    when ranked by *variant*'s park score (descending).
+
+    Matches the production card semantics: the morning card picks the top
+    8 batters by composite, so a factor's "top-8 hit rate" is a direct
+    estimate of how much that factor contributes to card precision.
+    Returns None when no date has at least N rows.
+    """
+    rates: list[float] = []
+    for date_rows in by_date.values():
+        if len(date_rows) < n_top:
+            continue
+        ordered = sorted(
+            date_rows,
+            key=lambda r: r["park"][variant],
+            reverse=True,
+        )[:n_top]
+        n_hr_top = sum(1 for r in ordered if r["hit_hr"] == 1)
+        rates.append(n_hr_top / n_top)
+    if not rates:
+        return None
+    return sum(rates) / len(rates)
+
+
 def compute_metrics(rows: list[dict], variant: str) -> dict:
     values = [r["park"][variant] for r in rows]
     labels = [r["hit_hr"] for r in rows]
@@ -358,12 +421,15 @@ def compute_metrics(rows: list[dict], variant: str) -> dict:
     mono = (sum(1 for i in range(len(rates) - 1) if rates[i + 1] > rates[i])
             if rates else None)
 
+    top8_hit_rate = _top_n_hit_rate(by_date, variant, n_top=8)
+
     return {
         "n": n,
         "n_hr": n_hr,
         "hr_rate": n_hr / n if n else 0.0,
         "auc": _auc(values, labels),
         "top10_lift": _top_decile_lift(values, labels),
+        "top8_hit_rate": top8_hit_rate,
         "quint_mono": mono,
         "quint_rates": rates,
         "avg_rank_hr": avg_rank_hr,
@@ -383,7 +449,8 @@ def _fmt(x, prec: int = 3) -> str:
 def print_report(results: dict[str, dict], n_dates: int) -> None:
     variant_names = list(VARIANTS.keys())
     hdr = (f"  {'variant':<26}{'n':>7}{'n_hr':>7}{'hr_rate':>9}"
-           f"{'auc':>8}{'top10_lift':>12}{'quint_mono':>12}{'avg_rank_hr':>13}")
+           f"{'auc':>8}{'top10_lift':>12}{'top8_hit':>11}"
+           f"{'quint_mono':>12}{'avg_rank_hr':>13}")
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     for v in variant_names:
@@ -391,6 +458,7 @@ def print_report(results: dict[str, dict], n_dates: int) -> None:
         mono = f"{m['quint_mono']}/4" if m["quint_mono"] is not None else "n/a"
         print(f"  {v:<26}{m['n']:>7d}{m['n_hr']:>7d}{_fmt(m['hr_rate'], 4):>9}"
               f"{_fmt(m['auc'], 3):>8}{_fmt(m['top10_lift'], 2):>12}"
+              f"{_fmt(m['top8_hit_rate'], 3):>11}"
               f"{mono:>12}{_fmt(m['avg_rank_hr'], 1):>13}")
     print()
 
@@ -433,6 +501,27 @@ def print_report(results: dict[str, dict], n_dates: int) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _pick_best_threshold(results: dict[str, dict]) -> int:
+    """Return the threshold (min-HR) from the 5/10/20 sweep whose AUC is
+    highest on the common subset. Used to anchor the weighted variants.
+
+    Tiebreak: prefer the more inclusive (lower) threshold so the
+    weighted-variant common subset is broader. Falls back to 10 (the
+    PARK_ARCHETYPE_MIN_HRS default) when AUCs are all None.
+    """
+    best_name, best_auc = None, -1.0
+    for name in THRESHOLD_SWEEP_VARIANTS:
+        auc = results.get(name, {}).get("auc")
+        if auc is None:
+            continue
+        if auc > best_auc:
+            best_auc = auc
+            best_name = name
+    if best_name is None:
+        return 10
+    return int(VARIANTS[best_name]["threshold"])
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].strip())
     ap.add_argument("--start", help="start date YYYY-MM-DD (default: earliest)")
@@ -462,13 +551,14 @@ def main() -> None:
         rows = fetch_rows(conn, start, end)
     except sqlite3.OperationalError as e:
         conn.close()
-        print(f"\n  [phase-1-skeleton] {e}", file=sys.stderr)
+        print(f"\n  [phase-2-prereq] {e}", file=sys.stderr)
         print(
-            "\n  Phase 1 - run after batter_park_archetype is populated.\n"
-            "\n  This harness is the Phase 1 skeleton for the park-archetype\n"
-            "  sub-signal of score_park. It requires the Phase 2 columns\n"
-            "  park_archetype_centroid_json + park_archetype_n_hrs on\n"
-            "  pick_inputs, populated by etl/backfill_park_archetype.py.\n"
+            "\n  The harness requires the Phase 2 columns on pick_inputs:\n"
+            "    park_archetype_centroid_json + park_archetype_n_hrs.\n"
+            "  Run create_tables (etl/db.py) to add them, then populate\n"
+            "  batter_park_archetype via etl/backfill_park_archetype.py,\n"
+            "  then re-run load_picks_to_db (or backfill_2025 --force) to\n"
+            "  decorate pick_inputs from the snapshot table.\n"
             "  See docs/park_archetype_design.md.\n",
             file=sys.stderr,
         )
@@ -479,6 +569,11 @@ def main() -> None:
         print(f"No pick_inputs/outcomes rows in {start}..{end}", file=sys.stderr)
         sys.exit(1)
 
+    # First pass: score under all six variants using the placeholder
+    # threshold=10 for the weighted slots. This gives us valid AUCs for
+    # the threshold-sweep variants (5/10/20). The weighted-variant AUCs
+    # on this first pass are SCRATCH -- we re-pin their thresholds to
+    # the winner and re-score below.
     scored = score_variants(rows)
     n_dates = len({s["date"] for s in scored})
 
@@ -497,7 +592,20 @@ def main() -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    results = {v: compute_metrics(common, v) for v in VARIANTS}
+    # Pass 1 metrics: threshold-sweep variants are final, weighted
+    # variants are scratch. Use Pass 1 to pick the winning threshold.
+    first_pass = {v: compute_metrics(common, v) for v in VARIANTS}
+    best_threshold = _pick_best_threshold(first_pass)
+    print(f"  Best threshold from 5/10/20 sweep: {best_threshold} HRs "
+          "(used to anchor archetype_weighted_0.25 / _0.75)")
+    print()
+
+    # Re-pin weighted-variant thresholds to the winner and re-score those
+    # variants only. The threshold-sweep + default variants are unchanged.
+    _resolve_weighted_thresholds(best_threshold)
+    rescored = score_variants(rows)
+    common_rescored = [s for s in rescored if s["has_archetype"]]
+    results = {v: compute_metrics(common_rescored, v) for v in VARIANTS}
     print_report(results, n_dates)
 
 

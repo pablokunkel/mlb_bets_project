@@ -939,6 +939,29 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
+    # 2026-05-25 (park archetype Phase 2): per-batter centroid + HR
+    # count snapshotted at scoring time. Lets backtest_park_archetype.py
+    # sweep min-HR thresholds and sub-signal weights without re-running
+    # the centroid builder for every variant. Populated by
+    # etl/backfill_park_archetype.py + the load_picks_to_db hookup so
+    # nightly + backfill writes both stay in sync. NULL-safe additive;
+    # score_park currently has USE_PARK_ARCHETYPE=False so these columns
+    # are read-but-ignored until Phase 3 flips the flag.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("park_archetype_centroid_json",
+         "ALTER TABLE pick_inputs ADD COLUMN park_archetype_centroid_json TEXT"),
+        ("park_archetype_n_hrs",
+         "ALTER TABLE pick_inputs ADD COLUMN park_archetype_n_hrs INTEGER"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
     conn.commit()
 
 

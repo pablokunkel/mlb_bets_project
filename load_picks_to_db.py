@@ -140,8 +140,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source,
-            season_hr
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?)
+            season_hr,
+            park_archetype_centroid_json, park_archetype_n_hrs
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -150,6 +151,34 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     except Exception:
         # Table may not exist yet on older DBs that haven't been migrated.
         # create_tables() above should have added it; if it failed, skip.
+        pass
+
+    # 2026-05-25 (park archetype Phase 2): pre-fetch the snapshot from
+    # batter_park_archetype for date=date_str. This decorates pick_inputs
+    # with the centroid + n_hrs so backtest_park_archetype can read them
+    # without re-joining the snapshot table on every query. The snapshot
+    # honors honest as-of-date: row keyed (player_id, date_through=date_str)
+    # was built from HRs strictly before date_str.
+    #
+    # When the snapshot table is empty for this date (e.g. Phase 2 hasn't
+    # run for this date yet, or running against a fresh DB), the columns
+    # stay NULL and score_park (USE_PARK_ARCHETYPE=False default) doesn't
+    # care.
+    archetype_lookup: dict[int, tuple[str | None, int]] = {}
+    try:
+        rows = conn.execute(
+            """
+            SELECT player_id, feature_centroid_json, COALESCE(n_hrs_used, 0)
+            FROM batter_park_archetype
+            WHERE date_through = ?
+            """,
+            (date_str,),
+        ).fetchall()
+        for r in rows:
+            archetype_lookup[int(r[0])] = (r[1], int(r[2] or 0))
+    except Exception:
+        # Table may not exist on older DBs that haven't been migrated.
+        # create_tables() above should have added it; if it didn't, skip.
         pass
 
     n_inserted = 0
@@ -281,6 +310,13 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     # and backtest_factors.rescore_row falls through to its
                     # legacy behavior for those rows.
                     inputs.get("season_hr"),
+                    # 2026-05-25 (park archetype Phase 2): centroid +
+                    # n_hrs sourced from batter_park_archetype (populated
+                    # by etl/backfill_park_archetype.py). Missing snapshot
+                    # row -> both NULL; harness treats NULL centroid as
+                    # below-threshold (None+skip).
+                    archetype_lookup.get(pid, (None, 0))[0],
+                    archetype_lookup.get(pid, (None, 0))[1],
                 ))
                 n_inputs += 1
             except Exception:
