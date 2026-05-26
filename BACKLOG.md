@@ -647,19 +647,19 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 
 ### C4. Park archetype sub-signal — populate the table, run the backtest
 
-**Status.** Phase 1 design + foundation shipped (2026-05-25; see `docs/park_archetype_design.md`). Phases 2-4 ready to start in order.
+**Status.** Phases 1 + 2 shipped (2026-05-25). Phase 1 = design + foundation (`docs/park_archetype_design.md`). Phase 2 = 2025 backfill + harness wiring + variant sweep (this PR). Phases 3-4 ready to start in order.
 
 **Why it matters.** Today's `score_park` is a handedness-weighted lookup of three numbers per venue. It says nothing about whether *this specific batter* has historically gone deep in parks that look like today's park. Foundation now in place behind `USE_PARK_ARCHETYPE=False` — strictly additive when flipped on. Notably, `score_park` is currently weighted 0.000 in `WEIGHT_CONFIGS["default"]`; the archetype signal is a candidate for bringing park back at the next A1 refit.
 
 **Phase 1 (DONE).** `batter_park_archetype` table created; `compute_batter_park_archetype` implemented in `features_v2.py` (not stubbed — math is live, callable today); `USE_PARK_ARCHETYPE` flag, `_compute_park_archetype_match` helper, guarded read in `score_park`; `diagnostics/backtest_park_archetype.py` skeleton (bails until Phase 2); 8 smoke pin tests. Production scoring byte-identical with flag off.
 
-**Phase 2.** Wire `compute_batter_park_archetype` into nightly ETL (`etl/etl_nightly.py`) behind a `# Step N: park archetype` block. One-shot `etl/backfill_park_archetype.py` (same chunked, `--max-runtime` orchestrator pattern as `etl/backfill_2025.py`). Add `pick_inputs.park_archetype_centroid_json` + `park_archetype_n_hrs` via idempotent ALTER. Backfill writes those columns across the 2025 season.
+**Phase 2 (DONE).** `etl/backfill_park_archetype.py` shipped — orchestrates the 188-date 2025 season with the same `--max-dates` / `--max-runtime` chunking pattern as `backfill_2025.py`. Idempotent (INSERT OR REPLACE on the snapshot table). Fast — no Statcast pulls, joins existing `batter_hr_events` + `daily_slate`. `pick_inputs.park_archetype_centroid_json` + `park_archetype_n_hrs` added via idempotent ALTER. `load_picks_to_db.py` decorates pick_inputs from the snapshot table at load time. Harness now runs against populated data — `archetype_weighted_*` variants anchor to the AUC-winning threshold from the 5/10/20 sweep. 4 new Phase 2 pins (CLI, idempotence, columns, harness runs).
 
-**Phase 3.** Run `diagnostics/backtest_park_archetype.py` on the full 2025 backfill. Compare default vs the 5 archetype variants on AUC / top10_lift / quint_mono / avg_rank_hr. Decision rule (B6 + B12 precedent): ship only if 2+ metrics win with no decisive loss; validate on full season + ≥3 monthly slices. Document in `WEIGHT_REFIT_LOG.md`. Set the sub-signal weight + flip `USE_PARK_ARCHETYPE = True`.
+**Phase 3.** Run `diagnostics/backtest_park_archetype.py` on the full 2025 backfill. Compare default vs the 5 archetype variants on AUC / top10_lift / quint_mono / top8_hit_rate / avg_rank_hr. Decision rule (B6 + B12 precedent): ship only if 2+ metrics win with no decisive loss; validate on full season + ≥3 monthly slices. Document in `WEIGHT_REFIT_LOG.md`. Set the sub-signal weight + flip `USE_PARK_ARCHETYPE = True`.
 
 **Phase 4.** 14 days of clean post-Phase-3 monitoring. Then fold into the next A1 refit cycle — park's top-level weight may need to lift off 0.
 
-**Files (Phase 2).** `etl/etl_nightly.py`, `etl/backfill_park_archetype.py` (new), `etl/db.py` (ALTER), `generate_picks.py` (wire `park_archetype_centroid` from the bulk dict). **Files (Phase 3).** `score_batters.py` (flip flag), `WEIGHT_REFIT_LOG.md`, smoke pins update.
+**Files (Phase 3).** `score_batters.py` (flip flag + set `PARK_ARCHETYPE_SUBSIGNAL_WEIGHT` based on backtest winner), `WEIGHT_REFIT_LOG.md`, smoke pins update.
 
 **Source.** Design doc `docs/park_archetype_design.md` (PR #85). Parallel build to the pitch-type archetype foundation (commit `026d756`).
 

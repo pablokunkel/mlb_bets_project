@@ -584,6 +584,81 @@ def sync_season_pitching(conn, season: int):
 
 
 # ---------------------------------------------------------------------------
+# Step 7: Park archetype snapshot (Phase 2, 2026-05-25)
+# ---------------------------------------------------------------------------
+
+def sync_park_archetype(conn, date_str: str) -> int:
+    """Refresh batter_park_archetype with a row per (batter, date_str).
+
+    For every batter with at least one HR strictly before *date_str*,
+    compute the 6-element park-feature centroid (weighted by 1 /
+    park_neutral_hr_factor) and persist it. Batters below
+    PARK_ARCHETYPE_MIN_HRS get centroid=NULL but the row still lands so
+    the harness's threshold sweep can read n_hrs_used.
+
+    Returns number of rows upserted.
+
+    The math is in features_v2.compute_batter_park_archetype -- this is
+    the nightly hook that calls it on today's eligible batters and writes
+    the result to the snapshot table.
+    """
+    print("\n  [7/7] Park archetype snapshot for today...")
+
+    # Defer the heavy imports so the rest of the nightly works if
+    # features_v2 has a transitive issue.
+    import json
+    try:
+        from features_v2 import compute_batter_park_archetype
+    except Exception as e:
+        print(f"    [SKIP] features_v2 import failed: {e}")
+        return 0
+
+    batters = [r[0] for r in conn.execute(
+        "SELECT DISTINCT batter_id FROM batter_hr_events "
+        "WHERE game_date < ? AND batter_id IS NOT NULL AND batter_id > 0",
+        (date_str,),
+    ).fetchall()]
+    if not batters:
+        print("    no eligible batters")
+        return 0
+
+    # The builder takes db_path; we already have a connection but pass the
+    # path so the builder uses its own connection-pooling logic.
+    from etl.db import DB_PATH
+    db_path = str(DB_PATH)
+    result = compute_batter_park_archetype(
+        player_ids=batters,
+        as_of_date=date_str,
+        db_path=db_path,
+    )
+
+    n_upserted = 0
+    n_with, n_below = 0, 0
+    for bid, entry in result.items():
+        centroid = entry.get("centroid")
+        n_hrs = int(entry.get("n_hrs_used", 0))
+        centroid_json = json.dumps(centroid) if centroid is not None else None
+        if centroid is not None:
+            n_with += 1
+        else:
+            n_below += 1
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO batter_park_archetype
+                (player_id, date_through, feature_centroid_json,
+                 n_hrs_used, fetched_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            """,
+            (bid, date_str, centroid_json, n_hrs),
+        )
+        n_upserted += 1
+    conn.commit()
+    print(f"    {n_upserted} batters | {n_with} centroids | "
+          f"{n_below} below-threshold")
+    return n_upserted
+
+
+# ---------------------------------------------------------------------------
 # Step 6: Park factors (weekly refresh)
 # ---------------------------------------------------------------------------
 
@@ -683,6 +758,15 @@ def run_nightly(date_str: str, backfill: bool = False):
             n = sync_park_factors(conn, s, force=backfill)
             total_rows += n
 
+        # Step 7: Park archetype snapshot for today (Phase 2, 2026-05-25).
+        # Refreshes batter_park_archetype with a row keyed on
+        # (player_id, date_through = date_str) for every batter who has
+        # at least one HR strictly before date_str. Fast -- no Statcast
+        # pulls; just joins batter_hr_events + daily_slate. Idempotent
+        # INSERT OR REPLACE so re-running the nightly is safe.
+        n = sync_park_archetype(conn, date_str)
+        total_rows += n
+
         log_etl_complete(conn, log_id, rows=total_rows)
         print(f"\n{'=' * 60}")
         print(f"  NIGHTLY ETL COMPLETE — {total_rows} total rows affected")
@@ -691,7 +775,8 @@ def run_nightly(date_str: str, backfill: bool = False):
         # Print summary
         print(f"\n  Database summary:")
         for table in ["batter_hr_events", "pitcher_arsenals", "victim_profiles",
-                       "season_batting", "season_pitching", "park_factors"]:
+                       "season_batting", "season_pitching", "park_factors",
+                       "batter_park_archetype"]:
             count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             print(f"    {table:<24} {count:>8} rows")
         print()

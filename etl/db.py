@@ -989,13 +989,11 @@ def create_tables(conn: sqlite3.Connection):
                 pass
 
     # 2026-05-25/26: Phase 2 sub-signal columns on pick_inputs.
-    # - Pitch-type: fb/br/os SLG+PA splits, populated by
-    #   load_picks_to_db.py from batter dict keys set by
-    #   fetch_batter_pitch_type_splits. PITCH_TYPE_SPLIT_MIN_BB=30 default
-    #   for sample-size gating.
-    # - Form-archetype: per-batter centroid + window + sample size, lets
-    #   backtest_form_archetype replay historical scores without re-pulling.
-    #   _window column lets variants pick 7/14/21 without re-backfilling.
+    # - Pitch-type: fb/br/os SLG+PA splits (from fetch_batter_pitch_type_splits).
+    # - Form-archetype: per-batter centroid + window + sample size.
+    # - Park-archetype: per-batter centroid + HR count snapshotted at scoring
+    #   time. Lets backtest_park_archetype.py sweep min-HR thresholds and
+    #   sub-signal weights without re-running the centroid builder.
     # All NULL-safe additive — scoring helpers ignore when their
     # USE_* flag is False (Phase 2 default).
     existing_cols = {
@@ -1014,6 +1012,10 @@ def create_tables(conn: sqlite3.Connection):
          "ALTER TABLE pick_inputs ADD COLUMN form_archetype_window INTEGER"),
         ("form_archetype_n_hrs",
          "ALTER TABLE pick_inputs ADD COLUMN form_archetype_n_hrs INTEGER"),
+        ("park_archetype_centroid_json",
+         "ALTER TABLE pick_inputs ADD COLUMN park_archetype_centroid_json TEXT"),
+        ("park_archetype_n_hrs",
+         "ALTER TABLE pick_inputs ADD COLUMN park_archetype_n_hrs INTEGER"),
     ]:
         if col not in existing_cols:
             try:
