@@ -558,7 +558,35 @@ def main() -> int:
     ap.add_argument("--holdout-frac", type=float, default=0.3,
                     help="Fraction of LATEST dates to hold out for OOS test. "
                          "Default 0.3 (chronological 70/30 split).")
+    ap.add_argument("--custom", default=None,
+                    help='Evaluate an arbitrary weight vector on the same OOS '
+                         'holdout. Format: "power=0.27,matchup=0.46,park=0,'
+                         'form=0.075,weather=0.119,lineup=0.0774". Sums need '
+                         'not equal 1.0 (we renormalize); missing factors '
+                         'default to 0. Useful for testing manual blends '
+                         'between FREE and PINNED.')
     args = ap.parse_args()
+
+    # Parse --custom early so we can fail fast on bad input.
+    custom_weights = None
+    if args.custom:
+        custom_weights = {f: 0.0 for f in FACTORS}
+        for kv in args.custom.split(","):
+            k, _, v = kv.partition("=")
+            k = k.strip()
+            if k not in FACTORS:
+                print(f"ERROR: unknown factor '{k}' in --custom. "
+                      f"Valid: {FACTORS}", file=sys.stderr)
+                return 2
+            custom_weights[k] = float(v.strip())
+        s = sum(custom_weights.values())
+        if s <= 0:
+            print(f"ERROR: --custom weights sum to {s}; need positive total.",
+                  file=sys.stderr)
+            return 2
+        if abs(s - 1.0) > 1e-6:
+            print(f"  [--custom] weights sum to {s:.6f}; renormalizing to 1.0")
+            custom_weights = {k: v / s for k, v in custom_weights.items()}
 
     db_path = Path(args.db)
     print(f"Using DB: {db_path}")
@@ -651,6 +679,12 @@ def main() -> int:
     e_cur_oos = evaluate_composite(test_df, "current_default (OOS)", cur_score_oos)
     e_free_oos = evaluate_composite(test_df, "candidate FREE (OOS)", free_score_oos)
     e_pinned_oos = evaluate_composite(test_df, "candidate PINNED (OOS)", pinned_score_oos)
+    e_custom_oos = None
+    if custom_weights is not None:
+        custom_score_oos = compute_composite_from_weights(test_df, custom_weights)
+        e_custom_oos = evaluate_composite(
+            test_df, "candidate CUSTOM (OOS)", custom_score_oos
+        )
     print()
     print_eval(e_stored_oos)
     print()
@@ -659,6 +693,18 @@ def main() -> int:
     print_eval(e_free_oos)
     print()
     print_eval(e_pinned_oos)
+    if e_custom_oos is not None:
+        print()
+        print_eval(e_custom_oos)
+        print()
+        print(f"  CUSTOM weights used:")
+        for k in FACTORS:
+            cur_val = SHIPPED_DEFAULT_W[k]
+            cust_val = custom_weights[k]
+            free_val = free_train[k]
+            print(f"    {k:<10} {cust_val:.4f}    "
+                  f"(current: {cur_val:.3f}, FREE: {free_val:.3f}, "
+                  f"delta-vs-current: {cust_val - cur_val:+.4f})")
 
     # --- In-sample backtest on the FULL window, for reference only ---
     print("\n=== Backtest -- IN-SAMPLE (full window, reference only -- overfit risk) ===")
@@ -681,12 +727,17 @@ def main() -> int:
     ship_pinned, rationale_pinned = decision(e_cur_oos, e_pinned_oos)
     print(f"  FREE:   {rationale_free}")
     print(f"  PINNED: {rationale_pinned}")
-    if ship_free or ship_pinned:
+    ship_custom = False
+    if e_custom_oos is not None:
+        ship_custom, rationale_custom = decision(e_cur_oos, e_custom_oos)
+        print(f"  CUSTOM: {rationale_custom}")
+    any_ship = ship_free or ship_pinned or ship_custom
+    if any_ship:
         print(f"  -> At least one variant MEETS the shipping threshold on OOS. "
               f"User decision: present in WEIGHT_REFIT_LOG.md, decide which "
-              f"variant (FREE vs PINNED) to flip into WEIGHT_CONFIGS['default'].")
+              f"variant to flip into WEIGHT_CONFIGS['default'].")
     else:
-        print(f"  -> Neither variant meets the OOS threshold. HOLD; document "
+        print(f"  -> No variant meets the OOS threshold. HOLD; document "
               f"and ship NOTHING.")
 
     if args.update:
