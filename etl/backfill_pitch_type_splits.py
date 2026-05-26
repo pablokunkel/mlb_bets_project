@@ -111,28 +111,46 @@ def _hms(seconds: float) -> str:
 
 
 def _active_batters_for_date(conn: sqlite3.Connection, date_str: str) -> list[int]:
-    """Every distinct player_id in daily_lineup on-or-before *date_str*
-    within the 2025 season window. The "on-or-before" semantics means
-    batters who appeared earlier in the season but not on the target date
-    still get a snapshot — they may show up in tomorrow's lineup and we
-    want the season-to-date data ready.
+    """Every distinct batter id active on-or-before *date_str* within the
+    season window. UNION of daily_lineup + daily_picks:
 
-    Conservatively restricts to lineup_source != 'roster_fallback' so
-    batters who never actually played (bdfed alphabetical placeholders)
-    don't bloat the backfill. If lineup_source is missing (older DBs),
-    the row is kept (back-compat).
+    - daily_lineup (live source): authoritative for current-season dates
+      where the morning ETL ran. Has lineup_source provenance.
+    - daily_picks: authoritative for historical 2025 backfill dates where
+      daily_lineup was NEVER populated (the 2025 backfill orchestrator
+      reconstructed daily_picks from outcomes + season splits but did NOT
+      replay lineup data, since lineups are a live-only artifact).
+
+    The 2026-05-26 fix added the daily_picks branch — without it, the
+    pitch-type backfill skipped every 2025 date with "no batters in
+    daily_lineup" (the table was simply empty for those dates). The
+    UNION DISTINCT dedupes for current-season dates where both tables
+    have the same batters.
+
+    Conservatively restricts the daily_lineup branch to lineup_source !=
+    'roster_fallback' so alphabetical placeholders don't bloat the
+    backfill. The daily_picks branch has no equivalent filter — picks
+    rows reflect batters who were actually scored, so they're already
+    real entries.
     """
     season_year = int(date_str[:4])
     season_start = f"{season_year}-03-01"
     rows = conn.execute(
         """
-        SELECT DISTINCT player_id
-        FROM daily_lineup
-        WHERE date >= ? AND date <= ?
-          AND player_id IS NOT NULL
-          AND (lineup_source IS NULL OR lineup_source != 'roster_fallback')
+        SELECT DISTINCT player_id FROM (
+            SELECT player_id
+            FROM daily_lineup
+            WHERE date >= ? AND date <= ?
+              AND player_id IS NOT NULL
+              AND (lineup_source IS NULL OR lineup_source != 'roster_fallback')
+            UNION
+            SELECT batter_id AS player_id
+            FROM daily_picks
+            WHERE date >= ? AND date <= ?
+              AND batter_id IS NOT NULL
+        )
         """,
-        (season_start, date_str),
+        (season_start, date_str, season_start, date_str),
     ).fetchall()
     return [int(r[0]) for r in rows if r[0]]
 
