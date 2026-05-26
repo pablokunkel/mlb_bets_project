@@ -74,9 +74,32 @@ signal earns its place in the composite.
 
 ### Sample-size handling
 
-If a batter has fewer than 30 batted balls in a group, fall back to
-the league-average SLG for that group. The same `is not None and >=
-threshold` pattern used everywhere else in `score_power` / `score_form`.
+**Policy: None+skip, NOT league-avg fallback** (set 2026-05-26 per
+user feedback).
+
+If ANY of the three pitch-type groups has fewer than `PITCH_TYPE_SPLIT_MIN_BB`
+batted balls (currently 30), or is entirely missing, `_compute_xslg_vs_arsenal`
+returns `None` and `score_matchup` skips the sub-signal term — the
+batter's matchup score is built from the *other* matchup signals, no
+imputed value enters the composite. Same convention `score_form` uses
+for `None` inputs (skipped from the mean, not imputed).
+
+**Why not league-avg fallback?** That was the original Phase 1 design;
+we reversed it before merge. A league-avg fill artificially flattens
+every small-sample batter to a neutral xSLG (~.405 at typical 70/20/10
+arsenal usage), which then *inflates* their matchup score above where
+their actual signal would land. The matchup composite is honest about
+uncertainty by skipping the term — the missing-data hit gets absorbed
+across the remaining signals.
+
+The 30-batted-ball threshold is itself a defensible default — it
+mirrors the `min_batted_balls=10` cutoff in `_aggregate_recent_statcast`
+scaled up for a season-long denominator. Phase 3 should re-test it
+against the empirical noise floor (could be 20, could be 50 — TBD by
+the backtest).
+
+For reference (used in Phase 3 score-mapping calibration, not in the
+scoring math itself), the population SLG anchors per group are:
 
 | Group | League-avg SLG | Source |
 |---|---|---|
@@ -84,15 +107,9 @@ threshold` pattern used everywhere else in `score_power` / `score_form`.
 | BR | .350 | Same source, `pitch_type in (SL, CU, KC, SV, ST)`. |
 | OS | .380 | Same source, `pitch_type in (CH, FS)`. |
 
-Anchors live in `features_v2.LEAGUE_AVG_PITCH_TYPE_SLG`. Refreshed
-annually as part of the offseason calibration pass (same place park
-factors get refreshed).
-
-The 30-batted-ball threshold is itself a defensible default — it
-mirrors the `min_batted_balls=10` cutoff in
-`_aggregate_recent_statcast` scaled up for a season-long denominator.
-Phase 3 should re-test it against the empirical noise floor (could be
-20, could be 50 — TBD by the backtest).
+These anchors will inform the Phase 3 `min_max_scale(xslg, lo, hi)`
+mapping (where to place the 0 and 100 endpoints on the SLG distribution)
+but are NOT used as fallback values inside `_compute_xslg_vs_arsenal`.
 
 ### As-of-date snapshotting
 
@@ -182,19 +199,24 @@ def fetch_batter_pitch_type_splits(
 
     Returns {player_id: {fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa}}.
 
-    Phase 1 (this PR): signature + docstring + LEAGUE_AVG_PITCH_TYPE_SLG
-    constants. Implementation is a TODO — Phase 2 wires it to the bulk
+    Phase 1 (this PR): signature + docstring + PITCH_TYPE_SPLIT_MIN_BB
+    threshold. Implementation is a TODO — Phase 2 wires it to the bulk
     Statcast pull pattern used by `fetch_batter_recent_statcast_14d`.
     """
     ...
 ```
 
-Constants exposed for the scoring path to use as fallback anchors:
+The per-group threshold below which the sub-signal returns None (see
+"Sample-size handling" above):
 
 ```python
-LEAGUE_AVG_PITCH_TYPE_SLG = {"fb_slg": 0.420, "br_slg": 0.350, "os_slg": 0.380}
 PITCH_TYPE_SPLIT_MIN_BB = 30
 ```
+
+No league-avg fallback constants are exposed — Phase 1's policy is
+None+skip. Population SLG anchors for FB/BR/OS are documented above
+for Phase 3 score-mapping calibration but are not consumed by the
+scoring code path.
 
 ### 3. Scoring hook — `score_batters.py` + `generate_picks.py`
 
@@ -214,13 +236,16 @@ In `score_batters.py` a new module-level flag and helper:
 USE_ARSENAL_SUBSIGNAL = False  # Phase 1 default. Flip in Phase 3 after backtest.
 
 def _compute_xslg_vs_arsenal(batter: dict, pitcher: dict) -> float | None:
-    """Return blended xSLG-vs-arsenal, or None if any input missing.
+    """Return blended xSLG-vs-arsenal, or None if any input is missing
+    OR any group is below the PITCH_TYPE_SPLIT_MIN_BB threshold.
 
-    Reads batter.{fb,br,os}_slg / pitcher.{fb_usage_pct,
-    breaking_usage_pct, offspeed_usage_pct}. Falls back to
-    LEAGUE_AVG_PITCH_TYPE_SLG when a batter's group has < MIN_BB
-    batted balls. Returns None when the pitcher arsenal isn't
-    available — caller skips the term.
+    Reads batter.{fb,br,os}_slg + batter.{fb,br,os}_pa / pitcher.{fb_usage_pct,
+    breaking_usage_pct, offspeed_usage_pct}. Returns None (caller skips
+    the term) when:
+      - the pitcher arsenal usage isn't available, OR
+      - any batter group has < PITCH_TYPE_SPLIT_MIN_BB batted balls.
+
+    No league-avg imputation. See "Sample-size handling" above.
     """
     ...
 ```
@@ -363,11 +388,11 @@ off by default.
 |---|---|
 | `docs/pitch_type_archetype_design.md` | New — this file. |
 | `etl/db.py` | `batter_pitch_type_splits` CREATE TABLE + ALTER block. |
-| `features_v2.py` | `LEAGUE_AVG_PITCH_TYPE_SLG`, `PITCH_TYPE_SPLIT_MIN_BB`, `fetch_batter_pitch_type_splits` skeleton. |
-| `score_batters.py` | `USE_ARSENAL_SUBSIGNAL`, `_compute_xslg_vs_arsenal`, guarded read in `score_matchup`. |
+| `features_v2.py` | `PITCH_TYPE_SPLIT_MIN_BB`, `fetch_batter_pitch_type_splits` skeleton. |
+| `score_batters.py` | `USE_ARSENAL_SUBSIGNAL`, `_compute_xslg_vs_arsenal` (None+skip policy), guarded read in `score_matchup`. |
 | `generate_picks.py` | Three `fb_slg / br_slg / os_slg` keys default to `None` on the batter dict (live + untiered + offline paths). |
 | `diagnostics/backtest_arsenal_inputs.py` | New — harness skeleton. |
-| `tests/smoke.py` | Five new pin tests. |
+| `tests/smoke.py` | Eight new pin tests (incl. short-sample None+skip behavior). |
 
 ## Reference
 

@@ -729,12 +729,20 @@ def _compute_xslg_vs_arsenal(batter: dict, pitcher: dict) -> float | None:
              + pitcher.br_usage_pct  * batter.br_slg
              + pitcher.os_usage_pct  * batter.os_slg
 
-    Per-group fallback: if a batter's group is missing OR its sample size
-    (*_pa) is under features_v2.PITCH_TYPE_SPLIT_MIN_BB (30 batted balls),
-    substitute features_v2.LEAGUE_AVG_PITCH_TYPE_SLG for that term.
+    Small-sample policy: **None+skip, NOT league-avg fallback** (changed
+    2026-05-26 per user feedback). If ANY of the three pitch-type groups
+    is below the PA threshold (features_v2.PITCH_TYPE_SPLIT_MIN_BB, 30 BB),
+    return None and let score_matchup skip the whole sub-signal. Rationale:
+    a league-avg fill artificially compresses every small-sample batter to
+    a neutral xSLG, which inflates their matchup score above where their
+    actual signal would land. "No data" should mean "no opinion," not
+    "average opinion" — same convention score_form uses for None inputs.
 
-    Returns None when the pitcher arsenal usages aren't available — caller
-    skips the sub-signal cleanly (None propagation, no neutral fill).
+    Returns None when:
+      - The pitcher arsenal usages aren't available (no measured mix), OR
+      - Any of the batter's three group splits is missing or below
+        PITCH_TYPE_SPLIT_MIN_BB. The composite is honest about uncertainty;
+        the missing-data hit gets absorbed by the other matchup signals.
 
     See docs/pitch_type_archetype_design.md for the rationale.
     """
@@ -745,14 +753,23 @@ def _compute_xslg_vs_arsenal(batter: dict, pitcher: dict) -> float | None:
         return None
 
     # Import here so the module doesn't pay for it at top level.
-    from features_v2 import LEAGUE_AVG_PITCH_TYPE_SLG, PITCH_TYPE_SPLIT_MIN_BB
+    from features_v2 import PITCH_TYPE_SPLIT_MIN_BB
 
-    def _slg(group: str) -> float:
+    def _slg(group: str) -> float | None:
         slg = batter.get(f"{group}_slg")
         pa = batter.get(f"{group}_pa") or 0
         if slg is None or pa < PITCH_TYPE_SPLIT_MIN_BB:
-            return LEAGUE_AVG_PITCH_TYPE_SLG[f"{group}_slg"]
+            return None
         return float(slg)
+
+    fb_slg = _slg("fb")
+    br_slg = _slg("br")
+    os_slg = _slg("os")
+    if fb_slg is None or br_slg is None or os_slg is None:
+        # Insufficient sample on at least one group — skip the term entirely.
+        # Don't impute league-avg; that would falsely flatten small-sample
+        # batters into the middle of the distribution.
+        return None
 
     # Treat missing pitcher usage as 0 (its events contribute nothing
     # to the blend); typical pitcher dict has all three filled, so this
@@ -761,7 +778,7 @@ def _compute_xslg_vs_arsenal(batter: dict, pitcher: dict) -> float | None:
     br_use = br_use or 0.0
     os_use = os_use or 0.0
 
-    return fb_use * _slg("fb") + br_use * _slg("br") + os_use * _slg("os")
+    return fb_use * fb_slg + br_use * br_slg + os_use * os_slg
 
 
 def score_matchup(

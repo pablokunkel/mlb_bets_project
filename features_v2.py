@@ -536,18 +536,19 @@ def fetch_batter_recent_statcast_14d(
 #   OS = CH (changeup), FS (splitter), FO (forkball), KN (knuckleball),
 #        SC (screwball)
 #
-# League-avg SLG anchors are the fallback when a batter has too few
-# batted balls in a group (under PITCH_TYPE_SPLIT_MIN_BB). Sourced from
-# the 2024 Statcast leaderboard, qualified-batter mean SLG per group.
-# These hold within ~0.010 across 2022-2024 — the population doesn't
-# shift much year-over-year. Refresh annually with the offseason
-# calibration pass.
-LEAGUE_AVG_PITCH_TYPE_SLG = {
-    "fb_slg": 0.420,
-    "br_slg": 0.350,
-    "os_slg": 0.380,
-}
-PITCH_TYPE_SPLIT_MIN_BB = 30  # below this, fall back to league avg
+# Per-group PA threshold for the arsenal sub-signal: below this many BB
+# in a pitch-type group, _compute_xslg_vs_arsenal returns None (the term
+# is skipped from the matchup composite) instead of imputing league-avg.
+#
+# Policy change 2026-05-26: previously this used a LEAGUE_AVG_PITCH_TYPE_SLG
+# fallback (.420/.350/.380 from the 2024 Statcast leaderboard), but that
+# flattens every small-sample batter to a neutral xSLG and inflates their
+# matchup score above where their actual signal would land. We follow the
+# same convention as score_form: "no data" = "no opinion," not "average
+# opinion." The League-avg anchors are documented in the design doc
+# (docs/pitch_type_archetype_design.md, section "Sample-size handling")
+# for future reference but no longer wired into scoring.
+PITCH_TYPE_SPLIT_MIN_BB = 30
 
 
 def fetch_batter_pitch_type_splits(
