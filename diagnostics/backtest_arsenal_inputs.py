@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-backtest_arsenal_inputs.py - Phase 1 skeleton for the pitch-type
-archetype matchup sub-signal harness.
+backtest_arsenal_inputs.py - Phase 2 (2026-05-25): runnable harness for
+the pitch-type archetype matchup sub-signal.
 
 Background. See docs/pitch_type_archetype_design.md. The new signal is
 the blend:
@@ -12,20 +12,29 @@ the blend:
         + pitcher.os_usage_pct * batter.os_slg
 
 Mapped to 0-100 with min_max_scale(xslg, 0.350, 0.500). This harness
-re-scores `score_matchup` off the backfilled pick_inputs and grades two
+re-scores `score_matchup` off the backfilled pick_inputs and grades five
 variants against actual HR outcomes (mirrors backtest_power_inputs.py
-and backtest_form_anchors.py):
+and backtest_form_anchors.py).
 
-  * current        - score_matchup unchanged (no arsenal term). The
-                     production baseline at the moment Phase 3 starts.
-  * arsenal_blend  - score_matchup + xslg_vs_arsenal_score averaged in
-                     as a fifth sub-signal (alongside vuln, sim, total,
-                     woba). Equal-mean weighting; Phase 3 may adjust.
+Variants:
+  * current             - score_matchup unchanged (no arsenal term). The
+                          production baseline at the moment Phase 3 starts.
+  * arsenal_blend       - score_matchup + xslg_vs_arsenal_score averaged in
+                          as a fifth sub-signal alongside vuln / sim /
+                          total / woba. Equal-mean weighting; matches the
+                          production helper exactly when USE_ARSENAL_SUBSIGNAL
+                          is True (no separate weight knob).
+  * arsenal_weight_0.25 - composite blend: 0.75 * current + 0.25 * arsenal_only.
+  * arsenal_weight_0.5  - 0.5 * current + 0.5 * arsenal_only.
+  * arsenal_weight_0.75 - 0.25 * current + 0.75 * arsenal_only.
+  * arsenal_weight_1.0  - 1.0 * arsenal_only (sanity check; should be
+                          worse than blends because vuln/sim/woba do real
+                          work).
 
-Headline numbers run on the COMMON SUBSET — rows where all 4 baseline
-matchup sub-signals (vulnerability, archetype sim, vegas total, woba) AND
-the arsenal blend (fb_slg / br_slg / os_slg) are computable. Apples-to-
-apples on identical rows.
+Headline numbers run on the COMMON SUBSET — rows where the 4 baseline
+matchup sub-signals AND the arsenal blend (pitcher arsenal usage + all
+three batter splits above PITCH_TYPE_SPLIT_MIN_BB) are computable.
+Apples-to-apples on identical rows.
 
 Metrics on the raw matchup score vs hit_hr, factor in isolation:
 
@@ -45,15 +54,11 @@ Caveats:
 * xSLG anchors (0.350-0.500) are league-distribution defaults from the
   design doc. Re-tunable in a follow-up sweep variant once the baseline
   arsenal_blend lands.
+* None+skip policy applies: if any of fb_pa / br_pa / os_pa is below
+  PITCH_TYPE_SPLIT_MIN_BB (30), the arsenal term is dropped from that
+  row's blend — matching score_batters._compute_xslg_vs_arsenal exactly.
 
-Status: **Phase 1 — not yet runnable.** The SQL fetch references
-`pi.fb_slg / pi.br_slg / pi.os_slg`, which won't exist in `pick_inputs`
-until Phase 2 (etl/backfill_pitch_type_splits.py + the matching ALTER
-in etl/db.py). `main()` bails with a clear message until that lands.
-
-Run after batter_pitch_type_splits is populated for the 2025 backfill.
-
-Usage (Phase 3, post-Phase-2):
+Usage:
     python diagnostics/backtest_arsenal_inputs.py
     python diagnostics/backtest_arsenal_inputs.py --start 2025-03-27 --end 2025-09-30
     python diagnostics/backtest_arsenal_inputs.py --days 30
@@ -76,17 +81,16 @@ sys.path.insert(0, str(_THIS.parent.parent))
 from etl.db import DB_PATH
 
 
-# Arsenal-blend variant flips this on inside _matchup_score. `current`
-# leaves it off and reproduces today's score_matchup logic verbatim.
-VARIANTS = ("current", "arsenal_blend")
-
-
-# Anchors mirror docs/pitch_type_archetype_design.md (re-tunable in
-# Phase 3 follow-up). Imported at runtime from features_v2 so the
-# harness stays in sync with the production fallback table.
-def _league_avg_pitch_type_slg() -> dict[str, float]:
-    from features_v2 import LEAGUE_AVG_PITCH_TYPE_SLG
-    return LEAGUE_AVG_PITCH_TYPE_SLG
+# Five variants — baseline + production blend + 4 weight-sweep points.
+# Order matters for the printed report (left-to-right == low-to-high weight).
+VARIANTS = (
+    "current",
+    "arsenal_blend",
+    "arsenal_weight_0.25",
+    "arsenal_weight_0.5",
+    "arsenal_weight_0.75",
+    "arsenal_weight_1.0",
+)
 
 
 def _min_bb() -> int:
@@ -101,9 +105,12 @@ def _min_bb() -> int:
 def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
     """pick_inputs JOINed with outcomes (the HR label) over [start, end].
 
-    Phase 2 adds fb_slg / fb_pa / br_slg / br_pa / os_slg / os_pa columns
-    to pick_inputs. Until then this query fails with sqlite3.OperationalError
-    on the unknown column; main() handles the bail message.
+    Phase 2: adds the JOIN to daily_picks + pitcher_arsenals so each row
+    carries the opposing pitcher's fb/breaking/offspeed usage at scoring
+    time. pitcher_arsenals is keyed (pitcher_id, season) — we use the
+    season matching the pick row's year. NULL on the join means the
+    pitcher's arsenal wasn't measured yet (rookies, deep AAA call-ups);
+    those rows drop out of the common subset.
     """
     rows = conn.execute(
         """
@@ -116,10 +123,18 @@ def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
             pi.pitcher_recent_era_21d, pi.pitcher_recent_k9_21d,
             pi.woba_vs_hand, pi.archetype_similarity, pi.vegas_team_total_pct,
             pi.fb_slg, pi.fb_pa, pi.br_slg, pi.br_pa, pi.os_slg, pi.os_pa,
+            pa.fb_usage_pct      AS pitcher_fb_usage_pct,
+            pa.breaking_pct      AS pitcher_br_usage_pct,
+            pa.offspeed_pct      AS pitcher_os_usage_pct,
             CASE WHEN COALESCE(o.hr_count, 0) > 0 THEN 1 ELSE 0 END AS hit_hr
         FROM pick_inputs pi
         INNER JOIN outcomes o
                 ON o.date = pi.date AND o.batter_id = pi.batter_id
+        LEFT JOIN daily_picks dp
+                ON dp.date = pi.date AND dp.batter_id = pi.batter_id
+        LEFT JOIN pitcher_arsenals pa
+                ON pa.pitcher_id = dp.opp_pitcher_id
+               AND pa.season = CAST(SUBSTR(pi.date, 1, 4) AS INTEGER)
         WHERE pi.date >= ? AND pi.date <= ?
         """,
         (start, end),
@@ -137,12 +152,14 @@ def _scale(v: float, lo: float, hi: float) -> float:
 
 
 def _xslg_vs_arsenal(row: dict) -> float | None:
-    """Reproduce score_batters._compute_xslg_vs_arsenal off pick_inputs row.
+    """Mirror score_batters._compute_xslg_vs_arsenal off a pick_inputs row.
 
-    Returns None if no pitcher arsenal usage is in the row — Phase 2 will
-    persist usage on each pick_inputs row alongside the batter splits.
-    Until then this branch fires when the harness runs against a pre-Phase-2
-    snapshot.
+    Returns None when ANY of:
+      - all three pitcher usages are missing (no measured arsenal), OR
+      - any of the three batter groups is missing or below
+        PITCH_TYPE_SPLIT_MIN_BB.
+    Matches the production helper exactly so harness variants are
+    apples-to-apples with what the flag-on production code would compute.
     """
     fb_use = row.get("pitcher_fb_usage_pct")
     br_use = row.get("pitcher_br_usage_pct")
@@ -150,80 +167,130 @@ def _xslg_vs_arsenal(row: dict) -> float | None:
     if fb_use is None and br_use is None and os_use is None:
         return None
 
-    league = _league_avg_pitch_type_slg()
     min_bb = _min_bb()
 
-    def _slg(group: str) -> float:
+    def _slg(group: str) -> float | None:
         slg = row.get(f"{group}_slg")
         pa = row.get(f"{group}_pa") or 0
         if slg is None or pa < min_bb:
-            return league[f"{group}_slg"]
+            return None
         return float(slg)
+
+    fb_slg = _slg("fb")
+    br_slg = _slg("br")
+    os_slg = _slg("os")
+    if fb_slg is None or br_slg is None or os_slg is None:
+        return None
 
     fb_use = fb_use or 0.0
     br_use = br_use or 0.0
     os_use = os_use or 0.0
-    return fb_use * _slg("fb") + br_use * _slg("br") + os_use * _slg("os")
+    return fb_use * fb_slg + br_use * br_slg + os_use * os_slg
 
 
-def _matchup_score(row: dict, variant: str) -> float:
-    """Compute matchup score under one variant.
+def _baseline_matchup(row: dict) -> float:
+    """Equal-mean of the 4 baseline matchup sub-signals (no arsenal term).
 
-    Mirrors score_batters.score_matchup but parameterized on `variant`.
-    Vegas team total, vulnerability, archetype similarity, woba feed the
-    mean as in production. The `arsenal_blend` variant adds the xSLG-vs-
-    arsenal term.
-
-    NB: vulnerability + archetype similarity are sourced from the
-    pick_inputs row directly (the harness doesn't recompute the percentile
-    rank — it uses the as-shipped column values from when the day's slate
-    was scored). This matches backtest_power_inputs.py's approach.
+    Mirrors score_batters.score_matchup v1 fallback: vuln (HR/9 + HH%),
+    woba_vs_hand, archetype_similarity, vegas_team_total_pct. Same
+    skip-on-missing semantics. Returns 50.0 on completely empty input
+    (rare; only if every signal is null).
     """
     scores: list[float] = []
-
-    # Vulnerability — use the HR/9 + HH-pct fallback inline (mirrors v1
-    # score_matchup; harness assumes slate_ctx isn't reconstructed).
     hr9 = row.get("pitcher_hr_per_9")
     if hr9 is not None and hr9 > 0:
         scores.append(_scale(hr9, 0.0, 4.5))
     hh = row.get("pitcher_hh_pct")
     if hh is not None and hh > 0:
         scores.append(_scale(hh, 25.0, 50.0))
-
-    # woba vs hand
     woba = row.get("woba_vs_hand")
     if woba is not None and woba > 0:
         scores.append(_scale(woba, 0.290, 0.395))
-
-    # Archetype similarity
     sim = row.get("archetype_similarity")
     if sim is not None:
         scores.append(float(sim))
-
-    # Vegas team total percentile
     vtt = row.get("vegas_team_total_pct")
     if vtt is not None:
         scores.append(float(vtt))
-
-    if variant == "arsenal_blend":
-        xslg = _xslg_vs_arsenal(row)
-        if xslg is not None:
-            scores.append(_scale(xslg, 0.350, 0.500))
-
     return float(np.mean(scores)) if scores else 50.0
 
 
+def _arsenal_score(row: dict) -> float | None:
+    """xSLG-vs-arsenal mapped to 0-100. None when the underlying signal
+    is None (any group below threshold or pitcher arsenal unmeasured)."""
+    xslg = _xslg_vs_arsenal(row)
+    if xslg is None:
+        return None
+    return _scale(xslg, 0.350, 0.500)
+
+
+def _matchup_score(row: dict, variant: str) -> float:
+    """Compute matchup score under one variant.
+
+    The 'current' variant is the baseline 4-signal mean. 'arsenal_blend'
+    reproduces the flag-on production helper (5-signal equal-mean) by
+    appending the arsenal term to the baseline scores BEFORE the mean.
+    The weighted variants compose: w * arsenal_only + (1-w) * baseline,
+    so they parameterize how much the arsenal moves the final score
+    independent of the baseline's signal count.
+
+    When the arsenal score isn't computable (None+skip), all variants
+    fall back to the baseline — same row drops out of any harness
+    variant by virtue of the common-subset filter.
+    """
+    baseline = _baseline_matchup(row)
+    arsenal = _arsenal_score(row)
+
+    if variant == "current":
+        return baseline
+    if arsenal is None:
+        # No arsenal signal -> every variant reduces to baseline. The
+        # common-subset filter in _has_arsenal_signal usually drops these
+        # rows; this branch covers any that sneak through.
+        return baseline
+
+    if variant == "arsenal_blend":
+        # Production-equivalent: arsenal is one of 5 equal-mean signals.
+        # Recompute as a true equal-mean over the same scores the baseline
+        # mean would produce, but with arsenal appended.
+        scores: list[float] = []
+        hr9 = row.get("pitcher_hr_per_9")
+        if hr9 is not None and hr9 > 0:
+            scores.append(_scale(hr9, 0.0, 4.5))
+        hh = row.get("pitcher_hh_pct")
+        if hh is not None and hh > 0:
+            scores.append(_scale(hh, 25.0, 50.0))
+        woba = row.get("woba_vs_hand")
+        if woba is not None and woba > 0:
+            scores.append(_scale(woba, 0.290, 0.395))
+        sim = row.get("archetype_similarity")
+        if sim is not None:
+            scores.append(float(sim))
+        vtt = row.get("vegas_team_total_pct")
+        if vtt is not None:
+            scores.append(float(vtt))
+        scores.append(arsenal)
+        return float(np.mean(scores))
+
+    # Parametric weight sweep: w * arsenal_only + (1-w) * baseline.
+    weight_map = {
+        "arsenal_weight_0.25": 0.25,
+        "arsenal_weight_0.5":  0.50,
+        "arsenal_weight_0.75": 0.75,
+        "arsenal_weight_1.0":  1.00,
+    }
+    w = weight_map.get(variant)
+    if w is None:
+        return baseline
+    return w * arsenal + (1.0 - w) * baseline
+
+
 def _has_arsenal_signal(row: dict) -> bool:
-    """True if the row has the pitcher-arsenal usage trio AND at least one
-    batter split. Defines the common-subset filter for the comparison."""
-    fb_use = row.get("pitcher_fb_usage_pct")
-    br_use = row.get("pitcher_br_usage_pct")
-    os_use = row.get("pitcher_os_usage_pct")
-    has_usage = any(u is not None for u in (fb_use, br_use, os_use))
-    has_any_split = any(
-        row.get(f"{g}_slg") is not None for g in ("fb", "br", "os")
-    )
-    return has_usage and has_any_split
+    """Common-subset filter: True iff the row has all three pitcher
+    arsenal usages AND all three batter splits at-or-above the PA
+    threshold. Same gate as _xslg_vs_arsenal returning non-None.
+    """
+    return _xslg_vs_arsenal(row) is not None
 
 
 def score_variants(rows: list[dict]) -> list[dict]:
@@ -341,14 +408,14 @@ def _fmt(x, prec: int = 3) -> str:
 
 
 def print_report(results: dict[str, dict], n_dates: int) -> None:
-    hdr = (f"  {'variant':<18}{'n':>7}{'n_hr':>7}{'hr_rate':>9}"
+    hdr = (f"  {'variant':<22}{'n':>7}{'n_hr':>7}{'hr_rate':>9}"
            f"{'auc':>8}{'top10_lift':>12}{'quint_mono':>12}{'avg_rank_hr':>13}")
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     for v in VARIANTS:
         m = results[v]
         mono = f"{m['quint_mono']}/4" if m["quint_mono"] is not None else "n/a"
-        print(f"  {v:<18}{m['n']:>7d}{m['n_hr']:>7d}{_fmt(m['hr_rate'], 4):>9}"
+        print(f"  {v:<22}{m['n']:>7d}{m['n_hr']:>7d}{_fmt(m['hr_rate'], 4):>9}"
               f"{_fmt(m['auc'], 3):>8}{_fmt(m['top10_lift'], 2):>12}"
               f"{mono:>12}{_fmt(m['avg_rank_hr'], 1):>13}")
     print()
@@ -357,16 +424,20 @@ def print_report(results: dict[str, dict], n_dates: int) -> None:
     for v in VARIANTS:
         rates = results[v]["quint_rates"]
         cells = "  ".join(_fmt(r, 4) for r in rates) if rates else "(n < 10)"
-        print(f"    {v:<18}{cells}")
+        print(f"    {v:<22}{cells}")
     print()
 
-    # Verdict
-    base = results["current"]["auc"]
-    blend = results["arsenal_blend"]["auc"]
-    if base is not None and blend is not None:
-        d = blend - base
-        tag = "HELPS" if d > 0.005 else "HURTS" if d < -0.005 else "neutral"
-        print(f"  arsenal_blend AUC = {blend:.3f}  delta {d:+.3f} vs current -> {tag}")
+    # Verdict: pick the variant with the best AUC.
+    aucs = {v: results[v]["auc"] for v in VARIANTS if results[v]["auc"] is not None}
+    if aucs:
+        best = max(aucs, key=aucs.get)
+        base = aucs.get("current")
+        if base is not None and best != "current":
+            d = aucs[best] - base
+            tag = "HELPS" if d > 0.005 else "HURTS" if d < -0.005 else "neutral"
+            print(f"  Best AUC: {best} ({aucs[best]:.3f}); delta {d:+.3f} vs current -> {tag}")
+        else:
+            print(f"  Best AUC: {best} ({aucs[best]:.3f})")
         print()
 
     if n_dates < 10:
@@ -407,14 +478,11 @@ def main() -> None:
         rows = fetch_rows(conn, start, end)
     except sqlite3.OperationalError as e:
         conn.close()
-        print(f"\n  [phase-1-skeleton] {e}", file=sys.stderr)
+        print(f"\n  [schema error] {e}", file=sys.stderr)
         print(
-            "\n  This harness is the Phase 1 skeleton for the pitch-type\n"
-            "  archetype matchup signal. It requires the Phase 2 columns\n"
-            "  fb_slg / fb_pa / br_slg / br_pa / os_slg / os_pa on\n"
-            "  pick_inputs, populated by etl/backfill_pitch_type_splits.py.\n"
-            "  Run after batter_pitch_type_splits is populated for the\n"
-            "  2025 backfill. See docs/pitch_type_archetype_design.md.\n",
+            "\n  Phase 2 columns fb_slg / br_slg / os_slg / *_pa not on\n"
+            "  pick_inputs yet. Run etl/db.create_tables (idempotent ALTER)\n"
+            "  then populate via etl/backfill_pitch_type_splits.py.\n",
             file=sys.stderr,
         )
         sys.exit(2)

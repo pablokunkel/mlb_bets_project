@@ -292,6 +292,49 @@ def load_player_status_lookup(date_str: str) -> dict[int, dict]:
         return {}
 
 
+def load_pitch_type_splits_lookup(date_str: str) -> dict[int, dict]:
+    """Phase 2 (2026-05-25): batter FB/BR/OS SLG splits for the as-of date.
+
+    Returns ``{player_id: {fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa}}``
+    for snapshots whose ``date_through == date_str``. Populated by
+    ``etl/backfill_pitch_type_splits.py`` (one-shot) and nightly ETL
+    (Phase 2 follow-up; not in this PR).
+
+    When the table is empty or no row for *date_str*, returns ``{}``.
+    Score_matchup's None+skip policy absorbs missing entries — with
+    ``USE_ARSENAL_SUBSIGNAL=False`` (Phase 2 default) these are read but
+    ignored anyway, so a missing table is a clean no-op.
+    """
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        if not db_path.exists():
+            return {}
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            """
+            SELECT player_id, fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa
+            FROM batter_pitch_type_splits
+            WHERE date_through = ?
+            """,
+            (date_str,),
+        ).fetchall()
+        conn.close()
+        out: dict[int, dict] = {}
+        for pid, fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa in rows:
+            if pid is None:
+                continue
+            out[int(pid)] = {
+                "fb_slg": fb_slg, "fb_pa": fb_pa,
+                "br_slg": br_slg, "br_pa": br_pa,
+                "os_slg": os_slg, "os_pa": os_pa,
+            }
+        return out
+    except Exception as e:
+        print(f"  [PITCH-TYPE-SPLITS] Could not load batter_pitch_type_splits ({e}) — sub-signal inactive")
+        return {}
+
+
 def load_rookie_pitcher_ids(pitcher_id_map: dict, threshold: int = 300) -> set[int]:
     """Identify pitchers with thin/no career Statcast data.
 
@@ -1231,6 +1274,22 @@ def fetch_live_slate(
         status.warn("IL/Scratch Filter (B7)",
                     "No daily_player_status rows for date — filter inactive")
 
+    # Phase 2 (2026-05-25): batter pitch-type splits lookup.
+    # Reads snapshots persisted by etl/backfill_pitch_type_splits.py. With
+    # USE_ARSENAL_SUBSIGNAL=False (current), values are persisted to
+    # pick_inputs but do not feed score_matchup.
+    pitch_type_splits = load_pitch_type_splits_lookup(date_str)
+    if pitch_type_splits:
+        status.ok(
+            "Pitch-Type Splits (Phase 2)",
+            f"{len(pitch_type_splits)} batters via batter_pitch_type_splits",
+        )
+    else:
+        status.warn(
+            "Pitch-Type Splits (Phase 2)",
+            "No batter_pitch_type_splits rows for date — sub-signal inactive",
+        )
+
     return {
         "games": games,
         "weather": weather_data,
@@ -1242,6 +1301,7 @@ def fetch_live_slate(
         "bulk_batter_xwoba": bulk_batter_xwoba,
         "bulk_recent_statcast": bulk_recent_statcast,
         "player_status": player_status,
+        "pitch_type_splits": pitch_type_splits,
         "form_archetype_centroids": form_archetype_centroids,
     }
 
@@ -1472,15 +1532,15 @@ def score_live_slate(
     recent_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in bulk_recent_statcast)
     print(f"  [RECENT-14d] {recent_hit}/{len(eligible_batters)} T{tier} batters")
 
+    # Phase 2 (2026-05-25): batter pitch-type splits lookup.
+    pitch_type_splits = slate.get("pitch_type_splits", {})
+
     # Form-archetype centroid Phase 2 (2026-05-26): persisted per-batter
     # centroid lookup from batter_form_archetype. Read-only at scoring
     # time; the centroid is attached to the batter dict so it persists
     # into pick_inputs (backtest_factors.rescore_row replays from there).
     # USE_FORM_ARCHETYPE=False (Phase 2 default) means score_form ignores
-    # the attached centroid — production scoring is unchanged. Centroid
-    # window: FORM_ARCHETYPE_PRODUCTION_WINDOW (14d, mid-point of the
-    # 3-window sweep). The backtest harness can pick different windows
-    # because the persisted column stores window_days alongside.
+    # the attached centroid — production scoring is unchanged.
     archetype_centroids = slate.get("form_archetype_centroids", {})
     archetype_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in archetype_centroids)
     print(f"  [FORM-ARCH] {archetype_hit}/{len(eligible_batters)} T{tier} batters have a centroid")
@@ -1579,21 +1639,22 @@ def score_live_slate(
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         # Phase 1 (2026-05-25): park-archetype sub-signal centroid.
-        # Default to None — score_park's USE_PARK_ARCHETYPE guard is off,
         # so the key is read-but-ignored until park-archetype Phase 2 (#87)
         # wires it via the bulk slate dict. Stays None on this PR.
         entry["park_archetype_centroid"] = None
 
-        # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
-        # Default keys to None — pitch-type Phase 2 (#89) overwrites them
-        # via bulk_pitch_type_splits when that PR lands. USE_ARSENAL_SUBSIGNAL=False
-        # means score_matchup ignores them either way.
-        entry["fb_slg"] = None
-        entry["fb_pa"] = None
-        entry["br_slg"] = None
-        entry["br_pa"] = None
-        entry["os_slg"] = None
-        entry["os_pa"] = None
+        # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal.
+        # Read from batter_pitch_type_splits via slate-level lookup. Keys
+        # default to None when no row for this batter on this date —
+        # score_matchup's USE_ARSENAL_SUBSIGNAL guard is off so these are
+        # read-but-ignored until Phase 3 flips the flag.
+        pts = pitch_type_splits.get(player_id) or {}
+        entry["fb_slg"] = pts.get("fb_slg")
+        entry["fb_pa"] = pts.get("fb_pa")
+        entry["br_slg"] = pts.get("br_slg")
+        entry["br_pa"] = pts.get("br_pa")
+        entry["os_slg"] = pts.get("os_slg")
+        entry["os_pa"] = pts.get("os_pa")
 
         # Form-archetype centroid Phase 2 — attach the persisted centroid
         # (when present) so score_batters.compute_composite can stash it
@@ -1810,6 +1871,10 @@ def score_untiered_starters(
     batter_adv = {pid: {"xwoba_contact": v} for pid, v in bulk_xwoba.items()}
     # B6a (2026-05-21): same bulk recent-14d Statcast that T1/T2/T3 use
     bulk_recent_statcast = slate.get("bulk_recent_statcast", {})
+    # Phase 2 (2026-05-25): batter pitch-type splits lookup (same slate map
+    # the T1/T2/T3 path uses — T4 batters get the same as-of date snapshot).
+    pitch_type_splits = slate.get("pitch_type_splits", {})
+
     # Phase 2 form-archetype: same slate-level bulk centroid lookup that
     # the tiered path uses; attached so it persists into pick_inputs.
     archetype_centroids = slate.get("form_archetype_centroids", {})
@@ -1858,22 +1923,23 @@ def score_untiered_starters(
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         # Phase 1 (2026-05-25): park-archetype centroid. Default to None
-        # on the untiered path too. T4 batters tend to have very thin
-        # career HR samples — the PARK_ARCHETYPE_MIN_HRS gate in the
-        # Phase 2 builder will drop most T4 entries to None automatically.
+        # on the untiered path. T4 batters tend to have very thin career
+        # HR samples — the PARK_ARCHETYPE_MIN_HRS gate in the Phase 2
+        # builder will drop most T4 entries to None automatically.
         entry["park_archetype_centroid"] = None
 
-        # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
-        # Default keys to None on the untiered path too. T4 batters
-        # tend to have thin samples — the per-group PITCH_TYPE_SPLIT_MIN_BB
-        # threshold in _compute_xslg_vs_arsenal will return None for
-        # most T4 entries (None+skip; no league-avg fallback per #83).
-        entry["fb_slg"] = None
-        entry["fb_pa"] = None
-        entry["br_slg"] = None
-        entry["br_pa"] = None
-        entry["os_slg"] = None
-        entry["os_pa"] = None
+        # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal —
+        # read from batter_pitch_type_splits via slate-level lookup. T4
+        # batters tend to have thin samples — _compute_xslg_vs_arsenal's
+        # None+skip policy drops below-PITCH_TYPE_SPLIT_MIN_BB groups
+        # without imputing a league-avg value.
+        pts = pitch_type_splits.get(pid) or {}
+        entry["fb_slg"] = pts.get("fb_slg")
+        entry["fb_pa"] = pts.get("fb_pa")
+        entry["br_slg"] = pts.get("br_slg")
+        entry["br_pa"] = pts.get("br_pa")
+        entry["os_slg"] = pts.get("os_slg")
+        entry["os_pa"] = pts.get("os_pa")
 
         # Phase 2 form-archetype: attach centroid for pick_inputs persistence.
         arch = archetype_centroids.get(pid)

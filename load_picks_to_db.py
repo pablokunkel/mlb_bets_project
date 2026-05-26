@@ -141,8 +141,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source,
             season_hr,
+            fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa,
             form_archetype_centroid_json, form_archetype_window, form_archetype_n_hrs
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?)
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -282,13 +283,22 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     # and backtest_factors.rescore_row falls through to its
                     # legacy behavior for those rows.
                     inputs.get("season_hr"),
+                    # Phase 2 (2026-05-25): pitch-type archetype matchup
+                    # sub-signal inputs. NULL on rows where
+                    # fetch_batter_pitch_type_splits returned nothing for
+                    # the batter. _compute_xslg_vs_arsenal's None+skip
+                    # absorbs NULLs.
+                    inputs.get("fb_slg"),
+                    inputs.get("fb_pa"),
+                    inputs.get("br_slg"),
+                    inputs.get("br_pa"),
+                    inputs.get("os_slg"),
+                    inputs.get("os_pa"),
                     # Phase 2 form-archetype (2026-05-26). Centroid persisted
-                    # so backtest_factors.rescore_row can replay historical
-                    # archetype-match scores without re-pulling Statcast.
-                    # None for picks JSON pre-Phase-2 or batters with
-                    # <FORM_ARCHETYPE_MIN_HRS HRs in lookback (None+skip per
-                    # design). score_form ignores when USE_FORM_ARCHETYPE is
-                    # False (default through Phase 2).
+                    # so backtest_factors.rescore_row can replay archetype-match
+                    # scores without re-pulling Statcast. None for batters with
+                    # <FORM_ARCHETYPE_MIN_HRS HRs (None+skip). score_form ignores
+                    # when USE_FORM_ARCHETYPE is False (Phase 2 default).
                     inputs.get("form_archetype_centroid_json"),
                     inputs.get("form_archetype_window"),
                     inputs.get("form_archetype_n_hrs"),

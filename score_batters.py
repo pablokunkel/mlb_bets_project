@@ -1630,13 +1630,20 @@ def compute_composite(
         # batter dict by generate_picks.load_season_hr_lookup; persisted
         # here so backtest_factors.rescore_row can apply the same floor.
         "season_hr":               batter.get("season_hr"),
+        # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal
+        # inputs. Set by fetch_batter_pitch_type_splits via generate_picks;
+        # persist here so backtest_arsenal_inputs.py can replay variants
+        # off pick_inputs without re-pulling Statcast.
+        "fb_slg":                  batter.get("fb_slg"),
+        "fb_pa":                   batter.get("fb_pa"),
+        "br_slg":                  batter.get("br_slg"),
+        "br_pa":                   batter.get("br_pa"),
+        "os_slg":                  batter.get("os_slg"),
+        "os_pa":                   batter.get("os_pa"),
         # Phase 2 form-archetype (2026-05-26): persist the per-batter
-        # centroid so backtest_factors.rescore_row can replay historical
-        # archetype-match scores from pick_inputs without touching
-        # batter_form_archetype again. None when the table has no row for
-        # this (batter, date, window) — None+skip per design. The window
-        # column lets backtest variants choose which window's centroid to
-        # use without re-pulling.
+        # centroid so backtest_factors.rescore_row can replay archetype-match
+        # scores from pick_inputs without touching batter_form_archetype again.
+        # None+skip when no row for (batter, date, window).
         "form_archetype_centroid_json": batter.get("form_archetype_centroid_json"),
         "form_archetype_window":        batter.get("form_archetype_window"),
         "form_archetype_n_hrs":         batter.get("form_archetype_n_hrs"),

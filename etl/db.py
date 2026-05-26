@@ -567,6 +567,19 @@ def create_tables(conn: sqlite3.Connection):
         recent_xwoba_contact_14d REAL,   -- mean est_woba_using_speedangle on contact
         recent_iso_14d           REAL,   -- (TB - H) / AB in window
 
+        -- Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal
+        -- inputs. Batter's season-to-date SLG against each bucket (FB / BR
+        -- / OS), with the AB-with-pitch-in-bucket count for sample-size
+        -- gating. Populated by features_v2.fetch_batter_pitch_type_splits
+        -- via etl/backfill_pitch_type_splits.py + load_picks_to_db.py.
+        -- See docs/pitch_type_archetype_design.md.
+        fb_slg                  REAL,    -- SLG on FB-bucket pitches (FF/FT/SI/FC/FA)
+        fb_pa                   INTEGER, -- ABs with a FB-bucket pitch (denominator)
+        br_slg                  REAL,    -- SLG on BR-bucket pitches (SL/CU/KC/ST/SV)
+        br_pa                   INTEGER,
+        os_slg                  REAL,    -- SLG on OS-bucket pitches (CH/FS/KN/SP)
+        os_pa                   INTEGER,
+
         -- Matchup: pitcher inputs
         pitcher_hr_per_9        REAL,
         pitcher_era             REAL,
@@ -975,17 +988,26 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
-    # 2026-05-26: Form archetype Phase 2 — persist the per-batter centroid
-    # vector + window + sample size into pick_inputs so the backtest harness
-    # (diagnostics/backtest_form_archetype.py) can replay historical scores
-    # without re-pulling Statcast. The _window column lets backtest variants
-    # pick which window's centroid to use (7/14/21) at re-score time without
-    # touching the backfill. None-safe additive — score_form ignores when
-    # USE_FORM_ARCHETYPE is False (default).
+    # 2026-05-25/26: Phase 2 sub-signal columns on pick_inputs.
+    # - Pitch-type: fb/br/os SLG+PA splits, populated by
+    #   load_picks_to_db.py from batter dict keys set by
+    #   fetch_batter_pitch_type_splits. PITCH_TYPE_SPLIT_MIN_BB=30 default
+    #   for sample-size gating.
+    # - Form-archetype: per-batter centroid + window + sample size, lets
+    #   backtest_form_archetype replay historical scores without re-pulling.
+    #   _window column lets variants pick 7/14/21 without re-backfilling.
+    # All NULL-safe additive — scoring helpers ignore when their
+    # USE_* flag is False (Phase 2 default).
     existing_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
     }
     for col, ddl in [
+        ("fb_slg", "ALTER TABLE pick_inputs ADD COLUMN fb_slg REAL"),
+        ("fb_pa",  "ALTER TABLE pick_inputs ADD COLUMN fb_pa INTEGER"),
+        ("br_slg", "ALTER TABLE pick_inputs ADD COLUMN br_slg REAL"),
+        ("br_pa",  "ALTER TABLE pick_inputs ADD COLUMN br_pa INTEGER"),
+        ("os_slg", "ALTER TABLE pick_inputs ADD COLUMN os_slg REAL"),
+        ("os_pa",  "ALTER TABLE pick_inputs ADD COLUMN os_pa INTEGER"),
         ("form_archetype_centroid_json",
          "ALTER TABLE pick_inputs ADD COLUMN form_archetype_centroid_json TEXT"),
         ("form_archetype_window",
