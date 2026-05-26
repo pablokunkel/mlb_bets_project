@@ -881,15 +881,24 @@ def _layoff_dampener(form: float, window_days) -> float:
 
 def score_form(batter: dict) -> float:
     """
-    Factor 4: Recent form, on split game-count windows (rebuilt 2026-05-19).
+    Factor 4: Recent form, on split game-count windows (rebuilt 2026-05-19,
+    AVG term dropped 2026-05-26 per B11).
     Returns 0-100.
 
       - recent_hr_10g    HR over the last ~10 games — HRs are lumpy, short window
       - recent_iso_30g   ISO over the last ~30 games — rate stat, bigger sample
-      - recent_avg_30g   batting AVG over the last ~30 games — contact signal
       - ev_trend         real exit-velocity trend vs season (mph). Phase 2:
                          populated by the nightly Statcast ETL; None until then
                          and simply skipped.
+
+    B11 (2026-05-26): dropped recent_avg_30g. `backtest_form_anchors.py` showed
+    on 3 sample sizes (90 / 148 / 188 dates) that the AVG term is net-noise for
+    HR prediction — dropping it lifts AUC +0.018 consistently. Mechanism: AVG
+    mostly captures singles + groundballs falling in; ISO already covers the
+    power dimension; feast-or-famine power hitters (Bader 5/23 grand slam,
+    Form 35.1 under the old formula) have lower AVG by definition, so the AVG
+    term anti-correlates with the HR signal we want. Column stays in
+    pick_inputs so backtest replay of pre-B11 dates remains possible.
 
     None vs 0: a None input is SKIPPED (no data); a real 0 is scored honestly.
     Score is the mean of whatever was measured, then run through the long-rest
@@ -904,10 +913,6 @@ def score_form(batter: dict) -> float:
     recent_iso = batter.get("recent_iso_30g")
     if recent_iso is not None and recent_iso > 0:
         scores.append(min_max_scale(recent_iso, 0.100, 0.300))
-
-    recent_avg = batter.get("recent_avg_30g")
-    if recent_avg is not None and recent_avg > 0:
-        scores.append(min_max_scale(recent_avg, 0.210, 0.330))
 
     ev_trend = batter.get("ev_trend")
     if ev_trend is not None:
