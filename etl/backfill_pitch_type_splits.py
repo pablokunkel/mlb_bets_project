@@ -293,7 +293,8 @@ def main():
     ap.add_argument("--end", default=DEFAULT_END,
                     help=f"YYYY-MM-DD (default {DEFAULT_END})")
     ap.add_argument("--force", action="store_true",
-                    help="Re-pull and overwrite even when coverage > 70%")
+                    help="Re-pull and overwrite even when coverage > 70%% "
+                         "(literal %% escaped for Python 3.14 argparse strictness)")
     ap.add_argument("--max-dates", type=int, default=None, metavar="N",
                     help="Stop after N dates RUN (skipped ones don't count)")
     ap.add_argument("--max-runtime", type=str, default=None, metavar="DURATION",
