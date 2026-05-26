@@ -1066,6 +1066,81 @@ def _layoff_dampener(form: float, window_days) -> float:
     return form * (1.0 - pull) + 50.0 * pull
 
 
+# ---------------------------------------------------------------------------
+# Form archetype sub-signal (Phase 1 — added 2026-05-26)
+# ---------------------------------------------------------------------------
+# Sub-signal of score_form that compares today's pre-HR state-of-play vector
+# to the batter's own pre-HR centroid (built from their past HRs). L2
+# distance -> similarity -> 0-100 score. Strictly additive: gated behind
+# USE_FORM_ARCHETYPE (default False), so production scoring is byte-
+# identical until Phase 3 enables it.
+#
+# Centroid features are deliberately ORTHOGONAL to score_form's base inputs
+# (recent_hr_10g, recent_iso_30g, ev_trend) — see
+# docs/form_archetype_design.md "non-overlap-with-Form-inputs" guardrail
+# and the corresponding smoke test.
+USE_FORM_ARCHETYPE = False
+
+# Sub-signal weight inside score_form's mean. 1.0 = same weight as each of
+# the 3 base terms (equal-mean). Phase 3 backtest may justify a different
+# value; ships at 1.0 to keep the Phase-1 math simple.
+FORM_ARCHETYPE_SUBSIGNAL_WEIGHT = 1.0
+
+# L2-similarity -> 0-100 anchors (typical observed similarity is 0.30-0.65;
+# 0.70+ marks "very strong match to past pre-HR pattern"). Re-tuned in
+# Phase 3 against the empirical distribution. See design doc Score mapping.
+FORM_ARCHETYPE_SIM_LO = 0.20
+FORM_ARCHETYPE_SIM_HI = 0.80
+
+
+def _compute_form_archetype_match(
+    today_state_vector: list[float | None] | None,
+    batter_archetype_vector: list[float | None] | None,
+) -> float | None:
+    """Return the 0-100 archetype-match score, or None if missing inputs.
+
+    Both inputs are positional lists keyed by features_v2.FORM_ARCHETYPE_FEATURES.
+    None propagation:
+      - either input is None  -> return None (no centroid for this batter,
+                                 or no today-state computed -> caller skips)
+      - per-slot: if EITHER vector's slot is None for a feature, that
+                  feature is dropped from the L2 sum (skip-on-missing per
+                  feature, not zero-fill)
+      - if no features overlap -> return None (no information to compare)
+
+    Distance -> similarity: `sim = 1 / (1 + L2)`, then mapped to 0-100 via
+    min_max_scale(sim, FORM_ARCHETYPE_SIM_LO, FORM_ARCHETYPE_SIM_HI).
+
+    No league-average fallback — by design. A batter without a centroid
+    (FORM_ARCHETYPE_MIN_HRS not met) is honestly missing this signal;
+    pretending he matches a "league archetype" would be the same provenance
+    bug the 2026-05-02 audit fixed across compute_slate_context.
+    """
+    if today_state_vector is None or batter_archetype_vector is None:
+        return None
+    if len(today_state_vector) != len(batter_archetype_vector):
+        return None
+
+    sq_diffs: list[float] = []
+    for a, b in zip(today_state_vector, batter_archetype_vector):
+        if a is None or b is None:
+            continue
+        try:
+            sq_diffs.append(float(a - b) ** 2)
+        except (TypeError, ValueError):
+            continue
+
+    if not sq_diffs:
+        return None
+
+    # NOTE: L2 is feature-scale-sensitive. Phase 2 will z-score the input
+    # vectors before passing them in here. Phase 1 ships raw L2 because the
+    # math is verifiable from a fresh read of this function.
+    l2 = float(np.sqrt(sum(sq_diffs)))
+    sim = 1.0 / (1.0 + l2)
+    return min_max_scale(sim, FORM_ARCHETYPE_SIM_LO, FORM_ARCHETYPE_SIM_HI)
+
+
 def score_form(batter: dict) -> float:
     """
     Factor 4: Recent form, on split game-count windows (rebuilt 2026-05-19,
@@ -1087,27 +1162,50 @@ def score_form(batter: dict) -> float:
     term anti-correlates with the HR signal we want. Column stays in
     pick_inputs so backtest replay of pre-B11 dates remains possible.
 
+    Phase 1 archetype sub-signal (2026-05-26): when USE_FORM_ARCHETYPE is True
+    AND both batter_archetype_vector + today_state_vector are present on the
+    batter dict, an L2-distance similarity score joins the mean. None
+    propagates cleanly — a batter with <FORM_ARCHETYPE_MIN_HRS career HRs
+    has no centroid and the sub-signal is skipped (Form falls back to base
+    inputs only). Strictly additive; flag-off behavior is byte-identical
+    to pre-Phase-1.
+
     None vs 0: a None input is SKIPPED (no data); a real 0 is scored honestly.
     Score is the mean of whatever was measured, then run through the long-rest
     dampener (stale 30-game window -> blend toward neutral).
     """
-    scores = []
+    scores: list[tuple[float, float]] = []  # (weight, value) — same shape as backtest_form_anchors
 
     recent_hr = batter.get("recent_hr_10g")
     if recent_hr is not None:
-        scores.append(min_max_scale(recent_hr, 0, 5))
+        scores.append((1.0, min_max_scale(recent_hr, 0, 5)))
 
     recent_iso = batter.get("recent_iso_30g")
     if recent_iso is not None and recent_iso > 0:
-        scores.append(min_max_scale(recent_iso, 0.100, 0.300))
+        scores.append((1.0, min_max_scale(recent_iso, 0.100, 0.300)))
 
     ev_trend = batter.get("ev_trend")
     if ev_trend is not None:
-        scores.append(min_max_scale(ev_trend, -3.0, 3.0))
+        scores.append((1.0, min_max_scale(ev_trend, -3.0, 3.0)))
+
+    # Phase 1 (2026-05-26): form-archetype sub-signal. Gated by
+    # USE_FORM_ARCHETYPE (default False — additive, no-op until Phase 3
+    # flips it). When on, the L2-similarity score blends into the mean
+    # at weight FORM_ARCHETYPE_SUBSIGNAL_WEIGHT. None propagation means
+    # a missing centroid (batter <MIN_HRS) or missing today-state skips
+    # cleanly — Form falls back to the base 3-input mean.
+    if USE_FORM_ARCHETYPE:
+        archetype_score = _compute_form_archetype_match(
+            batter.get("form_archetype_today_vector"),
+            batter.get("form_archetype_centroid"),
+        )
+        if archetype_score is not None:
+            scores.append((FORM_ARCHETYPE_SUBSIGNAL_WEIGHT, archetype_score))
 
     if not scores:
         return 50.0
-    form = float(np.mean(scores))
+    total_w = sum(w for w, _ in scores)
+    form = sum(w * v for w, v in scores) / total_w
     return _layoff_dampener(form, batter.get("recent_window_days"))
 
 

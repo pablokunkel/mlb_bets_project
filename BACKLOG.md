@@ -625,7 +625,27 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Files (Phase 2).** `etl/etl_nightly.py`, `etl/backfill_park_archetype.py` (new), `etl/db.py` (ALTER), `generate_picks.py` (wire `park_archetype_centroid` from the bulk dict). **Files (Phase 3).** `score_batters.py` (flip flag), `WEIGHT_REFIT_LOG.md`, smoke pins update.
 
-**Source.** Design doc `docs/park_archetype_design.md` (this PR). Parallel build to the pitch-type archetype foundation (commit `026d756`).
+**Source.** Design doc `docs/park_archetype_design.md` (PR #85). Parallel build to the pitch-type archetype foundation (commit `026d756`).
+
+### C5. Form archetype — Phases 2-4 (per-batter pre-HR state-of-play sub-signal)
+
+**Status.** Phase 1 shipped (this PR — `claude/form-archetype-foundation` cherry-picked via #86 carry-forward). Phases 2-4 queued. Independent of A1; will fold into the next A1 refit per Phase 4.
+
+**Why it matters.** Today's `score_form` reads "is the batter producing recently" (recent_hr_10g + recent_iso_30g + ev_trend). It does NOT capture **whether today's state-of-play looks like the state the batter was in the last few times he went deep.** A feast-or-famine power hitter (Gallo-type) has a distinctly different pre-HR pattern from a contact-hitter slugger (Freeman-type), and today's Form score blurs the two when they happen to land at the same value. Per-batter centroid of past pre-HR state-of-play + L2 distance to today's state would add a complementary signal.
+
+**What's already done in Phase 1.** Design doc (`docs/form_archetype_design.md`); `batter_form_archetype` table; `compute_batter_form_archetype` builder callable but uncalled; `USE_FORM_ARCHETYPE=False` flag with `_compute_form_archetype_match` helper in `score_form`; backtest harness skeleton (`diagnostics/backtest_form_archetype.py`) with Phase-1 guard; 8 new smoke pins. Production scoring byte-identical to pre-PR.
+
+**Phase 2.** `etl/backfill_form_archetype.py` — one-shot orchestrator walking 2025-03-27 → 2025-09-30, one row per `(batter, date, window_days)` for windows 7/14/21. Wire into `etl/etl_nightly.py` for daily refresh. Add `pick_inputs.form_archetype_today_vector` column. Smoke probe: count of `batter_form_archetype` rows non-zero on latest `pick_inputs` date.
+
+**Phase 3.** Run `backtest_form_archetype.py` on full 2025 backfill (3x3 sweep). Compare `default` vs 9 archetype variants on AUC / top10_lift / quint_mono / avg_rank_hr. Decision rule (per B6/B11/B12 precedent): ship the winning variant only if it wins ≥2 of 4 metrics with no decisive loss on the others, validated on full season + ≥3 monthly slices. Set winning `(window_days, min_hrs)` in `score_batters` constants. Flip `USE_FORM_ARCHETYPE=True`. Document in `WEIGHT_REFIT_LOG.md`.
+
+**Phase 4.** Monitor 14 days. Confirm picks shift in obvious-correct direction (Gallo-type feast-or-famine power threats up on days their state-of-play matches their centroid). Fold into next A1 refit cycle — form-family weight may shift slightly as sub-signal makes Form more potent.
+
+**Files (Phase 2).** `etl/backfill_form_archetype.py` (new), `etl/etl_nightly.py`, `etl/db.py` (`form_archetype_today_vector` ALTER on pick_inputs), `features_v2.py` (de-dup window pulls per design doc Phase 2 note), possibly `score_batters.py` (z-score the vector before L2). Files (Phase 3): `score_batters.py` (flip flag + tune constants), `WEIGHT_REFIT_LOG.md`.
+
+**Done when.** Phase 3 backtest verdict documented; archetype flag flipped if a variant wins; Phase 4 monitoring complete.
+
+**Risk callout.** Archetype features MUST stay disjoint from `score_form`'s base inputs (otherwise double-counting). Phase 1 added a smoke pin that fails HALT if the disjoint-set constraint regresses. Phase 3 must re-confirm if/when features are added.
 
 ---
 
