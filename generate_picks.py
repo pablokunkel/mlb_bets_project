@@ -1519,6 +1519,19 @@ def score_live_slate(
         if recent14.get("recent_iso_14d") is not None:
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
+        # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
+        # Default keys to None — score_matchup's USE_ARSENAL_SUBSIGNAL guard
+        # is off this PR, so these are read-but-ignored. Phase 2 populates
+        # them via features_v2.fetch_batter_pitch_type_splits.
+        # TODO Phase 2: wire bulk_pitch_type_splits = slate.get("bulk_pitch_type_splits")
+        # and overwrite from the dict.
+        entry["fb_slg"] = None
+        entry["fb_pa"] = None
+        entry["br_slg"] = None
+        entry["br_pa"] = None
+        entry["os_slg"] = None
+        entry["os_pa"] = None
+
         # Get archetype profiles for v2 matchup scoring
         vp = victim_profiles.get(player_id)
         pp = pitcher_profiles.get(opp_pitcher_name)
@@ -1767,6 +1780,17 @@ def score_untiered_starters(
         if recent14.get("recent_iso_14d") is not None:
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
+        # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
+        # Default keys to None on the untiered path too. T4 batters
+        # tend to have thin samples — Phase 2's PITCH_TYPE_SPLIT_MIN_BB
+        # gate will drop most T4 entries to league-avg automatically.
+        entry["fb_slg"] = None
+        entry["fb_pa"] = None
+        entry["br_slg"] = None
+        entry["br_pa"] = None
+        entry["os_slg"] = None
+        entry["os_pa"] = None
+
         pp = pitcher_profiles.get(opp_pitcher_name)
 
         result = compute_composite(
@@ -1880,6 +1904,15 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                     "recent_barrel_real_14d": None,
                     "recent_xwoba_contact_14d": None,
                     "recent_iso_14d": None,
+                    # Phase 1 (2026-05-25): pitch-type archetype splits.
+                    # Offline sim has no Statcast — leave None. With
+                    # USE_ARSENAL_SUBSIGNAL off these are ignored.
+                    "fb_slg": None,
+                    "fb_pa": None,
+                    "br_slg": None,
+                    "br_pa": None,
+                    "os_slg": None,
+                    "os_pa": None,
                 }
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,
