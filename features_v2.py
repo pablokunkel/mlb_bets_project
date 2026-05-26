@@ -521,6 +521,77 @@ def fetch_batter_recent_statcast_14d(
 
 
 # ---------------------------------------------------------------------------
+# Batter pitch-type SLG splits — Phase 1 scaffolding (2026-05-25)
+# ---------------------------------------------------------------------------
+# Background: today's score_matchup is blind to batter pitch-type
+# preferences vs the specific pitcher's arsenal mix. The new signal blends
+# pitcher arsenal usage with batter SLG-by-pitch-type-group to produce an
+# expected SLG vs. today's arsenal. See docs/pitch_type_archetype_design.md.
+#
+# Three pitch-type buckets (mirror pitcher_profile.FASTBALL_TYPES /
+# BREAKING_TYPES / OFFSPEED_TYPES):
+#   FB = FF (4-seam), SI (sinker), FC (cutter), FT (2-seam), FA (generic)
+#   BR = SL (slider), CU (curveball), KC (knuckle-curve), SV (slurve),
+#        ST (sweeper), CS, EP
+#   OS = CH (changeup), FS (splitter), FO (forkball), KN (knuckleball),
+#        SC (screwball)
+#
+# League-avg SLG anchors are the fallback when a batter has too few
+# batted balls in a group (under PITCH_TYPE_SPLIT_MIN_BB). Sourced from
+# the 2024 Statcast leaderboard, qualified-batter mean SLG per group.
+# These hold within ~0.010 across 2022-2024 — the population doesn't
+# shift much year-over-year. Refresh annually with the offseason
+# calibration pass.
+LEAGUE_AVG_PITCH_TYPE_SLG = {
+    "fb_slg": 0.420,
+    "br_slg": 0.350,
+    "os_slg": 0.380,
+}
+PITCH_TYPE_SPLIT_MIN_BB = 30  # below this, fall back to league avg
+
+
+def fetch_batter_pitch_type_splits(
+    player_ids: list[int],
+    as_of_date: str | None = None,
+    season: int | None = None,
+) -> dict[int, dict]:
+    """Build batter SLG splits by pitch-type group (FB/BR/OS).
+
+    Returns {player_id: {fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa}}.
+    Season-to-date through (as_of_date - 1 day); strictly excludes
+    games on/after as_of_date so historical reconstruction is honest.
+
+    *as_of_date* — YYYY-MM-DD. None (default) = today = production behavior.
+    *season*     — int. None (default) = derive from as_of_date or today.
+
+    **Phase 1 (this PR): signature + skeleton only.** The body is a
+    `# TODO Phase 2:` stub that returns {}. Phase 2 will wire this to
+    the bulk-Statcast-pull-and-slice pattern used by
+    fetch_batter_recent_statcast_14d:
+
+      1. Bulk-pull pitch-level Statcast for the season window
+         [season-03-20, as_of_date) via `pybaseball.statcast(start, end)`.
+      2. Group by batter and pitch_type, aggregate to per-bucket
+         (FB/BR/OS) SLG via the standard (TB / AB) formula.
+      3. Stamp `*_pa` with the batted-ball count for sample-size gating.
+      4. Cache to data/cache/features_v2/pitch_type_splits/ with
+         cache key including as_of_date (24h TTL, mirrors
+         fetch_batter_recent_statcast_14d).
+
+    Phase 2 will also persist the result to `batter_pitch_type_splits`
+    in SQLite and to `pick_inputs.{fb_slg, br_slg, os_slg}` for the
+    backtest harness.
+
+    Until Phase 2 lands, callers get an empty dict — and the scoring
+    path skips the arsenal sub-signal via its USE_ARSENAL_SUBSIGNAL=False
+    guard, so this no-op is safe in production.
+    """
+    # TODO Phase 2: implement bulk Statcast pull + per-batter aggregation.
+    # See features_v2.fetch_batter_recent_statcast_14d for the pattern.
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Vegas implied team totals (the-odds-api.com)
 # ---------------------------------------------------------------------------
 

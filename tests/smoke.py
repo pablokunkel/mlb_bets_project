@@ -1558,6 +1558,255 @@ def pin_weather_archive_threshold_present() -> Result:
     return Result("get_weather archive wiring", Result.HALT, "; ".join(failures))
 
 
+# ---------------------------------------------------------------------------
+# Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal scaffolding
+# ---------------------------------------------------------------------------
+
+def pin_batter_pitch_type_splits_table_exists() -> Result:
+    """Phase 1: batter_pitch_type_splits table is created by create_tables."""
+    import sqlite3
+    import tempfile
+    from etl.db import create_tables
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        conn = sqlite3.connect(tmp_path)
+        create_tables(conn)
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='batter_pitch_type_splits'"
+        ).fetchall()
+        cols = {
+            r[1]
+            for r in conn.execute(
+                "PRAGMA table_info(batter_pitch_type_splits)"
+            ).fetchall()
+        }
+        conn.close()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if not rows:
+        return Result(
+            "batter_pitch_type_splits table exists", Result.HALT,
+            "create_tables did not create the table",
+        )
+    expected = {
+        "player_id", "date_through",
+        "fb_slg", "fb_pa", "br_slg", "br_pa", "os_slg", "os_pa",
+        "fetched_at",
+    }
+    missing = expected - cols
+    if missing:
+        return Result(
+            "batter_pitch_type_splits columns", Result.HALT,
+            f"missing columns: {sorted(missing)}",
+        )
+    return Result(
+        "batter_pitch_type_splits table created with required columns",
+        Result.PASS,
+    )
+
+
+def pin_use_arsenal_subsignal_default_off() -> Result:
+    """Phase 1: USE_ARSENAL_SUBSIGNAL must default off until backtest
+    validates the lift (Phase 3)."""
+    from score_batters import USE_ARSENAL_SUBSIGNAL
+    if USE_ARSENAL_SUBSIGNAL is False:
+        return Result(
+            "USE_ARSENAL_SUBSIGNAL default = False (pre-backtest)",
+            Result.PASS,
+        )
+    return Result(
+        "USE_ARSENAL_SUBSIGNAL default = False",
+        Result.HALT,
+        f"got {USE_ARSENAL_SUBSIGNAL}; flipping the arsenal sub-signal on "
+        "requires the Phase 3 backtest evidence + a documented decision "
+        "in WEIGHT_REFIT_LOG.md.",
+    )
+
+
+def pin_score_matchup_arsenal_flag_off_no_op() -> Result:
+    """Phase 1: with USE_ARSENAL_SUBSIGNAL off, fb_slg/br_slg/os_slg on the
+    batter dict are IGNORED by score_matchup — score is byte-identical to
+    a batter dict without those keys."""
+    import score_batters as sb
+    pitcher = {
+        "throws": "R", "hr_per_9": 1.5, "hard_hit_pct_allowed": 35,
+        "fb_usage_pct": 0.55, "breaking_usage_pct": 0.30, "offspeed_usage_pct": 0.15,
+    }
+    base = sb.score_matchup({"woba_vs_hand": 0.330}, pitcher)
+    with_splits = sb.score_matchup(
+        {
+            "woba_vs_hand": 0.330,
+            "fb_slg": 0.600, "fb_pa": 200,
+            "br_slg": 0.500, "br_pa": 150,
+            "os_slg": 0.550, "os_pa": 80,
+        },
+        pitcher,
+    )
+    if abs(with_splits - base) < 0.01:
+        return Result(
+            f"score_matchup(splits) ignored when flag off ({base:.1f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_matchup arsenal flag-off no-op",
+        Result.HALT,
+        f"base={base}, with_splits={with_splits}; the splits leaked into "
+        "the score with USE_ARSENAL_SUBSIGNAL=False",
+    )
+
+
+def pin_compute_xslg_vs_arsenal_basic() -> Result:
+    """Phase 1: _compute_xslg_vs_arsenal blends pitcher usage with batter
+    splits using the documented formula, with league-avg fallback for
+    under-PA groups.
+
+    Synthetic batter: only fb has a real sample (150 PA, .550 SLG); br
+    and os are below the 30-PA threshold so the helper substitutes
+    LEAGUE_AVG_PITCH_TYPE_SLG.
+    Pitcher: 70/20/10 fb/br/os usage.
+    Expected: 0.70*0.550 + 0.20*0.350(league) + 0.10*0.380(league) = 0.4930.
+    """
+    from score_batters import _compute_xslg_vs_arsenal
+    batter = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.250, "br_pa": 5,    # below MIN_BB -> league avg
+        "os_slg": 0.700, "os_pa": 8,    # below MIN_BB -> league avg
+    }
+    pitcher = {
+        "fb_usage_pct": 0.70,
+        "breaking_usage_pct": 0.20,
+        "offspeed_usage_pct": 0.10,
+    }
+    got = _compute_xslg_vs_arsenal(batter, pitcher)
+    expected = 0.70 * 0.550 + 0.20 * 0.350 + 0.10 * 0.380
+    if got is None:
+        return Result(
+            "_compute_xslg_vs_arsenal returns None unexpectedly",
+            Result.HALT, "with valid inputs",
+        )
+    if abs(got - expected) > 1e-4:
+        return Result(
+            "_compute_xslg_vs_arsenal blend",
+            Result.HALT,
+            f"got {got:.4f}, want {expected:.4f}",
+        )
+    return Result(
+        f"_compute_xslg_vs_arsenal(fb-only sample, league fallback) "
+        f"-> {got:.4f}",
+        Result.PASS,
+    )
+
+
+def pin_compute_xslg_vs_arsenal_missing_pitcher_arsenal() -> Result:
+    """Phase 1: when pitcher arsenal usage is entirely missing, the helper
+    returns None — caller skips the sub-signal cleanly."""
+    from score_batters import _compute_xslg_vs_arsenal
+    batter = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.300, "br_pa": 80,
+        "os_slg": 0.400, "os_pa": 50,
+    }
+    pitcher = {"throws": "R"}  # no usage keys
+    got = _compute_xslg_vs_arsenal(batter, pitcher)
+    if got is None:
+        return Result(
+            "_compute_xslg_vs_arsenal(no arsenal) -> None (clean skip)",
+            Result.PASS,
+        )
+    return Result(
+        "_compute_xslg_vs_arsenal no-arsenal None",
+        Result.HALT,
+        f"got {got}; expected None when pitcher arsenal absent",
+    )
+
+
+def pin_fetch_batter_pitch_type_splits_signature() -> Result:
+    """Phase 1: the ETL function exists with as_of_date kwarg defaulting
+    to None."""
+    import inspect
+    from features_v2 import fetch_batter_pitch_type_splits
+    sig = inspect.signature(fetch_batter_pitch_type_splits)
+    p = sig.parameters.get("as_of_date")
+    if p is None:
+        return Result(
+            "fetch_batter_pitch_type_splits.as_of_date",
+            Result.HALT, "missing as_of_date kwarg",
+        )
+    if p.default is not None:
+        return Result(
+            "fetch_batter_pitch_type_splits.as_of_date default = None",
+            Result.HALT, f"got default={p.default!r}",
+        )
+    return Result(
+        "fetch_batter_pitch_type_splits(as_of_date=None) signature OK",
+        Result.PASS,
+    )
+
+
+def pin_league_avg_pitch_type_slg_constants() -> Result:
+    """Phase 1: LEAGUE_AVG_PITCH_TYPE_SLG covers fb/br/os and lives in a
+    reasonable SLG range."""
+    from features_v2 import LEAGUE_AVG_PITCH_TYPE_SLG, PITCH_TYPE_SPLIT_MIN_BB
+    failures = []
+    for key in ("fb_slg", "br_slg", "os_slg"):
+        v = LEAGUE_AVG_PITCH_TYPE_SLG.get(key)
+        if v is None:
+            failures.append(f"missing {key}")
+        elif not 0.250 < v < 0.550:
+            failures.append(f"{key}={v} outside sane SLG range [0.250, 0.550]")
+    if not isinstance(PITCH_TYPE_SPLIT_MIN_BB, int) or PITCH_TYPE_SPLIT_MIN_BB < 10:
+        failures.append(
+            f"PITCH_TYPE_SPLIT_MIN_BB={PITCH_TYPE_SPLIT_MIN_BB} too low (want >=10)"
+        )
+    if not failures:
+        return Result(
+            f"LEAGUE_AVG_PITCH_TYPE_SLG covers fb/br/os, MIN_BB="
+            f"{PITCH_TYPE_SPLIT_MIN_BB}",
+            Result.PASS,
+        )
+    return Result(
+        "LEAGUE_AVG_PITCH_TYPE_SLG constants", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backtest_arsenal_inputs_skeleton_imports() -> Result:
+    """Phase 1: backtest_arsenal_inputs imports and exposes documented
+    entry points + 2 variants. Doesn't run it — the SQL fetch requires
+    Phase 2 columns."""
+    try:
+        from diagnostics import backtest_arsenal_inputs as bai
+    except Exception as e:
+        return Result(
+            "backtest_arsenal_inputs import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in (
+        "fetch_rows", "score_variants", "compute_metrics", "main",
+        "_xslg_vs_arsenal", "_matchup_score", "_has_arsenal_signal",
+        "VARIANTS",
+    ):
+        if not hasattr(bai, name):
+            failures.append(f"missing {name}")
+    if hasattr(bai, "VARIANTS"):
+        expected = {"current", "arsenal_blend"}
+        got = set(bai.VARIANTS)
+        if got != expected:
+            failures.append(f"VARIANTS = {sorted(got)}, want {sorted(expected)}")
+    if not failures:
+        return Result(
+            "backtest_arsenal_inputs: 2 variants + entry points wired",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_arsenal_inputs skeleton", Result.HALT, "; ".join(failures),
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -1625,6 +1874,15 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_weather_retry_config,
     # 2026-05-23: Form anchor + weighting backtest harness
     pin_backtest_form_anchors_variants_isolate,
+    # 2026-05-25: Phase 1 — pitch-type archetype matchup sub-signal scaffolding
+    pin_batter_pitch_type_splits_table_exists,
+    pin_use_arsenal_subsignal_default_off,
+    pin_score_matchup_arsenal_flag_off_no_op,
+    pin_compute_xslg_vs_arsenal_basic,
+    pin_compute_xslg_vs_arsenal_missing_pitcher_arsenal,
+    pin_fetch_batter_pitch_type_splits_signature,
+    pin_league_avg_pitch_type_slg_constants,
+    pin_backtest_arsenal_inputs_skeleton_imports,
 ]
 
 

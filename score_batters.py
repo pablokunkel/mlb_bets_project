@@ -516,6 +516,20 @@ USE_SEASON_HR_FLOOR = True   # 2026-05-03: flipped on after 14d harness showed
 # for the recent quality before the season aggregate catches up.
 USE_RECENT_STATCAST_BLEND = False
 
+
+# Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal. OFF by
+# default — flip True in Phase 3 after backtest validates the lift.
+#
+# Blends pitcher arsenal usage (fb / breaking / offspeed %) with the
+# batter's SLG-by-pitch-type-group to produce an expected SLG vs the
+# specific arsenal this pitcher throws. When on, the resulting score
+# joins vuln / sim / total / woba inside score_matchup's mean.
+#
+# Foundation only this PR: helper exists, gate is in score_matchup,
+# weight is 0 (no signal contribution). The full math + rollout is in
+# docs/pitch_type_archetype_design.md.
+USE_ARSENAL_SUBSIGNAL = False
+
 # (season_hr_threshold, power_score_floor_when_qualified)
 # Calibrated on 2026-05-02 HR data:
 #   - 5 HR  → 50  (a guy with 5 HR shouldn't score below league average)
@@ -707,6 +721,49 @@ def score_power(batter: dict) -> float:
     return base_score
 
 
+def _compute_xslg_vs_arsenal(batter: dict, pitcher: dict) -> float | None:
+    """Phase 1 helper: blended expected SLG vs. today's pitcher arsenal.
+
+    Formula:
+        xSLG = pitcher.fb_usage_pct  * batter.fb_slg
+             + pitcher.br_usage_pct  * batter.br_slg
+             + pitcher.os_usage_pct  * batter.os_slg
+
+    Per-group fallback: if a batter's group is missing OR its sample size
+    (*_pa) is under features_v2.PITCH_TYPE_SPLIT_MIN_BB (30 batted balls),
+    substitute features_v2.LEAGUE_AVG_PITCH_TYPE_SLG for that term.
+
+    Returns None when the pitcher arsenal usages aren't available — caller
+    skips the sub-signal cleanly (None propagation, no neutral fill).
+
+    See docs/pitch_type_archetype_design.md for the rationale.
+    """
+    fb_use = pitcher.get("fb_usage_pct")
+    br_use = pitcher.get("breaking_usage_pct")
+    os_use = pitcher.get("offspeed_usage_pct")
+    if fb_use is None and br_use is None and os_use is None:
+        return None
+
+    # Import here so the module doesn't pay for it at top level.
+    from features_v2 import LEAGUE_AVG_PITCH_TYPE_SLG, PITCH_TYPE_SPLIT_MIN_BB
+
+    def _slg(group: str) -> float:
+        slg = batter.get(f"{group}_slg")
+        pa = batter.get(f"{group}_pa") or 0
+        if slg is None or pa < PITCH_TYPE_SPLIT_MIN_BB:
+            return LEAGUE_AVG_PITCH_TYPE_SLG[f"{group}_slg"]
+        return float(slg)
+
+    # Treat missing pitcher usage as 0 (its events contribute nothing
+    # to the blend); typical pitcher dict has all three filled, so this
+    # only fires for league-avg-default pitchers without a measured mix.
+    fb_use = fb_use or 0.0
+    br_use = br_use or 0.0
+    os_use = os_use or 0.0
+
+    return fb_use * _slg("fb") + br_use * _slg("br") + os_use * _slg("os")
+
+
 def score_matchup(
     batter: dict,
     pitcher: dict,
@@ -776,6 +833,18 @@ def score_matchup(
         and batter_team in slate_ctx["team_total_pct"]
     ):
         scores.append(slate_ctx["team_total_pct"][batter_team])
+
+    # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
+    # Gated by USE_ARSENAL_SUBSIGNAL (default False — additive, no-op
+    # until Phase 3 flips it). When on, blended xSLG-vs-arsenal joins
+    # the matchup mean. None propagation means a missing arsenal /
+    # missing batter splits skip cleanly. Score mapping: 0.350-0.500
+    # SLG -> 0-100, matching the league-distribution anchors documented
+    # in docs/pitch_type_archetype_design.md (re-tuned in Phase 3).
+    if USE_ARSENAL_SUBSIGNAL:
+        xslg = _compute_xslg_vs_arsenal(batter, pitcher)
+        if xslg is not None:
+            scores.append(min_max_scale(xslg, 0.350, 0.500))
 
     batter_hand = batter.get("bats", "R")
     pitcher_hand = pitcher.get("throws", "R")
