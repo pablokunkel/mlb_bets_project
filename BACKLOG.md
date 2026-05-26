@@ -559,6 +559,42 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** All three sub-items resolved; QA query against backfill data shows zero `pitcher_fb_pct_allowed > 100`, zero NULL `barrel_pct_source` on scored rows, and no deprecation warning during a backfill run.
 
+### B15. Rebuild `score_lineup_position` against empirical HR-per-PA by slot
+
+**Status.** Ready to start once A1 (PR #82 follow-up) ships. Small surgical PR.
+
+**Why it matters.** The current `score_lineup_position` table (`score_batters.py:936-939`) is monotonically decreasing — `{1: 85, 2: 82, 3: 78, 4: 75, 5: 65, 6: 58, 7: 48, 8: 42, 9: 38}` — scoring leadoff the highest. The intuition was AB-opportunity: leadoff gets ~4.7 PA/game vs ~3.2 for the 9-hole, so more chances to HR.
+
+But that ignores the much-larger **selection effect**. MLB managers fill leadoff with contact + OBP + speed guys (lower SLG, lower HR rate per PA), and pile the power hitters into slots 3-4-5. Empirically, 3-4-5 hitters HR at a meaningfully higher rate per PA than leadoff. The current scoring is therefore anti-correlated with the actual HR-by-slot distribution.
+
+Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 with `hit_hr`. FREE candidate zeroed lineup's weight entirely; PINNED kept it at 0.150 only by manual carve-out. Surfaced via user feedback 2026-05-26 ("the thought was just that it gets them an extra pitch but I'm not sure that matters that much").
+
+**Spec.**
+
+1. **Empirical lookup** from the 2025 backfill:
+   ```sql
+   SELECT l.batting_order,
+          SUM(o.hr_count) * 1.0 / COUNT(*) AS hr_per_lineup_appearance
+   FROM outcomes o
+   JOIN daily_lineup l ON l.player_id = o.batter_id AND l.date = o.date
+   WHERE l.batting_order BETWEEN 1 AND 9
+   GROUP BY l.batting_order
+   ORDER BY l.batting_order;
+   ```
+   The denominator is "batter-game appearances at this slot," numerator is HRs hit. Proportional to HR-per-PA given PA-per-slot is in 3.2-4.7 range — within ~50% across all slots.
+
+2. **Re-anchor** `SCORES` dict to match the empirical curve. Min-max scale to 0-100 (best slot = 100, worst = 0, others by ratio). Round to integers for readability. Document the source data + date the empirical curve was last refit.
+
+3. **Sanity-check Pearson r** post-rebuild. If `lineup_score` now positively correlates with HR (expected r in the +0.02 to +0.05 range), confirm in WEIGHT_REFIT_LOG.md.
+
+4. **Re-run A1 refit** to find lineup's new earned weight. Expect it to come back positive — somewhere between 0 (FREE) and 0.150 (current arbitrary carve-out).
+
+**Files.** `score_batters.py::score_lineup_position` (just the `SCORES` dict + docstring). Maybe a small one-off `diagnostics/calibrate_lineup_position.py` to run the empirical query and emit the new dict.
+
+**Done when.** New `SCORES` dict reflects 2025 empirical HR-rate-by-slot. `lineup_score` positive r in pick_inputs ⨝ outcomes verified. WEIGHT_REFIT_LOG entry documents before/after. Next A1 refit cycle can fairly evaluate whether lineup deserves real composite weight.
+
+**Source.** User feedback 2026-05-26: "id zero out lineup... the thought was just that it gets them an extra pitch but I'm not sure that matters that much. trying to blend art and science." This is the constructive fix — neither "zero it because the score is broken" nor "keep it at 0.15 arbitrarily," but "rebuild the scoring so it tracks reality, then let the refit decide the weight."
+
 ### B14. Production weather forecast failures (2026-05-12+)
 
 **Status.** Ready to investigate — independent. Diagnostic-first.
@@ -625,7 +661,27 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Files (Phase 2).** `etl/etl_nightly.py`, `etl/backfill_park_archetype.py` (new), `etl/db.py` (ALTER), `generate_picks.py` (wire `park_archetype_centroid` from the bulk dict). **Files (Phase 3).** `score_batters.py` (flip flag), `WEIGHT_REFIT_LOG.md`, smoke pins update.
 
-**Source.** Design doc `docs/park_archetype_design.md` (this PR). Parallel build to the pitch-type archetype foundation (commit `026d756`).
+**Source.** Design doc `docs/park_archetype_design.md` (PR #85). Parallel build to the pitch-type archetype foundation (commit `026d756`).
+
+### C5. Form archetype — Phases 2-4 (per-batter pre-HR state-of-play sub-signal)
+
+**Status.** Phase 1 shipped (this PR — `claude/form-archetype-foundation` cherry-picked via #86 carry-forward). Phases 2-4 queued. Independent of A1; will fold into the next A1 refit per Phase 4.
+
+**Why it matters.** Today's `score_form` reads "is the batter producing recently" (recent_hr_10g + recent_iso_30g + ev_trend). It does NOT capture **whether today's state-of-play looks like the state the batter was in the last few times he went deep.** A feast-or-famine power hitter (Gallo-type) has a distinctly different pre-HR pattern from a contact-hitter slugger (Freeman-type), and today's Form score blurs the two when they happen to land at the same value. Per-batter centroid of past pre-HR state-of-play + L2 distance to today's state would add a complementary signal.
+
+**What's already done in Phase 1.** Design doc (`docs/form_archetype_design.md`); `batter_form_archetype` table; `compute_batter_form_archetype` builder callable but uncalled; `USE_FORM_ARCHETYPE=False` flag with `_compute_form_archetype_match` helper in `score_form`; backtest harness skeleton (`diagnostics/backtest_form_archetype.py`) with Phase-1 guard; 8 new smoke pins. Production scoring byte-identical to pre-PR.
+
+**Phase 2.** `etl/backfill_form_archetype.py` — one-shot orchestrator walking 2025-03-27 → 2025-09-30, one row per `(batter, date, window_days)` for windows 7/14/21. Wire into `etl/etl_nightly.py` for daily refresh. Add `pick_inputs.form_archetype_today_vector` column. Smoke probe: count of `batter_form_archetype` rows non-zero on latest `pick_inputs` date.
+
+**Phase 3.** Run `backtest_form_archetype.py` on full 2025 backfill (3x3 sweep). Compare `default` vs 9 archetype variants on AUC / top10_lift / quint_mono / avg_rank_hr. Decision rule (per B6/B11/B12 precedent): ship the winning variant only if it wins ≥2 of 4 metrics with no decisive loss on the others, validated on full season + ≥3 monthly slices. Set winning `(window_days, min_hrs)` in `score_batters` constants. Flip `USE_FORM_ARCHETYPE=True`. Document in `WEIGHT_REFIT_LOG.md`.
+
+**Phase 4.** Monitor 14 days. Confirm picks shift in obvious-correct direction (Gallo-type feast-or-famine power threats up on days their state-of-play matches their centroid). Fold into next A1 refit cycle — form-family weight may shift slightly as sub-signal makes Form more potent.
+
+**Files (Phase 2).** `etl/backfill_form_archetype.py` (new), `etl/etl_nightly.py`, `etl/db.py` (`form_archetype_today_vector` ALTER on pick_inputs), `features_v2.py` (de-dup window pulls per design doc Phase 2 note), possibly `score_batters.py` (z-score the vector before L2). Files (Phase 3): `score_batters.py` (flip flag + tune constants), `WEIGHT_REFIT_LOG.md`.
+
+**Done when.** Phase 3 backtest verdict documented; archetype flag flipped if a variant wins; Phase 4 monitoring complete.
+
+**Risk callout.** Archetype features MUST stay disjoint from `score_form`'s base inputs (otherwise double-counting). Phase 1 added a smoke pin that fails HALT if the disjoint-set constraint regresses. Phase 3 must re-confirm if/when features are added.
 
 ---
 

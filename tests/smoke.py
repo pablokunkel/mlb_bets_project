@@ -2829,6 +2829,280 @@ def pin_backtest_park_archetype_skeleton_imports() -> Result:
 
 
 
+# ---------------------------------------------------------------------------
+# 2026-05-26: Form archetype Phase 1 (sub-signal scaffolding)
+# ---------------------------------------------------------------------------
+
+def pin_use_form_archetype_default_off() -> Result:
+    """USE_FORM_ARCHETYPE must stay False until Phase 3 backtest validates it."""
+    from score_batters import USE_FORM_ARCHETYPE
+    if USE_FORM_ARCHETYPE is False:
+        return Result(
+            "USE_FORM_ARCHETYPE default = False (Phase 1)", Result.PASS,
+        )
+    return Result(
+        "USE_FORM_ARCHETYPE default = False",
+        Result.HALT,
+        f"got {USE_FORM_ARCHETYPE}; flipping the form-archetype sub-signal on "
+        "requires a documented Phase-3 backtest decision in WEIGHT_REFIT_LOG.md.",
+    )
+
+
+def pin_score_form_archetype_flag_off_no_op() -> Result:
+    """With flag OFF, form_archetype_* keys on the batter dict are IGNORED.
+
+    Verifies that the flag-OFF score is byte-identical to a batter dict
+    without the archetype keys — load-bearing for "production scoring
+    unchanged" in this PR.
+    """
+    import score_batters as sb
+    base_inputs = {
+        "recent_hr_10g": 2.0,
+        "recent_iso_30g": 0.180,
+        "ev_trend": None,
+    }
+    bare = sb.score_form(base_inputs)
+    with_keys = sb.score_form({
+        **base_inputs,
+        # Extreme values — if they leak in they'd swing the score.
+        "form_archetype_today_vector": [0.4, 12.0, 11.0, 35.0, 4, 1, 0.270],
+        "form_archetype_centroid": [0.4, 12.0, 11.0, 35.0, 4, 1, 0.270],
+    })
+    if abs(bare - with_keys) < 0.01:
+        return Result(
+            f"score_form ignores archetype keys when flag off ({bare:.1f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_form flag-off no-op",
+        Result.HALT,
+        f"bare={bare}, with_archetype_keys={with_keys}; archetype keys leaked "
+        "into the score with USE_FORM_ARCHETYPE=False.",
+    )
+
+
+def pin_compute_form_archetype_match_returns_none_on_missing() -> Result:
+    """Helper returns None when either input vector is None — no fallback."""
+    from score_batters import _compute_form_archetype_match
+    cases = [
+        (None, [0.4, 12, 11, 35, 4, 1, 0.27]),
+        ([0.4, 12, 11, 35, 4, 1, 0.27], None),
+        (None, None),
+    ]
+    failures = []
+    for today, centroid in cases:
+        got = _compute_form_archetype_match(today, centroid)
+        if got is not None:
+            failures.append(f"today={today}, centroid={centroid}: got {got}, want None")
+
+    # Also: all-None per-slot inputs should also return None (no information).
+    n_feats = 7
+    all_none_today = [None] * n_feats
+    all_none_centroid = [None] * n_feats
+    got = _compute_form_archetype_match(all_none_today, all_none_centroid)
+    if got is not None:
+        failures.append(f"all-None vectors: got {got}, want None")
+
+    if not failures:
+        return Result(
+            "_compute_form_archetype_match None+skip (no league-avg fallback)",
+            Result.PASS,
+        )
+    return Result(
+        "_compute_form_archetype_match None propagation", Result.HALT,
+        "; ".join(failures),
+    )
+
+
+def pin_compute_form_archetype_match_basic() -> Result:
+    """Helper returns a 0-100 score when both vectors are present.
+
+    Identical vectors -> L2=0 -> similarity=1.0 -> score=100.
+    Distant vectors -> low similarity -> low score.
+    """
+    from score_batters import (
+        _compute_form_archetype_match,
+        FORM_ARCHETYPE_SIM_LO,
+        FORM_ARCHETYPE_SIM_HI,
+    )
+    v = [0.350, 10.0, 11.0, 35.0, 4, 1, 0.270]
+    same = _compute_form_archetype_match(v, v)
+    if same is None or abs(same - 100.0) > 0.01:
+        return Result(
+            "_compute_form_archetype_match identical -> 100",
+            Result.HALT,
+            f"got {same}, want 100.0 (L2=0, sim=1.0 maps to 100 with anchors "
+            f"{FORM_ARCHETYPE_SIM_LO}-{FORM_ARCHETYPE_SIM_HI})",
+        )
+
+    # Very distant vector -> similarity should be low
+    distant = [0.0, 0.0, 0.0, 0.0, 100, 100, 0.0]
+    distant_score = _compute_form_archetype_match(v, distant)
+    if distant_score is None or distant_score >= 50.0:
+        return Result(
+            "_compute_form_archetype_match distant -> low score",
+            Result.HALT,
+            f"distant_score={distant_score}, expected < 50.0",
+        )
+    return Result(
+        f"_compute_form_archetype_match basic (identical->100, distant->{distant_score:.1f})",
+        Result.PASS,
+    )
+
+
+def pin_form_archetype_constants_present() -> Result:
+    """Phase 1 constants exist with the documented values + shapes."""
+    import features_v2 as fv2
+    failures = []
+    for name, want_type in (
+        ("FORM_ARCHETYPE_FEATURES", list),
+        ("FORM_ARCHETYPE_MIN_HRS", int),
+        ("FORM_ARCHETYPE_LOOKBACK_SEASONS", int),
+        ("FORM_ARCHETYPE_DEFAULT_WINDOW", int),
+    ):
+        if not hasattr(fv2, name):
+            failures.append(f"missing {name}")
+            continue
+        val = getattr(fv2, name)
+        if not isinstance(val, want_type):
+            failures.append(f"{name} type {type(val).__name__}, want {want_type.__name__}")
+
+    if hasattr(fv2, "FORM_ARCHETYPE_FEATURES"):
+        feats = fv2.FORM_ARCHETYPE_FEATURES
+        if len(feats) != 7:
+            failures.append(f"FORM_ARCHETYPE_FEATURES has {len(feats)} elements, want 7")
+        # Spot-check a few of the documented feature names
+        for must in ("recent_xwoba_14d", "recent_swstr_pct_7d", "days_since_last_hr"):
+            if must not in feats:
+                failures.append(f"FORM_ARCHETYPE_FEATURES missing {must!r}")
+
+    if hasattr(fv2, "FORM_ARCHETYPE_DEFAULT_WINDOW"):
+        if fv2.FORM_ARCHETYPE_DEFAULT_WINDOW != 7:
+            failures.append(
+                f"FORM_ARCHETYPE_DEFAULT_WINDOW = {fv2.FORM_ARCHETYPE_DEFAULT_WINDOW}, "
+                f"design doc specifies 7 (sweep dimension is window_days arg, not constant)"
+            )
+
+    if not hasattr(fv2, "compute_batter_form_archetype"):
+        failures.append("compute_batter_form_archetype not exported")
+
+    if not failures:
+        return Result("Form-archetype Phase 1 constants present", Result.PASS)
+    return Result(
+        "Form-archetype constants", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_form_archetype_no_overlap_with_form_inputs() -> Result:
+    """Archetype features MUST NOT overlap with score_form's base inputs.
+
+    Load-bearing guardrail: if the archetype features overlap with the
+    base Form mean inputs, the sub-signal would double-count the same
+    underlying signal. See docs/form_archetype_design.md "Risk callout —
+    feature non-overlap with score_form".
+
+    Current score_form base inputs (post-B11): recent_hr_10g,
+    recent_iso_30g, ev_trend. recent_avg_30g was dropped by B11 and is
+    explicitly allowed back in the archetype as a state-descriptor.
+    """
+    from features_v2 import FORM_ARCHETYPE_FEATURES
+    # Source of truth: the base inputs read by score_form (post-B11).
+    SCORE_FORM_BASE_INPUTS = {"recent_hr_10g", "recent_iso_30g", "ev_trend"}
+    overlap = SCORE_FORM_BASE_INPUTS & set(FORM_ARCHETYPE_FEATURES)
+    if not overlap:
+        return Result(
+            "FORM_ARCHETYPE_FEATURES disjoint from score_form base inputs",
+            Result.PASS,
+            f"score_form: {sorted(SCORE_FORM_BASE_INPUTS)}; "
+            f"archetype: {FORM_ARCHETYPE_FEATURES}",
+        )
+    return Result(
+        "FORM_ARCHETYPE_FEATURES overlap with score_form",
+        Result.HALT,
+        f"overlap with base inputs: {sorted(overlap)} — double-counting risk. "
+        "See docs/form_archetype_design.md non-overlap guardrail.",
+    )
+
+
+def pin_batter_form_archetype_table_exists() -> Result:
+    """create_tables creates the batter_form_archetype table with the
+    documented schema (composite PK on player_id, date_through, window_days).
+    """
+    import sqlite3
+    from etl.db import create_tables
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    try:
+        cols = conn.execute(
+            "PRAGMA table_info(batter_form_archetype)"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not cols:
+        return Result(
+            "batter_form_archetype table created",
+            Result.HALT,
+            "table not present after create_tables",
+        )
+    col_names = {c[1] for c in cols}
+    pk_cols = {c[1] for c in cols if c[5]}  # c[5] is `pk` index (>0 = part of PK)
+    failures = []
+    for must in ("player_id", "date_through", "window_days",
+                 "feature_centroid_json", "n_hrs_used", "fetched_at"):
+        if must not in col_names:
+            failures.append(f"missing column {must}")
+    for must_pk in ("player_id", "date_through", "window_days"):
+        if must_pk not in pk_cols:
+            failures.append(f"{must_pk} not part of PRIMARY KEY")
+    if not failures:
+        return Result(
+            "batter_form_archetype table + composite PK present",
+            Result.PASS,
+        )
+    return Result(
+        "batter_form_archetype schema", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backtest_form_archetype_skeleton_imports() -> Result:
+    """Phase 1 harness: backtest_form_archetype imports, exposes the
+    full 3x3 sweep + the default variant, and has the documented
+    structural helpers (fetch_rows, score_variants, compute_metrics, main).
+    """
+    try:
+        from diagnostics import backtest_form_archetype as bfa
+    except Exception as e:
+        return Result(
+            "backtest_form_archetype import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in ("fetch_rows", "score_variants", "compute_metrics", "main",
+                 "VARIANTS", "ARCHETYPE_SWEEP", "_phase1_guard"):
+        if not hasattr(bfa, name):
+            failures.append(f"missing {name}")
+    # Sweep shape: 9 (window, min_hrs) combos
+    if hasattr(bfa, "ARCHETYPE_SWEEP") and len(bfa.ARCHETYPE_SWEEP) != 9:
+        failures.append(f"ARCHETYPE_SWEEP has {len(bfa.ARCHETYPE_SWEEP)} entries, want 9")
+    # VARIANTS = default + 9 sweep = 10
+    if hasattr(bfa, "VARIANTS") and len(bfa.VARIANTS) != 10:
+        failures.append(f"VARIANTS has {len(bfa.VARIANTS)} entries, want 10 (default + 3x3)")
+    # Spot-check key variant names
+    if hasattr(bfa, "VARIANTS"):
+        for must in ("default", "archetype_7d_10hr", "archetype_21d_20hr"):
+            if must not in bfa.VARIANTS:
+                failures.append(f"VARIANTS missing {must!r}")
+    if not failures:
+        return Result(
+            "backtest_form_archetype skeleton: 3x3 sweep + default + helpers",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_form_archetype skeleton", Result.HALT, "; ".join(failures),
+    )
+
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -2921,6 +3195,15 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_compute_batter_park_archetype_below_threshold_returns_none,
     pin_park_archetype_constants,
     pin_backtest_park_archetype_skeleton_imports,
+    # 2026-05-26: Form archetype Phase 1 (sub-signal scaffolding)
+    pin_use_form_archetype_default_off,
+    pin_score_form_archetype_flag_off_no_op,
+    pin_compute_form_archetype_match_returns_none_on_missing,
+    pin_compute_form_archetype_match_basic,
+    pin_form_archetype_constants_present,
+    pin_form_archetype_no_overlap_with_form_inputs,
+    pin_batter_form_archetype_table_exists,
+    pin_backtest_form_archetype_skeleton_imports,
     # 2026-05-25: Pitch-type Phase 2 — real builder + 2025 backfill + harness wiring
     pin_aggregate_pitch_type_splits_basic,
     pin_aggregate_pitch_type_splits_empty,
