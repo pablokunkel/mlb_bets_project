@@ -1661,20 +1661,17 @@ def pin_score_matchup_arsenal_flag_off_no_op() -> Result:
 
 def pin_compute_xslg_vs_arsenal_basic() -> Result:
     """Phase 1: _compute_xslg_vs_arsenal blends pitcher usage with batter
-    splits using the documented formula, with league-avg fallback for
-    under-PA groups.
+    splits using the documented formula, when all 3 groups have sufficient PA.
 
-    Synthetic batter: only fb has a real sample (150 PA, .550 SLG); br
-    and os are below the 30-PA threshold so the helper substitutes
-    LEAGUE_AVG_PITCH_TYPE_SLG.
+    Synthetic batter: all 3 groups well above the 30-PA threshold.
     Pitcher: 70/20/10 fb/br/os usage.
-    Expected: 0.70*0.550 + 0.20*0.350(league) + 0.10*0.380(league) = 0.4930.
+    Expected: 0.70*0.550 + 0.20*0.300 + 0.10*0.400 = 0.4850.
     """
     from score_batters import _compute_xslg_vs_arsenal
     batter = {
         "fb_slg": 0.550, "fb_pa": 150,
-        "br_slg": 0.250, "br_pa": 5,    # below MIN_BB -> league avg
-        "os_slg": 0.700, "os_pa": 8,    # below MIN_BB -> league avg
+        "br_slg": 0.300, "br_pa": 80,
+        "os_slg": 0.400, "os_pa": 50,
     }
     pitcher = {
         "fb_usage_pct": 0.70,
@@ -1682,7 +1679,7 @@ def pin_compute_xslg_vs_arsenal_basic() -> Result:
         "offspeed_usage_pct": 0.10,
     }
     got = _compute_xslg_vs_arsenal(batter, pitcher)
-    expected = 0.70 * 0.550 + 0.20 * 0.350 + 0.10 * 0.380
+    expected = 0.70 * 0.550 + 0.20 * 0.300 + 0.10 * 0.400
     if got is None:
         return Result(
             "_compute_xslg_vs_arsenal returns None unexpectedly",
@@ -1695,8 +1692,53 @@ def pin_compute_xslg_vs_arsenal_basic() -> Result:
             f"got {got:.4f}, want {expected:.4f}",
         )
     return Result(
-        f"_compute_xslg_vs_arsenal(fb-only sample, league fallback) "
-        f"-> {got:.4f}",
+        f"_compute_xslg_vs_arsenal(all groups sufficient) -> {got:.4f}",
+        Result.PASS,
+    )
+
+
+def pin_compute_xslg_vs_arsenal_short_sample_returns_none() -> Result:
+    """Phase 1: small-sample policy — when ANY of the three pitch-type
+    groups is below PITCH_TYPE_SPLIT_MIN_BB (or missing), _compute_xslg_vs_arsenal
+    returns None and score_matchup skips the sub-signal entirely.
+
+    NO league-avg fallback (policy changed 2026-05-26 per user feedback:
+    league-avg imputation artificially flattens small-sample batters to
+    a neutral xSLG, inflating their matchup score). "No data" = "no opinion."
+    """
+    from score_batters import _compute_xslg_vs_arsenal
+    pitcher = {"fb_usage_pct": 0.70, "breaking_usage_pct": 0.20, "offspeed_usage_pct": 0.10}
+
+    # Case 1: fb has enough PA, br is below threshold -> None
+    batter = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.250, "br_pa": 5,    # below MIN_BB
+        "os_slg": 0.400, "os_pa": 50,
+    }
+    got = _compute_xslg_vs_arsenal(batter, pitcher)
+    if got is not None:
+        return Result(
+            "_compute_xslg_vs_arsenal short-br-sample",
+            Result.HALT,
+            f"got {got:.4f}; expected None (br_pa=5 < 30 threshold should "
+            "trigger None+skip, NOT league-avg fill)",
+        )
+
+    # Case 2: completely missing group -> None
+    batter2 = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.300, "br_pa": 80,
+        # os_slg / os_pa entirely absent
+    }
+    got2 = _compute_xslg_vs_arsenal(batter2, pitcher)
+    if got2 is not None:
+        return Result(
+            "_compute_xslg_vs_arsenal missing-os",
+            Result.HALT,
+            f"got {got2:.4f}; expected None when a group is absent",
+        )
+    return Result(
+        "_compute_xslg_vs_arsenal small-sample/missing -> None (no league-avg fill)",
         Result.PASS,
     )
 
@@ -1747,29 +1789,22 @@ def pin_fetch_batter_pitch_type_splits_signature() -> Result:
     )
 
 
-def pin_league_avg_pitch_type_slg_constants() -> Result:
-    """Phase 1: LEAGUE_AVG_PITCH_TYPE_SLG covers fb/br/os and lives in a
-    reasonable SLG range."""
-    from features_v2 import LEAGUE_AVG_PITCH_TYPE_SLG, PITCH_TYPE_SPLIT_MIN_BB
-    failures = []
-    for key in ("fb_slg", "br_slg", "os_slg"):
-        v = LEAGUE_AVG_PITCH_TYPE_SLG.get(key)
-        if v is None:
-            failures.append(f"missing {key}")
-        elif not 0.250 < v < 0.550:
-            failures.append(f"{key}={v} outside sane SLG range [0.250, 0.550]")
+def pin_pitch_type_split_min_bb_constant() -> Result:
+    """Phase 1: PITCH_TYPE_SPLIT_MIN_BB is set to a reasonable per-group PA
+    threshold (>=10). Below this, _compute_xslg_vs_arsenal returns None
+    instead of filling with league avg — see
+    pin_compute_xslg_vs_arsenal_short_sample_returns_none.
+    """
+    from features_v2 import PITCH_TYPE_SPLIT_MIN_BB
     if not isinstance(PITCH_TYPE_SPLIT_MIN_BB, int) or PITCH_TYPE_SPLIT_MIN_BB < 10:
-        failures.append(
-            f"PITCH_TYPE_SPLIT_MIN_BB={PITCH_TYPE_SPLIT_MIN_BB} too low (want >=10)"
-        )
-    if not failures:
         return Result(
-            f"LEAGUE_AVG_PITCH_TYPE_SLG covers fb/br/os, MIN_BB="
-            f"{PITCH_TYPE_SPLIT_MIN_BB}",
-            Result.PASS,
+            "PITCH_TYPE_SPLIT_MIN_BB threshold",
+            Result.HALT,
+            f"PITCH_TYPE_SPLIT_MIN_BB={PITCH_TYPE_SPLIT_MIN_BB} too low (want >=10)",
         )
     return Result(
-        "LEAGUE_AVG_PITCH_TYPE_SLG constants", Result.HALT, "; ".join(failures),
+        f"PITCH_TYPE_SPLIT_MIN_BB={PITCH_TYPE_SPLIT_MIN_BB}",
+        Result.PASS,
     )
 
 
@@ -1879,9 +1914,10 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_use_arsenal_subsignal_default_off,
     pin_score_matchup_arsenal_flag_off_no_op,
     pin_compute_xslg_vs_arsenal_basic,
+    pin_compute_xslg_vs_arsenal_short_sample_returns_none,
     pin_compute_xslg_vs_arsenal_missing_pitcher_arsenal,
     pin_fetch_batter_pitch_type_splits_signature,
-    pin_league_avg_pitch_type_slg_constants,
+    pin_pitch_type_split_min_bb_constant,
     pin_backtest_arsenal_inputs_skeleton_imports,
 ]
 
