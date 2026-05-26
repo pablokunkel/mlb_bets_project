@@ -754,6 +754,22 @@ def create_tables(conn: sqlite3.Connection):
          "ALTER TABLE pick_inputs ADD COLUMN recent_xwoba_contact_14d REAL"),
         ("recent_iso_14d",
          "ALTER TABLE pick_inputs ADD COLUMN recent_iso_14d REAL"),
+        # B12 (2026-05-25): wider real-Statcast windows. Backtest-only for
+        # now -- nightly ETL still populates only the _14d columns. If the
+        # 21d/28d variant wins the backtest, the nightly fetcher gets wired
+        # to populate these too.
+        ("recent_barrel_real_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_barrel_real_21d REAL"),
+        ("recent_xwoba_contact_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_xwoba_contact_21d REAL"),
+        ("recent_iso_21d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_iso_21d REAL"),
+        ("recent_barrel_real_28d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_barrel_real_28d REAL"),
+        ("recent_xwoba_contact_28d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_xwoba_contact_28d REAL"),
+        ("recent_iso_28d",
+         "ALTER TABLE pick_inputs ADD COLUMN recent_iso_28d REAL"),
     ]:
         if col not in existing_cols:
             try:
