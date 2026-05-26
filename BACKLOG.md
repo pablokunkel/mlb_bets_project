@@ -559,6 +559,42 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** All three sub-items resolved; QA query against backfill data shows zero `pitcher_fb_pct_allowed > 100`, zero NULL `barrel_pct_source` on scored rows, and no deprecation warning during a backfill run.
 
+### B15. Rebuild `score_lineup_position` against empirical HR-per-PA by slot
+
+**Status.** Ready to start once A1 (PR #82 follow-up) ships. Small surgical PR.
+
+**Why it matters.** The current `score_lineup_position` table (`score_batters.py:936-939`) is monotonically decreasing — `{1: 85, 2: 82, 3: 78, 4: 75, 5: 65, 6: 58, 7: 48, 8: 42, 9: 38}` — scoring leadoff the highest. The intuition was AB-opportunity: leadoff gets ~4.7 PA/game vs ~3.2 for the 9-hole, so more chances to HR.
+
+But that ignores the much-larger **selection effect**. MLB managers fill leadoff with contact + OBP + speed guys (lower SLG, lower HR rate per PA), and pile the power hitters into slots 3-4-5. Empirically, 3-4-5 hitters HR at a meaningfully higher rate per PA than leadoff. The current scoring is therefore anti-correlated with the actual HR-by-slot distribution.
+
+Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 with `hit_hr`. FREE candidate zeroed lineup's weight entirely; PINNED kept it at 0.150 only by manual carve-out. Surfaced via user feedback 2026-05-26 ("the thought was just that it gets them an extra pitch but I'm not sure that matters that much").
+
+**Spec.**
+
+1. **Empirical lookup** from the 2025 backfill:
+   ```sql
+   SELECT l.batting_order,
+          SUM(o.hr_count) * 1.0 / COUNT(*) AS hr_per_lineup_appearance
+   FROM outcomes o
+   JOIN daily_lineup l ON l.player_id = o.batter_id AND l.date = o.date
+   WHERE l.batting_order BETWEEN 1 AND 9
+   GROUP BY l.batting_order
+   ORDER BY l.batting_order;
+   ```
+   The denominator is "batter-game appearances at this slot," numerator is HRs hit. Proportional to HR-per-PA given PA-per-slot is in 3.2-4.7 range — within ~50% across all slots.
+
+2. **Re-anchor** `SCORES` dict to match the empirical curve. Min-max scale to 0-100 (best slot = 100, worst = 0, others by ratio). Round to integers for readability. Document the source data + date the empirical curve was last refit.
+
+3. **Sanity-check Pearson r** post-rebuild. If `lineup_score` now positively correlates with HR (expected r in the +0.02 to +0.05 range), confirm in WEIGHT_REFIT_LOG.md.
+
+4. **Re-run A1 refit** to find lineup's new earned weight. Expect it to come back positive — somewhere between 0 (FREE) and 0.150 (current arbitrary carve-out).
+
+**Files.** `score_batters.py::score_lineup_position` (just the `SCORES` dict + docstring). Maybe a small one-off `diagnostics/calibrate_lineup_position.py` to run the empirical query and emit the new dict.
+
+**Done when.** New `SCORES` dict reflects 2025 empirical HR-rate-by-slot. `lineup_score` positive r in pick_inputs ⨝ outcomes verified. WEIGHT_REFIT_LOG entry documents before/after. Next A1 refit cycle can fairly evaluate whether lineup deserves real composite weight.
+
+**Source.** User feedback 2026-05-26: "id zero out lineup... the thought was just that it gets them an extra pitch but I'm not sure that matters that much. trying to blend art and science." This is the constructive fix — neither "zero it because the score is broken" nor "keep it at 0.15 arbitrarily," but "rebuild the scoring so it tracks reality, then let the refit decide the weight."
+
 ### B14. Production weather forecast failures (2026-05-12+)
 
 **Status.** Ready to investigate — independent. Diagnostic-first.
