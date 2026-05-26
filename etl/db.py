@@ -988,17 +988,16 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
-    # 2026-05-25: Phase 2 — pitch-type archetype matchup sub-signal columns.
-    # Six NULL-safe additive columns on pick_inputs so the per-pick row
-    # carries the batter's FB/BR/OS SLG splits at scoring time. Lets
-    # backtest_arsenal_inputs.py replay variants off the persisted snapshot
-    # without re-pulling Statcast.
-    #
-    # Populated by load_picks_to_db.py from batter dict keys
-    # {fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa}, which generate_picks
-    # sets from features_v2.fetch_batter_pitch_type_splits. *_slg is the
-    # SLG against pitches in that bucket; *_pa is the AB-with-bucket count
-    # for sample-size gating (PITCH_TYPE_SPLIT_MIN_BB=30 default).
+    # 2026-05-25/26: Phase 2 sub-signal columns on pick_inputs.
+    # - Pitch-type: fb/br/os SLG+PA splits, populated by
+    #   load_picks_to_db.py from batter dict keys set by
+    #   fetch_batter_pitch_type_splits. PITCH_TYPE_SPLIT_MIN_BB=30 default
+    #   for sample-size gating.
+    # - Form-archetype: per-batter centroid + window + sample size, lets
+    #   backtest_form_archetype replay historical scores without re-pulling.
+    #   _window column lets variants pick 7/14/21 without re-backfilling.
+    # All NULL-safe additive — scoring helpers ignore when their
+    # USE_* flag is False (Phase 2 default).
     existing_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
     }
@@ -1009,6 +1008,12 @@ def create_tables(conn: sqlite3.Connection):
         ("br_pa",  "ALTER TABLE pick_inputs ADD COLUMN br_pa INTEGER"),
         ("os_slg", "ALTER TABLE pick_inputs ADD COLUMN os_slg REAL"),
         ("os_pa",  "ALTER TABLE pick_inputs ADD COLUMN os_pa INTEGER"),
+        ("form_archetype_centroid_json",
+         "ALTER TABLE pick_inputs ADD COLUMN form_archetype_centroid_json TEXT"),
+        ("form_archetype_window",
+         "ALTER TABLE pick_inputs ADD COLUMN form_archetype_window INTEGER"),
+        ("form_archetype_n_hrs",
+         "ALTER TABLE pick_inputs ADD COLUMN form_archetype_n_hrs INTEGER"),
     ]:
         if col not in existing_cols:
             try:

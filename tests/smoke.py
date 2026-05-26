@@ -3102,6 +3102,346 @@ def pin_backtest_form_archetype_skeleton_imports() -> Result:
     )
 
 
+# ---------------------------------------------------------------------------
+# 2026-05-26: Form archetype Phase 2 (backfill + harness wiring)
+# ---------------------------------------------------------------------------
+
+def pin_backfill_form_archetype_imports() -> Result:
+    """Phase 2: etl/backfill_form_archetype imports and exposes the documented
+    orchestrator surface (backfill_window, backfill_one_date_window, main,
+    parse_duration, ALL_WINDOWS).
+    """
+    try:
+        from etl import backfill_form_archetype as bfa
+    except Exception as e:
+        return Result(
+            "etl/backfill_form_archetype import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in ("backfill_window", "backfill_one_date_window", "main",
+                 "parse_duration", "_resolve_windows", "ALL_WINDOWS",
+                 "DEFAULT_START", "DEFAULT_END"):
+        if not hasattr(bfa, name):
+            failures.append(f"missing {name}")
+    if hasattr(bfa, "ALL_WINDOWS"):
+        if tuple(bfa.ALL_WINDOWS) != (7, 14, 21):
+            failures.append(
+                f"ALL_WINDOWS = {bfa.ALL_WINDOWS}, want (7, 14, 21) "
+                "to match the 3x3 backtest sweep"
+            )
+    if hasattr(bfa, "DEFAULT_START"):
+        if bfa.DEFAULT_START != "2025-03-27":
+            failures.append(
+                f"DEFAULT_START = {bfa.DEFAULT_START!r}, want '2025-03-27' "
+                "(2025 regular season opener — matches etl/backfill_2025.py)"
+            )
+    if hasattr(bfa, "DEFAULT_END"):
+        if bfa.DEFAULT_END != "2025-09-30":
+            failures.append(
+                f"DEFAULT_END = {bfa.DEFAULT_END!r}, want '2025-09-30'"
+            )
+    if not failures:
+        return Result(
+            "etl/backfill_form_archetype Phase 2 surface present",
+            Result.PASS,
+        )
+    return Result(
+        "etl/backfill_form_archetype Phase 2", Result.HALT,
+        "; ".join(failures),
+    )
+
+
+def pin_backfill_form_archetype_cli_flags() -> Result:
+    """Phase 2: the CLI accepts every flag the user asked for —
+    --start / --end / --window-days / --max-dates / --max-runtime.
+
+    Invokes the script as a subprocess with --help and confirms each flag
+    appears in the output. Subprocess avoids monkey-patching argparse.
+    """
+    import subprocess
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "etl.backfill_form_archetype", "--help"],
+            cwd=str(repo_root),
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        return Result(
+            "backfill_form_archetype --help", Result.HALT,
+            f"subprocess failed: {type(e).__name__}: {e}",
+        )
+    out = (r.stdout or "") + (r.stderr or "")
+    failures = []
+    for flag in ("--start", "--end", "--window-days",
+                 "--max-dates", "--max-runtime"):
+        if flag not in out:
+            failures.append(f"missing flag {flag}")
+    # Spot-check parse_duration on a couple inputs.
+    try:
+        from etl.backfill_form_archetype import parse_duration
+        if parse_duration("3h") != 3 * 3600:
+            failures.append("parse_duration('3h') wrong")
+        if parse_duration("1h30m") != 5400:
+            failures.append("parse_duration('1h30m') wrong")
+        if parse_duration(None) is not None:
+            failures.append("parse_duration(None) should be None")
+    except Exception as e:
+        failures.append(f"parse_duration: {type(e).__name__}: {e}")
+    if not failures:
+        return Result(
+            "backfill_form_archetype CLI flags + parse_duration",
+            Result.PASS,
+        )
+    return Result(
+        "backfill_form_archetype CLI", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_form_archetype_pick_inputs_columns() -> Result:
+    """Phase 2 migration: pick_inputs has the 3 new form_archetype columns
+    after create_tables runs. NULL-safe additive — populated by
+    load_picks_to_db when generate_picks attaches the centroid.
+    """
+    import sqlite3
+    from etl.db import create_tables
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    try:
+        cols = {
+            r[1]: r[2]  # column name -> type
+            for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+        }
+    finally:
+        conn.close()
+    failures = []
+    want = {
+        "form_archetype_centroid_json": "TEXT",
+        "form_archetype_window":        "INTEGER",
+        "form_archetype_n_hrs":         "INTEGER",
+    }
+    for name, want_type in want.items():
+        if name not in cols:
+            failures.append(f"pick_inputs missing column {name}")
+            continue
+        got_type = cols[name].upper()
+        if want_type.upper() not in got_type:
+            failures.append(
+                f"pick_inputs.{name} type {got_type}, want {want_type}"
+            )
+    if not failures:
+        return Result(
+            "pick_inputs form_archetype_* columns present (Phase 2)",
+            Result.PASS,
+        )
+    return Result(
+        "pick_inputs Phase 2 columns", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_batter_form_archetype_idempotent() -> Result:
+    """Phase 2 backfill: INSERT OR REPLACE on (player_id, date_through,
+    window_days) means re-running with the same data yields the same rows.
+    Synthetic insert / re-insert verifies the composite PK + idempotency.
+    """
+    import sqlite3
+    import json as _json
+    from etl.db import create_tables
+
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    try:
+        ins = """
+            INSERT OR REPLACE INTO batter_form_archetype
+                (player_id, date_through, window_days,
+                 feature_centroid_json, n_hrs_used)
+            VALUES (?, ?, ?, ?, ?)
+        """
+        centroid1 = _json.dumps([0.35, 8.5, 10.2, 38.0, 5, 2, 0.260])
+        centroid2 = _json.dumps([0.40, 9.0, 10.5, 40.0, 6, 2, 0.270])
+
+        # First insert
+        conn.execute(ins, (12345, "2025-06-01", 7, centroid1, 12))
+        # Replay with same key, different payload — must REPLACE, not duplicate
+        conn.execute(ins, (12345, "2025-06-01", 7, centroid2, 13))
+        conn.commit()
+
+        rows = conn.execute(
+            """
+            SELECT feature_centroid_json, n_hrs_used
+            FROM batter_form_archetype
+            WHERE player_id = ? AND date_through = ? AND window_days = ?
+            """,
+            (12345, "2025-06-01", 7),
+        ).fetchall()
+
+        # Different windows should NOT collide
+        conn.execute(ins, (12345, "2025-06-01", 14, centroid1, 12))
+        conn.execute(ins, (12345, "2025-06-01", 21, centroid1, 12))
+        conn.commit()
+        n_per_batter_date = conn.execute(
+            "SELECT COUNT(*) FROM batter_form_archetype "
+            "WHERE player_id = ? AND date_through = ?",
+            (12345, "2025-06-01"),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    failures = []
+    if len(rows) != 1:
+        failures.append(f"got {len(rows)} rows for same PK, want 1 (replace)")
+    elif rows[0][1] != 13:
+        failures.append(
+            f"n_hrs_used = {rows[0][1]}, want 13 (the REPLACE value)"
+        )
+    if n_per_batter_date != 3:
+        failures.append(
+            f"3 windows for one (batter, date) -> {n_per_batter_date} rows, "
+            "want 3 (different window_days must NOT collide on PK)"
+        )
+    if not failures:
+        return Result(
+            "batter_form_archetype INSERT OR REPLACE idempotent on PK",
+            Result.PASS,
+        )
+    return Result(
+        "batter_form_archetype idempotency", Result.HALT,
+        "; ".join(failures),
+    )
+
+
+def pin_backtest_form_archetype_runs_against_sample_db() -> Result:
+    """Phase 2 harness: against an in-memory DB with synthetic centroids +
+    pick_inputs rows, the backtest harness produces the full 10-row variant
+    grid (default + 9 archetype variants) without crashing.
+
+    This is a wiring smoke test — the *numbers* on the grid are random
+    on synthetic data, but the SHAPE (10 rows, every variant has n>0)
+    is the load-bearing thing.
+    """
+    import sqlite3
+    import json as _json
+    from datetime import datetime, timedelta
+    from etl.db import create_tables
+    from diagnostics import backtest_form_archetype as bfa
+
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+
+    # Synthetic data: 5 dates, 30 batters per date, 7 batters HR per date.
+    # Centroids exist for 25 of 30 batters at each (date, window).
+    try:
+        import random
+        random.seed(42)
+        dates = [f"2025-06-0{i}" for i in range(1, 6)]  # 5 dates
+        batter_ids = list(range(50001, 50031))  # 30 batters
+        n_hr_per_date = 7
+
+        for date_str in dates:
+            hr_batters = set(random.sample(batter_ids, n_hr_per_date))
+            for bid in batter_ids:
+                conn.execute(
+                    """
+                    INSERT INTO pick_inputs (date, batter_id,
+                        recent_hr_10g, recent_iso_30g, ev_trend)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (date_str, bid,
+                     random.uniform(0.0, 3.0),
+                     random.uniform(0.100, 0.250),
+                     random.uniform(-2.0, 2.0)),
+                )
+                if bid in hr_batters:
+                    conn.execute(
+                        """
+                        INSERT INTO outcomes
+                            (date, batter_id, game_pk, hr_count)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (date_str, bid, 99999, 1),
+                    )
+
+        # Centroids on the prior date for 25/30 batters, each window.
+        for date_str in dates:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            dt = (d - timedelta(days=1)).strftime("%Y-%m-%d")
+            for bid in batter_ids[:25]:  # 25 of 30
+                centroid = [
+                    round(random.uniform(0.300, 0.400), 3),
+                    round(random.uniform(5.0, 15.0), 2),
+                    round(random.uniform(8.0, 14.0), 2),
+                    round(random.uniform(30.0, 45.0), 2),
+                    random.randint(2, 8),
+                    random.randint(1, 4),
+                    round(random.uniform(0.220, 0.300), 3),
+                ]
+                for w in (7, 14, 21):
+                    conn.execute(
+                        """
+                        INSERT INTO batter_form_archetype
+                            (player_id, date_through, window_days,
+                             feature_centroid_json, n_hrs_used)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (bid, dt, w,
+                         _json.dumps(centroid),
+                         random.randint(5, 25)),
+                    )
+        conn.commit()
+
+        # Run the harness end-to-end against this in-memory DB.
+        rows = bfa.fetch_rows(conn, dates[0], dates[-1])
+        if len(rows) == 0:
+            return Result(
+                "backtest_form_archetype runs against sample DB",
+                Result.HALT,
+                "fetch_rows returned 0 rows from sample DB",
+            )
+
+        centroids_by_window = {
+            w: bfa._load_window_centroids(conn, dates[0], dates[-1], w)
+            for w in (7, 14, 21)
+        }
+
+        scored = bfa.score_variants(rows, centroids_by_window)
+        common = [s for s in scored if s["has_hr10"]]
+        results = {v: bfa.compute_metrics(common, v) for v in bfa.VARIANTS}
+    finally:
+        conn.close()
+
+    failures = []
+    # 10 variant rows expected: default + 9 sweep entries
+    if len(results) != 10:
+        failures.append(
+            f"got {len(results)} variants, want 10 (default + 3x3 sweep)"
+        )
+    for v in bfa.VARIANTS:
+        if v not in results:
+            failures.append(f"missing variant {v}")
+            continue
+        if results[v]["n"] == 0:
+            failures.append(f"variant {v} has n=0")
+    # Every archetype variant should have at least SOME rows with the
+    # sub-signal active (otherwise wiring is broken).
+    archetype_variants = [v for v in bfa.VARIANTS if v != "default"]
+    if all(results[v]["n_archetype_active"] == 0 for v in archetype_variants):
+        failures.append(
+            "all archetype variants have 0 active rows — centroid join "
+            "didn't fire (Phase 2 wiring broken)"
+        )
+
+    if not failures:
+        return Result(
+            "backtest_form_archetype Phase 2 wiring (10 variants, "
+            f"n>0 on every row, archetype active on >=1 variant)",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_form_archetype Phase 2 wiring",
+        Result.HALT, "; ".join(failures),
+    )
+
 
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
@@ -3214,6 +3554,12 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_load_picks_persists_pitch_type_splits,
     pin_load_pitch_type_splits_lookup_empty,
     pin_backtest_arsenal_inputs_score_variants,
+    # 2026-05-26: Form archetype Phase 2 (backfill + harness wiring)
+    pin_backfill_form_archetype_imports,
+    pin_backfill_form_archetype_cli_flags,
+    pin_form_archetype_pick_inputs_columns,
+    pin_batter_form_archetype_idempotent,
+    pin_backtest_form_archetype_runs_against_sample_db,
 ]
 
 

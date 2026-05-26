@@ -1450,6 +1450,91 @@ def compute_batter_form_archetype(
     return out
 
 
+# Phase 2 default — at scoring time, attach the 14d centroid to the batter
+# dict. The diagnostics/backtest_form_archetype.py harness sweeps all 3
+# windows independently from the persisted JSON, so the production default
+# only needs ONE value; we pick 14d as the mid-point of the 7/14/21 grid
+# (sweet spot per design doc rationale). Phase 3 may flip this to the
+# winning sweep variant.
+FORM_ARCHETYPE_PRODUCTION_WINDOW = 14
+
+
+def fetch_form_archetype_centroids_bulk(
+    player_ids: list[int],
+    as_of_date: str,
+    window_days: int = FORM_ARCHETYPE_PRODUCTION_WINDOW,
+    db_path: str | None = None,
+) -> dict[int, dict]:
+    """Bulk-load persisted centroids from batter_form_archetype.
+
+    Returns {player_id: {feature_centroid (list), n_hrs_used (int), window_days,
+                         feature_centroid_json (str)}} — only for players who
+    have a row at (date_through=as_of_date - 1 day, window_days).
+
+    Players without a centroid row are simply absent from the returned dict
+    — caller treats missing as None+skip. No league-avg fallback by design
+    (matches docs/form_archetype_design.md).
+
+    Phase 2: read-only lookup. Centroids are persisted by
+    etl/backfill_form_archetype.py (and Phase 3+ nightly hook). With
+    USE_FORM_ARCHETYPE=False (Phase 2 default), the persisted centroid is
+    attached to pick_inputs for replay but does NOT enter the live score.
+    """
+    if not player_ids:
+        return {}
+
+    try:
+        from etl.db import DB_PATH as _DB
+        path = db_path or str(_DB)
+        if not Path(path).exists():
+            return {}
+    except Exception:
+        return {}
+
+    # date_through = day before as_of_date (centroid built from HRs
+    # strictly before scoring day; matches the design doc convention).
+    try:
+        end_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
+    except ValueError:
+        return {}
+    date_through = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    placeholders = ",".join("?" * len(player_ids))
+    try:
+        import sqlite3
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT player_id, feature_centroid_json, n_hrs_used, window_days
+            FROM batter_form_archetype
+            WHERE player_id IN ({placeholders})
+              AND date_through = ?
+              AND window_days = ?
+            """,
+            (*player_ids, date_through, int(window_days)),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"  [features_v2] form_archetype centroid bulk load failed: {e}")
+        return {}
+
+    out: dict[int, dict] = {}
+    for r in rows:
+        pid = int(r["player_id"])
+        try:
+            centroid = json.loads(r["feature_centroid_json"])
+        except (TypeError, ValueError):
+            continue
+        out[pid] = {
+            "feature_centroid": centroid,
+            "feature_centroid_json": r["feature_centroid_json"],
+            "n_hrs_used": int(r["n_hrs_used"] or 0),
+            "window_days": int(r["window_days"]),
+        }
+    return out
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Inspect features_v2 fetchers")
