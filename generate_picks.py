@@ -76,6 +76,8 @@ from features_v2 import (
     fetch_batter_xwoba_bulk,
     fetch_pitcher_fb_bulk,
     fetch_batter_recent_statcast_14d,
+    fetch_form_archetype_centroids_bulk,
+    FORM_ARCHETYPE_PRODUCTION_WINDOW,
 )
 
 # Toggle for the slow per-player Statcast paths (archetype profiles +
@@ -1134,6 +1136,49 @@ def fetch_live_slate(
     except Exception as e:
         status.warn("Batter Recent 14d (bulk)", f"Bulk fetch failed: {e}")
 
+    # ── Form-archetype centroid (Phase 2, 2026-05-26) ─────────────────
+    # Slate-level bulk DB lookup keyed on (player_id, date_through, window).
+    # Populated by etl/backfill_form_archetype.py (the Phase 2 backfill).
+    # USE_FORM_ARCHETYPE=False (Phase 2 default) means score_form ignores
+    # what's attached — this fetch is for pick_inputs persistence so the
+    # backtest harness (diagnostics/backtest_form_archetype.py) can replay
+    # historical scores. as_of_date = date_str on backfill; production
+    # uses today's date.
+    form_archetype_centroids: dict = {}
+    try:
+        # Pull centroids for every batter currently in a lineup (regardless
+        # of tier) so the slate-level cache covers all scoring paths.
+        all_lineup_pids: list[int] = []
+        for _gpk, _lu in lineups.items():
+            for _side in ("home", "away"):
+                for _p in _lu.get(_side, []):
+                    _pid = _p.get("player_id")
+                    if _pid:
+                        all_lineup_pids.append(_pid)
+        # De-dup while preserving order isn't important here.
+        all_lineup_pids = list(set(all_lineup_pids))
+        if all_lineup_pids:
+            form_archetype_centroids = fetch_form_archetype_centroids_bulk(
+                player_ids=all_lineup_pids,
+                as_of_date=(as_of_date or date_str),
+                window_days=FORM_ARCHETYPE_PRODUCTION_WINDOW,
+            )
+            if form_archetype_centroids:
+                status.ok(
+                    "Form Archetype Centroids",
+                    f"{len(form_archetype_centroids)} batters loaded (window="
+                    f"{FORM_ARCHETYPE_PRODUCTION_WINDOW}d) from "
+                    f"batter_form_archetype",
+                )
+            else:
+                status.warn(
+                    "Form Archetype Centroids",
+                    "No rows for this date — table likely empty (Phase 2 "
+                    "backfill hasn't run yet)",
+                )
+    except Exception as e:
+        status.warn("Form Archetype Centroids", f"DB lookup failed: {e}")
+
     # ── Vegas implied team totals ──────────────────────────────────────
     # PR 4: skip Vegas for backfill — the-odds-api free tier has no
     # historical odds. Backfill rows get NULL vegas_team_total_pct and
@@ -1197,6 +1242,7 @@ def fetch_live_slate(
         "bulk_batter_xwoba": bulk_batter_xwoba,
         "bulk_recent_statcast": bulk_recent_statcast,
         "player_status": player_status,
+        "form_archetype_centroids": form_archetype_centroids,
     }
 
 
@@ -1426,6 +1472,19 @@ def score_live_slate(
     recent_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in bulk_recent_statcast)
     print(f"  [RECENT-14d] {recent_hit}/{len(eligible_batters)} T{tier} batters")
 
+    # Form-archetype centroid Phase 2 (2026-05-26): persisted per-batter
+    # centroid lookup from batter_form_archetype. Read-only at scoring
+    # time; the centroid is attached to the batter dict so it persists
+    # into pick_inputs (backtest_factors.rescore_row replays from there).
+    # USE_FORM_ARCHETYPE=False (Phase 2 default) means score_form ignores
+    # the attached centroid — production scoring is unchanged. Centroid
+    # window: FORM_ARCHETYPE_PRODUCTION_WINDOW (14d, mid-point of the
+    # 3-window sweep). The backtest harness can pick different windows
+    # because the persisted column stores window_days alongside.
+    archetype_centroids = slate.get("form_archetype_centroids", {})
+    archetype_hit = sum(1 for _, _, pid, _ in eligible_batters if pid in archetype_centroids)
+    print(f"  [FORM-ARCH] {archetype_hit}/{len(eligible_batters)} T{tier} batters have a centroid")
+
     # Build victim profiles for archetype matching (v2 matchup scoring).
     # Only runs when USE_PER_PLAYER_STATCAST=True — otherwise the third
     # source of per-player Statcast hangs. With it off, score_matchup_v2
@@ -1520,25 +1579,32 @@ def score_live_slate(
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
         # Phase 1 (2026-05-25): park-archetype sub-signal centroid.
-        # Default to None — score_park's USE_PARK_ARCHETYPE guard is off
-        # this PR, so the key is read-but-ignored. Phase 2 populates it
-        # via features_v2.compute_batter_park_archetype.
-        # TODO Phase 2: wire bulk_park_archetype = slate.get("bulk_park_archetype")
-        # and overwrite from the dict.
+        # Default to None — score_park's USE_PARK_ARCHETYPE guard is off,
+        # so the key is read-but-ignored until park-archetype Phase 2 (#87)
+        # wires it via the bulk slate dict. Stays None on this PR.
         entry["park_archetype_centroid"] = None
 
         # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
-        # Default keys to None — score_matchup's USE_ARSENAL_SUBSIGNAL guard
-        # is off this PR, so these are read-but-ignored. Phase 2 populates
-        # them via features_v2.fetch_batter_pitch_type_splits.
-        # TODO Phase 2: wire bulk_pitch_type_splits = slate.get("bulk_pitch_type_splits")
-        # and overwrite from the dict.
+        # Default keys to None — pitch-type Phase 2 (#89) overwrites them
+        # via bulk_pitch_type_splits when that PR lands. USE_ARSENAL_SUBSIGNAL=False
+        # means score_matchup ignores them either way.
         entry["fb_slg"] = None
         entry["fb_pa"] = None
         entry["br_slg"] = None
         entry["br_pa"] = None
         entry["os_slg"] = None
         entry["os_pa"] = None
+
+        # Form-archetype centroid Phase 2 — attach the persisted centroid
+        # (when present) so score_batters.compute_composite can stash it
+        # into inputs_snapshot for pick_inputs persistence. Flag-off
+        # (USE_FORM_ARCHETYPE=False) means score_form ignores the value.
+        arch = archetype_centroids.get(player_id)
+        if arch is not None:
+            entry["form_archetype_centroid"] = arch.get("feature_centroid")
+            entry["form_archetype_centroid_json"] = arch.get("feature_centroid_json")
+            entry["form_archetype_window"] = arch.get("window_days")
+            entry["form_archetype_n_hrs"] = arch.get("n_hrs_used")
 
         # Get archetype profiles for v2 matchup scoring
         vp = victim_profiles.get(player_id)
@@ -1744,6 +1810,9 @@ def score_untiered_starters(
     batter_adv = {pid: {"xwoba_contact": v} for pid, v in bulk_xwoba.items()}
     # B6a (2026-05-21): same bulk recent-14d Statcast that T1/T2/T3 use
     bulk_recent_statcast = slate.get("bulk_recent_statcast", {})
+    # Phase 2 form-archetype: same slate-level bulk centroid lookup that
+    # the tiered path uses; attached so it persists into pick_inputs.
+    archetype_centroids = slate.get("form_archetype_centroids", {})
 
     for stub, game, batting_order, side in stubs:
         gpk = game["game_pk"]
@@ -1791,8 +1860,7 @@ def score_untiered_starters(
         # Phase 1 (2026-05-25): park-archetype centroid. Default to None
         # on the untiered path too. T4 batters tend to have very thin
         # career HR samples — the PARK_ARCHETYPE_MIN_HRS gate in the
-        # Phase 2 builder will drop most T4 entries to None automatically,
-        # which is the None+skip path through score_park.
+        # Phase 2 builder will drop most T4 entries to None automatically.
         entry["park_archetype_centroid"] = None
 
         # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
@@ -1806,6 +1874,14 @@ def score_untiered_starters(
         entry["br_pa"] = None
         entry["os_slg"] = None
         entry["os_pa"] = None
+
+        # Phase 2 form-archetype: attach centroid for pick_inputs persistence.
+        arch = archetype_centroids.get(pid)
+        if arch is not None:
+            entry["form_archetype_centroid"] = arch.get("feature_centroid")
+            entry["form_archetype_centroid_json"] = arch.get("feature_centroid_json")
+            entry["form_archetype_window"] = arch.get("window_days")
+            entry["form_archetype_n_hrs"] = arch.get("n_hrs_used")
 
         pp = pitcher_profiles.get(opp_pitcher_name)
 
