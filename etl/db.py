@@ -192,6 +192,14 @@ def create_tables(conn: sqlite3.Connection):
         position        TEXT,
         bats            TEXT,               -- R/L/S
         team            TEXT,
+        -- B7 (2026-05-25): lineup_source — where this row's batting_order
+        -- came from (one of "posted" / "recent:YYYY-MM-DD" /
+        -- "roster_fallback"). Computed at fetch time in
+        -- fetch_daily_data.fetch_lineups_for_date but historically never
+        -- persisted into daily_lineup. ETL Step 2.5 (the IL/scratch filter)
+        -- needs to know whether a row is a posted lineup (trust it) vs.
+        -- a fallback (override with roster status).
+        lineup_source   TEXT,
         fetched_at      TEXT DEFAULT (datetime('now')),
         UNIQUE(game_pk, date, player_id)
     );
@@ -200,6 +208,49 @@ def create_tables(conn: sqlite3.Connection):
         ON daily_lineup(date);
     CREATE INDEX IF NOT EXISTS idx_lineup_player
         ON daily_lineup(player_id);
+
+    -- ================================================================
+    -- B7 (2026-05-25): Daily player roster status — IL / Paternity /
+    -- Bereavement / Suspended / Restricted detection.
+    --
+    -- Populated by etl_morning Step 2.5 (after lineups). For each Tier
+    -- 2/3 fallback-sourced daily_lineup row, we look the player up via
+    -- /teams/{team_id}/roster?rosterType=fullRoster&date=DATE and stash
+    -- their status_code.
+    --
+    -- is_likely_out = (status_code != 'A') — the single rule that
+    -- covers IL + Paternity + Bereavement + Suspended + Restricted.
+    --
+    -- Filter scope (V1): TIER 2/3 FALLBACK ROWS ONLY. We do NOT override
+    -- a posted (Tier 1) lineup — if the team posted it, the player is
+    -- active, period. The fallback window is the residual where IL'd
+    -- players slip through (e.g., Ryan Jeffers on 5/20 — placed on IL
+    -- 5/19 evening, the recent-lineup fallback for 5/20 still had him
+    -- penciled in until the team posted today's actual lineup).
+    --
+    -- Consumed by generate_picks's eligible_batters assembly: rows with
+    -- is_likely_out=1 stay in the scored output (composite preserved,
+    -- big-board diagnostic intact) but get selected=0 so the top-8 card
+    -- promotes ranks 9+.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS daily_player_status (
+        date                TEXT    NOT NULL,
+        player_id           INTEGER NOT NULL,
+        status_code         TEXT,           -- 'A' (active), 'D10'/'D60' (10/60-day IL),
+                                            -- 'PL' (paternity), 'BRV' (bereavement),
+                                            -- 'SU' (suspended), 'RM' (restricted)
+        status_description  TEXT,           -- human-readable: '10-Day IL', 'Active',
+                                            -- 'Bereavement List', etc.
+        is_likely_out       INTEGER NOT NULL DEFAULT 0,  -- (status_code != 'A')
+        source              TEXT,           -- 'mlb_roster_api' / 'manual_override'
+        fetched_at          TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (date, player_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_player_status_date
+        ON daily_player_status(date);
+    CREATE INDEX IF NOT EXISTS idx_player_status_player
+        ON daily_player_status(player_id);
 
     -- ================================================================
     -- Season batting stats (nightly ETL)
@@ -647,6 +698,33 @@ def create_tables(conn: sqlite3.Connection):
         except Exception:
             pass
 
+    # 2026-05-25: B7 IL/scratch filter columns on daily_picks. Three
+    # additive NULL-safe columns the site reads to render the IL badge
+    # and (optionally) the calibration audit lever:
+    #   is_likely_out       — 1 when status_code != 'A' (Tier 2/3 fallback
+    #                         rows only — posted lineups stay 0)
+    #   status_description  — human-readable label ('10-Day IL', etc.)
+    #                         shown on the big-board badge
+    #   promoted_due_to     — 'il_filter' when this rank-9+ player got
+    #                         promoted into the top-8 because an IL row
+    #                         above them was skipped. NULL otherwise.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(daily_picks)").fetchall()
+    }
+    for col, ddl in [
+        ("is_likely_out",
+         "ALTER TABLE daily_picks ADD COLUMN is_likely_out INTEGER DEFAULT 0"),
+        ("status_description",
+         "ALTER TABLE daily_picks ADD COLUMN status_description TEXT"),
+        ("promoted_due_to",
+         "ALTER TABLE daily_picks ADD COLUMN promoted_due_to TEXT"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
     # 2026-05-03 schema-cleanup PR: bats/throws + weather_source/barrel_pct_source
     # on pick_inputs. All four are NULL-safe additive columns; older rows
     # stay NULL until they're regenerated by a future load_picks_to_db run.
@@ -768,6 +846,20 @@ def create_tables(conn: sqlite3.Connection):
                 conn.execute(ddl)
             except Exception:
                 pass
+
+    # 2026-05-25: B7 -- lineup_source column on daily_lineup. Computed in
+    # fetch_daily_data.fetch_lineups_for_date but never persisted previously.
+    # ETL Step 2.5 (IL/scratch filter) needs this to know which rows came
+    # from fallback (tier 2 "recent:DATE" / tier 3 "roster_fallback") so it
+    # only overrides those with roster-status data, never a posted lineup.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(daily_lineup)").fetchall()
+    }
+    if "lineup_source" not in existing_cols:
+        try:
+            conn.execute("ALTER TABLE daily_lineup ADD COLUMN lineup_source TEXT")
+        except Exception:
+            pass
 
     # 2026-05-21: B6a -- recent quality-contact blend for score_power.
     # Three rolling 14-day inputs sourced from bulk Statcast pitch-level
