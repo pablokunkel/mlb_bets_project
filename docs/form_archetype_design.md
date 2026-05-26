@@ -374,6 +374,66 @@ Separate follow-up PR.
 (spot-check: a row dated 2025-06-01 only uses HRs before that date);
 table is densely populated for active batters.
 
+#### Phase 2 — Statcast pull architecture (post-2026-05-26)
+
+**Bulk pull, slice in memory. Not per-batter, not per-HR.**
+
+The dominant cost of building centroids is the Statcast network call.
+Two paths exist; only one is acceptable:
+
+| Path | API calls per (date, window) | Total backfill cost |
+|---|---|---|
+| Per-batter (`pybaseball.statcast_batter` inside two nested loops) | 600 batters × ~20 HRs ≈ **12,000 calls** | ~weeks (the 2026-05-26 first attempt hit 222 centroids in 4h19m → ~94 days extrapolated) |
+| Bulk (`pybaseball.statcast(span_start, span_end)` once, then `groupby("batter")` + in-memory window slicing) | **~1 call** for the full 18-month span, cached for 24h | ~1 hour cold, free on re-runs |
+
+The bulk path is what `features_v2.compute_batter_form_archetype`
+implements (post-2026-05-26). The mirror precedent in the codebase is
+`features_v2.fetch_batter_recent_statcast_14d` — one bulk
+`pybaseball.statcast()` pull, then `_aggregate_recent_statcast` does
+the per-batter groupby. Same shape here, but with an extra dimension:
+the bulk frame covers multiple `(date_through, window)` iterations
+across the entire backfill window.
+
+**Amortization across the entire backfill.** The orchestrator
+(`etl/backfill_form_archetype.py::backfill_window`) pulls the bulk
+frame ONCE at the start covering `[min(hr_date) - max(window), max(hr_date) - 1]`
+and passes it via the `_prefetched_df` kwarg to every
+`compute_batter_form_archetype` invocation. All 188 date × 3 window
+iterations reuse the SAME in-memory frame. Per-(date, window) work is
+now in-memory groupby + slicing — seconds, not hours.
+
+**Cache.** The bulk pull is persisted to
+`data/cache/features_v2/form_archetype_bulk/<min>_<max>.parquet`
+with a 24h TTL. Re-running the backfill within the same day skips the
+network call entirely.
+
+**Regression guard.** A smoke test
+(`tests/smoke.py::pin_compute_batter_form_archetype_bulk_pull_at_most_once`)
+monkey-patches `pybaseball.statcast()` and `pybaseball.statcast_batter()`
+and asserts:
+- `statcast()` is called at most ONE time per invocation.
+- `statcast_batter()` is **NEVER** called.
+
+Any future refactor that re-introduces the per-batter API spam will
+HALT smoke immediately.
+
+**For the next agent who reads this:** if you are looking at this
+builder and thinking "I should just call `statcast_batter` per
+batter to get the data more cleanly" — STOP. That's the 2026-05-26
+bug. The data you want is in the bulk frame already; group by `batter`
+and slice by `game_date`. The runtime cost difference is **~weeks vs
+~1 hour**.
+
+**`--reset` flag.** After the 2026-05-26 first-attempt run wrote 222
+partial rows before being killed, those rows would have skewed the
+resume-safe coverage check (`>70% present → skip`). The
+`--reset` CLI flag runs
+`DELETE FROM batter_form_archetype WHERE date_through BETWEEN ? AND ?`
+before the bulk pull, scoped to the backfill window. Used as:
+```
+python -m etl.backfill_form_archetype --reset --start 2025-03-27 --end 2025-09-30
+```
+
 ### Phase 3 — run the backtest, set the weight, enable the signal
 
 Separate follow-up PR. **Requires evidence.**

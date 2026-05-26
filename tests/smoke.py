@@ -3443,6 +3443,276 @@ def pin_backtest_form_archetype_runs_against_sample_db() -> Result:
     )
 
 
+def pin_compute_batter_form_archetype_bulk_pull_at_most_once() -> Result:
+    """2026-05-26: compute_batter_form_archetype MUST NOT call
+    pybaseball.statcast_batter() at all, and MUST call pybaseball.statcast()
+    at most ONCE per invocation regardless of the (batter, HR) count.
+
+    Catastrophic regression guard. The 2026-05-26 bug ran 12,000 API calls
+    per (date, window) by calling statcast_batter() inside a per-HR loop —
+    222 centroids written in 4h19m, full backfill extrapolated to ~94 days.
+    The fix is to bulk-pull ONCE and slice in-memory. This pin nails that
+    contract: monkey-patch both API entry points, ensure statcast() is
+    called <=1 time and statcast_batter() is NEVER called.
+
+    Uses a synthetic in-memory DB so the test runs even when DB_PATH is
+    absent / empty.
+    """
+    import sqlite3
+    import sys as _sys
+    import pandas as pd
+    from datetime import datetime, timedelta
+    from etl.db import create_tables
+
+    failures: list[str] = []
+
+    # Build a temp DB with batter_hr_events for a handful of synthetic pids,
+    # enough HRs to clear MIN_HRS. We monkey-patch DB_PATH so the builder
+    # reads from our DB.
+    import tempfile, os
+    tmp_dir = tempfile.mkdtemp(prefix="form_arch_test_")
+    tmp_db = Path(tmp_dir) / "test.db"
+    conn = sqlite3.connect(str(tmp_db))
+    try:
+        create_tables(conn)
+        # 3 batters * 15 HRs each -> all clear FORM_ARCHETYPE_MIN_HRS=10
+        as_of = "2025-09-01"
+        as_of_dt = datetime.strptime(as_of, "%Y-%m-%d")
+        pids = [60001, 60002, 60003]
+        for pid in pids:
+            for i in range(15):
+                # HRs spread across the season prior to as_of_date
+                hr_date = (as_of_dt - timedelta(days=10 + i * 7)).strftime("%Y-%m-%d")
+                conn.execute(
+                    """
+                    INSERT INTO batter_hr_events
+                        (batter_id, pitcher_id, game_date, game_pk, pitch_type)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (pid, 700000 + i, hr_date, 999000 + i, "FF"),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Build a synthetic Statcast frame covering the lookback span and the
+    # three batters. ~30 pitch-level rows per batter per day for one of
+    # their HR windows is enough for _per_hr_state_snapshot to succeed.
+    rows = []
+    for pid in pids:
+        for i in range(15):
+            window_end = (as_of_dt - timedelta(days=10 + i * 7 + 1))
+            for d in range(7):
+                gd = (window_end - timedelta(days=d)).strftime("%Y-%m-%d")
+                for k in range(8):
+                    rows.append({
+                        "batter": pid,
+                        "game_date": gd,
+                        "events": "single" if k == 0 else (
+                            "field_out" if k == 1 else None
+                        ),
+                        "estimated_woba_using_speedangle": 0.42,
+                        "launch_speed_angle": 6.0 if k == 2 else None,
+                        "description": "swinging_strike" if k == 3 else "ball",
+                        "hc_x": 100.0 if k == 4 else None,
+                        "stand": "R",
+                        "bb_type": "fly_ball" if k in (0, 2, 4) else None,
+                    })
+    synthetic_df = pd.DataFrame(rows)
+
+    # Monkey-patch pybaseball entry points.
+    import pybaseball  # noqa: F401
+    n_statcast_calls = {"count": 0}
+    n_statcast_batter_calls = {"count": 0}
+
+    def fake_statcast(*args, **kwargs):
+        n_statcast_calls["count"] += 1
+        return synthetic_df
+
+    def fake_statcast_batter(*args, **kwargs):
+        n_statcast_batter_calls["count"] += 1
+        # Even if accidentally called, return the per-batter slice so the
+        # test doesn't blow up before the assertion fires.
+        if args and len(args) >= 3:
+            return synthetic_df[synthetic_df["batter"] == args[2]]
+        return synthetic_df
+
+    import features_v2 as _fv2
+    import etl.db as _etldb
+
+    orig_statcast = getattr(pybaseball, "statcast", None)
+    orig_statcast_batter = getattr(pybaseball, "statcast_batter", None)
+    orig_db_path = _etldb.DB_PATH
+
+    try:
+        pybaseball.statcast = fake_statcast
+        pybaseball.statcast_batter = fake_statcast_batter
+        # Also patch the etl.db DB_PATH the builder reads from.
+        _etldb.DB_PATH = tmp_db
+
+        # Disable the on-disk bulk cache for this test by setting TTL to 0
+        # — we want to verify a FRESH invocation calls statcast exactly once.
+        orig_ttl = _fv2.TTL_FORM_ARCHETYPE_BULK
+        _fv2.TTL_FORM_ARCHETYPE_BULK = 0
+
+        try:
+            result = _fv2.compute_batter_form_archetype(
+                player_ids=pids,
+                as_of_date=as_of,
+                window_days=7,
+            )
+        finally:
+            _fv2.TTL_FORM_ARCHETYPE_BULK = orig_ttl
+
+        # 1. statcast called at most ONCE (the bulk pull). It may be 0 if
+        # the on-disk cache hit unexpectedly; both 0 and 1 are acceptable
+        # (the contract is "no more than once").
+        if n_statcast_calls["count"] > 1:
+            failures.append(
+                f"statcast() called {n_statcast_calls['count']} times, "
+                "want <=1 (regression to per-batter API spam)"
+            )
+        # 2. statcast_batter MUST NEVER be called.
+        if n_statcast_batter_calls["count"] != 0:
+            failures.append(
+                f"statcast_batter() called "
+                f"{n_statcast_batter_calls['count']} times — "
+                "this is the 2026-05-26 bug; should be 0"
+            )
+        # 3. The return shape is the same as the legacy implementation.
+        if not isinstance(result, dict):
+            failures.append(f"return type {type(result).__name__}, want dict")
+        elif set(result.keys()) != set(pids):
+            failures.append(
+                f"return keys {sorted(result.keys())}, want {sorted(pids)} "
+                "(must cover every requested pid)"
+            )
+        else:
+            # All three test batters had 15 HRs each above the MIN_HRS gate;
+            # at least one should produce a centroid (the synthetic frame
+            # covers their windows).
+            n_with_centroid = sum(
+                1 for v in result.values()
+                if v is not None and v.get("feature_centroid") is not None
+            )
+            if n_with_centroid == 0:
+                failures.append(
+                    "no batters returned a centroid — synthetic frame slicing "
+                    "broke (in-memory groupby/slice path is wired wrong)"
+                )
+    finally:
+        # Restore.
+        if orig_statcast is not None:
+            pybaseball.statcast = orig_statcast
+        if orig_statcast_batter is not None:
+            pybaseball.statcast_batter = orig_statcast_batter
+        _etldb.DB_PATH = orig_db_path
+        try:
+            tmp_db.unlink()
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
+
+    if not failures:
+        return Result(
+            f"compute_batter_form_archetype bulk pull (statcast called "
+            f"{n_statcast_calls['count']}x, statcast_batter "
+            f"{n_statcast_batter_calls['count']}x)",
+            Result.PASS,
+        )
+    return Result(
+        "compute_batter_form_archetype bulk pull contract",
+        Result.HALT,
+        "; ".join(failures),
+    )
+
+
+def pin_backfill_form_archetype_reset_flag() -> Result:
+    """2026-05-26: --reset CLI flag wipes batter_form_archetype rows in the
+    backfill window before populating. Lets the user clear the partial
+    bad-data from the 12,000-API-call bug without dropping the whole table.
+
+    Verifies: (1) the flag is present in --help, (2) _reset_centroids()
+    deletes rows in range and leaves out-of-range rows intact.
+    """
+    import subprocess
+    import json as _json
+    import sqlite3
+    from etl.db import create_tables
+    from etl.backfill_form_archetype import _reset_centroids
+
+    failures: list[str] = []
+
+    # --- Surface check ---
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "etl.backfill_form_archetype", "--help"],
+            cwd=str(repo_root),
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        return Result(
+            "backfill_form_archetype --reset flag", Result.HALT,
+            f"subprocess failed: {type(e).__name__}: {e}",
+        )
+    if "--reset" not in (r.stdout or "") + (r.stderr or ""):
+        failures.append("--reset flag missing from --help output")
+
+    # --- Behavior check ---
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    try:
+        ins = """
+            INSERT OR REPLACE INTO batter_form_archetype
+                (player_id, date_through, window_days,
+                 feature_centroid_json, n_hrs_used)
+            VALUES (?, ?, ?, ?, ?)
+        """
+        for date_str in ("2025-05-01", "2025-06-01", "2025-07-01", "2025-08-01"):
+            for w in (7, 14, 21):
+                conn.execute(ins, (60099, date_str, w,
+                                   _json.dumps([0.4] * 7), 12))
+        conn.commit()
+        n_before = conn.execute(
+            "SELECT COUNT(*) FROM batter_form_archetype"
+        ).fetchone()[0]
+        if n_before != 12:
+            failures.append(f"pre-reset row count {n_before}, want 12")
+
+        # Wipe only the June-July range.
+        n_deleted = _reset_centroids(conn, "2025-06-01", "2025-07-31")
+        if n_deleted != 6:  # 2 dates * 3 windows
+            failures.append(
+                f"reset deleted {n_deleted} rows, want 6 (2 dates x 3 windows)"
+            )
+
+        # Bookend rows must survive.
+        survivors = conn.execute(
+            "SELECT DISTINCT date_through FROM batter_form_archetype "
+            "ORDER BY date_through"
+        ).fetchall()
+        survivor_dates = [r[0] for r in survivors]
+        if "2025-05-01" not in survivor_dates:
+            failures.append("reset wiped out-of-range date 2025-05-01")
+        if "2025-08-01" not in survivor_dates:
+            failures.append("reset wiped out-of-range date 2025-08-01")
+        if "2025-06-01" in survivor_dates:
+            failures.append("reset did NOT wipe in-range date 2025-06-01")
+    finally:
+        conn.close()
+
+    if not failures:
+        return Result(
+            "backfill_form_archetype --reset flag + _reset_centroids()",
+            Result.PASS,
+        )
+    return Result(
+        "backfill_form_archetype --reset", Result.HALT,
+        "; ".join(failures),
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -3560,6 +3830,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_form_archetype_pick_inputs_columns,
     pin_batter_form_archetype_idempotent,
     pin_backtest_form_archetype_runs_against_sample_db,
+    # 2026-05-26: URGENT — bulk Statcast pull (no per-batter API spam)
+    pin_compute_batter_form_archetype_bulk_pull_at_most_once,
+    pin_backfill_form_archetype_reset_flag,
 ]
 
 

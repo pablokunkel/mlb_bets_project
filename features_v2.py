@@ -1322,18 +1322,112 @@ def _aggregate_centroid(snapshots: list[dict]) -> list[float | None]:
     return centroid
 
 
+# ---------------------------------------------------------------------------
+# Form-archetype bulk-pull cache (post-2026-05-26)
+# ---------------------------------------------------------------------------
+# The Phase 1 builder issued ONE pybaseball.statcast_batter() call PER HR PER
+# BATTER. For a 600-batter slate at ~20 HRs each, that's 12,000 API calls per
+# (date, window) — the user's first backfill run wrote 222 centroids in 4h19m
+# (~94 days extrapolated for the full season). Unusable.
+#
+# The fix: ONE bulk pybaseball.statcast(span_start, span_end) pull covering the
+# full lookback span, cached on disk by the (min_date, max_date) tuple. All
+# per-batter / per-HR slicing happens against that one in-memory frame.
+#
+# Cache layout:
+#   data/cache/features_v2/form_archetype_bulk/<min>_<max>.parquet
+#   (parquet beats JSON here — Statcast rows are wide and parquet is ~10x
+#   smaller + 10x faster to load. Falls back to pickle if pyarrow missing.)
+#
+# TTL: 24h (same default as the rest of features_v2). The Statcast endpoint
+# is append-only for closed dates, so a 24h refresh window is conservative.
+FORM_ARCHETYPE_BULK_CACHE_DIR = CACHE_DIR / "form_archetype_bulk"
+TTL_FORM_ARCHETYPE_BULK = 86400  # 24h
+
+
+def _form_archetype_bulk_cache_path(min_date: str, max_date: str) -> Path:
+    FORM_ARCHETYPE_BULK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return FORM_ARCHETYPE_BULK_CACHE_DIR / f"{min_date}_{max_date}.parquet"
+
+
+def _load_form_archetype_bulk_cache(min_date: str, max_date: str):
+    """Return cached DataFrame or None on miss / stale."""
+    path = _form_archetype_bulk_cache_path(min_date, max_date)
+    if not path.exists():
+        return None
+    try:
+        if time.time() - path.stat().st_mtime > TTL_FORM_ARCHETYPE_BULK:
+            return None
+        import pandas as pd
+        return pd.read_parquet(path)
+    except Exception as e:
+        print(f"  [features_v2] form_archetype bulk cache read failed: {e}")
+        return None
+
+
+def _save_form_archetype_bulk_cache(min_date: str, max_date: str, df) -> None:
+    """Persist a bulk Statcast pull to disk. Silent on failure (cache is
+    best-effort; the pipeline still works without it, just slower on re-run).
+    """
+    path = _form_archetype_bulk_cache_path(min_date, max_date)
+    try:
+        df.to_parquet(path, index=False)
+    except Exception as e:
+        # parquet requires pyarrow; fall back to pickle silently.
+        try:
+            import pandas as pd  # noqa: F401
+            df.to_pickle(str(path).replace(".parquet", ".pkl"))
+        except Exception as e2:
+            print(f"  [features_v2] form_archetype bulk cache write failed: "
+                  f"{e} / fallback: {e2}")
+
+
+def _fetch_form_archetype_bulk_statcast(min_date: str, max_date: str):
+    """Bulk Statcast pull covering [min_date, max_date] inclusive, cached.
+
+    Returns a pandas DataFrame (possibly empty) or None on hard failure.
+    Identical-args re-runs within 24h hit the on-disk cache and skip the
+    network call entirely.
+    """
+    cached = _load_form_archetype_bulk_cache(min_date, max_date)
+    if cached is not None:
+        print(f"  [features_v2] form_archetype bulk pull HIT cache "
+              f"({min_date}..{max_date}, {len(cached)} rows)")
+        return cached
+
+    print(f"  [features_v2] form_archetype bulk pull MISS — pulling "
+          f"{min_date}..{max_date} from Statcast...")
+    t0 = time.time()
+    try:
+        from pybaseball import statcast
+        df = statcast(start_dt=min_date, end_dt=max_date, verbose=False)
+    except Exception as e:
+        print(f"  [features_v2] form_archetype bulk pull failed: {e}")
+        return None
+
+    elapsed = time.time() - t0
+    n_rows = 0 if df is None else len(df)
+    print(f"  [features_v2] form_archetype bulk pull complete — "
+          f"{n_rows} rows in {elapsed:.0f}s")
+    if df is not None and not df.empty:
+        _save_form_archetype_bulk_cache(min_date, max_date, df)
+    return df
+
+
 def compute_batter_form_archetype(
     player_ids: list[int],
     as_of_date: str | None = None,
     window_days: int = FORM_ARCHETYPE_DEFAULT_WINDOW,
+    _prefetched_df=None,
 ) -> dict[int, dict | None]:
     """Build per-batter pre-HR state-of-play centroids.
 
     For each batter in *player_ids*:
       1. Pull every HR they hit in the prior FORM_ARCHETYPE_LOOKBACK_SEASONS
          seasons, filtered to game_date < as_of_date (honest as-of-date).
-      2. For each HR, snapshot the state-of-play in the *window_days* days
-         BEFORE the HR. Bulk Statcast pull, then per-batter slice.
+      2. ONE bulk Statcast pull covering the full lookback span. Per-HR
+         windows are sliced from that frame IN-MEMORY — no per-batter,
+         per-HR API roundtrips.
       3. Mean-aggregate the snapshots into a 7-element centroid.
       4. If fewer than FORM_ARCHETYPE_MIN_HRS HRs feed the centroid, return
          None for that batter — caller skips via None propagation.
@@ -1343,15 +1437,18 @@ def compute_batter_form_archetype(
     *as_of_date* — YYYY-MM-DD. None (default) = today = production behavior.
     *window_days* — pre-HR snapshot window. 7 by default (sweep dimension
                     for the Phase 3 backtest harness).
+    *_prefetched_df* — optional pandas DataFrame already containing the
+                    full lookback Statcast span (covering all batters and
+                    all HR dates). When the multi-(date, window) backfill
+                    orchestrator pulls ONCE and shares the frame across
+                    iterations, it passes the prefetched frame here so this
+                    function never hits the network. Must contain a `batter`
+                    column (Statcast standard) and a `game_date` column.
 
-    Phase 1: this builder is callable but uncalled.
-    # TODO Phase 2: wire into etl/etl_nightly.py + etl/backfill_form_archetype.py.
-
-    NOTE: each HR triggers one bulk Statcast pull for the prior
-    *window_days*. For large batter lists, this can be slow — Phase 2 will
-    de-duplicate by date (one bulk pull per unique window-end-date) and
-    cache the per-batter slices. Phase 1 ships the simpler per-HR pull so
-    the math is verifiable on a small slate first.
+    Performance contract: at most ONE pybaseball.statcast() call per
+    invocation (cached for re-runs). NO statcast_batter() calls — the old
+    per-batter loop ran 12,000 API calls per (date, window) and was
+    abandoned 2026-05-26.
     """
     end_str = as_of_date or datetime.now().strftime("%Y-%m-%d")
     try:
@@ -1401,10 +1498,107 @@ def compute_batter_form_archetype(
         date = str(r["game_date"])
         hrs_by_batter.setdefault(bid, []).append(date)
 
-    # Step 2 + 3 + 4: per batter, build per-HR snapshots and aggregate.
+    # Step 2a: pre-filter to batters who pass the MIN_HRS gate. No point
+    # bulk-pulling Statcast for batters we're going to skip anyway, and the
+    # span computation should ignore those batters' HRs too.
+    qualifying_batters = [
+        pid for pid in player_ids
+        if len(hrs_by_batter.get(int(pid), [])) >= FORM_ARCHETYPE_MIN_HRS
+    ]
     for pid in player_ids:
+        if pid not in qualifying_batters:
+            out[pid] = None
+
+    if not qualifying_batters:
+        return out
+
+    # Step 2b: compute the span the bulk pull needs to cover.
+    # For each HR at `hr_date`, the per-HR snapshot uses [hr_date - window_days,
+    # hr_date - 1]. To be safe across all the windows we might be re-sliced
+    # for downstream (the sweep harness re-slices at 7/14/21d on the same
+    # backfill), pad the start by max(window_days, 21).
+    pad_days = max(window_days, 21)
+    all_hr_dates: list[datetime] = []
+    for pid in qualifying_batters:
+        for hr_date_str in hrs_by_batter.get(int(pid), []):
+            try:
+                all_hr_dates.append(datetime.strptime(hr_date_str, "%Y-%m-%d"))
+            except ValueError:
+                continue
+
+    if not all_hr_dates:
+        # No parseable HR dates among the qualifying batters — return
+        # everyone as None.
+        for pid in qualifying_batters:
+            out[pid] = None
+        return out
+
+    min_hr_date = min(all_hr_dates)
+    max_hr_date = max(all_hr_dates)
+    span_start = (min_hr_date - timedelta(days=pad_days)).strftime("%Y-%m-%d")
+    span_end = (max_hr_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Step 2c: bulk pull (or use the caller's prefetched frame).
+    if _prefetched_df is not None:
+        big_df = _prefetched_df
+    else:
+        big_df = _fetch_form_archetype_bulk_statcast(span_start, span_end)
+
+    if big_df is None or len(big_df) == 0:
+        # Bulk pull failed entirely — return None for everyone qualifying.
+        for pid in qualifying_batters:
+            out[pid] = None
+        return out
+
+    # Step 2d: group by batter once. pandas groupby is O(N) on the frame size,
+    # not on the batter-count; this is the one-time cost that replaces the
+    # 12,000-API-call per-batter loop.
+    try:
+        import pandas as pd  # noqa: F401
+        # The Statcast column is `batter` (the batter's MLBAM id).
+        if "batter" not in big_df.columns:
+            print("  [features_v2] form_archetype bulk frame missing "
+                  "`batter` column — cannot slice; returning None")
+            for pid in qualifying_batters:
+                out[pid] = None
+            return out
+        by_batter = big_df.groupby("batter")
+    except Exception as e:
+        print(f"  [features_v2] form_archetype groupby failed: {e}")
+        for pid in qualifying_batters:
+            out[pid] = None
+        return out
+
+    # Coerce game_date once. Statcast returns YYYY-MM-DD strings normally but
+    # some sources return Timestamp; normalize to ISO string for slicing.
+    def _date_str_series(s):
+        # In Statcast frames `game_date` is typically a date-like. Cast to
+        # str — ISO YYYY-MM-DD compares lexicographically the same as the
+        # date comparison would.
+        try:
+            return s.astype(str).str.slice(0, 10)
+        except Exception:
+            return s
+
+    # Step 3 + 4: per batter, build per-HR snapshots and aggregate.
+    for pid in qualifying_batters:
         hr_dates = hrs_by_batter.get(int(pid), [])
-        if len(hr_dates) < FORM_ARCHETYPE_MIN_HRS:
+
+        # Get this batter's slice of the bulk frame (or empty if absent).
+        try:
+            df_batter = by_batter.get_group(int(pid))
+        except KeyError:
+            # No pitch-level data for this batter in the span — they hit
+            # HRs but maybe the source data doesn't have their pitch logs.
+            out[pid] = None
+            continue
+
+        # Pre-compute the date column once per batter.
+        try:
+            df_batter = df_batter.assign(
+                _game_date_str=_date_str_series(df_batter["game_date"])
+            )
+        except Exception:
             out[pid] = None
             continue
 
@@ -1418,10 +1612,13 @@ def compute_batter_form_archetype(
                 continue
             window_start = (hr_dt - timedelta(days=window_days)).strftime("%Y-%m-%d")
             window_end = (hr_dt - timedelta(days=1)).strftime("%Y-%m-%d")
-            # Bulk pitch-level pull for one batter's pre-HR window.
+
+            # In-memory slice — no API call.
             try:
-                from pybaseball import statcast_batter
-                df_window = statcast_batter(window_start, window_end, int(pid))
+                df_window = df_batter[
+                    (df_batter["_game_date_str"] >= window_start)
+                    & (df_batter["_game_date_str"] <= window_end)
+                ]
             except Exception:
                 prev_hr = hr_date
                 continue

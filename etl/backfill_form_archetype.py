@@ -9,10 +9,12 @@ and INSERT OR REPLACE one row into batter_form_archetype keyed by
 (player_id, date_through, window_days).
 
 Modeled on etl/backfill_statcast_windows.py:
+  - ONE bulk pybaseball.statcast() pull at the start of the backfill,
+    shared across ALL (date, window) iterations. No per-batter, per-HR
+    API roundtrips. See features_v2.compute_batter_form_archetype.
   - Resume-safe: skip (date, window) pairs already densely populated.
   - --max-dates / --max-runtime for chunked runs (PR 4 pattern).
-  - One bulk Statcast pull per (batter, HR) inside the builder; this
-    script just orchestrates the (date, window, batter-list) walks.
+  - --reset to wipe partial centroids from a previous bad run.
 
 Phase 2 ships the orchestrator; nightly hook follows in Phase 3 once
 the backtest validates the signal. With USE_FORM_ARCHETYPE=False
@@ -24,12 +26,13 @@ Usage:
     python etl/backfill_form_archetype.py --start 2025-06-01 --end 2025-06-05
     python etl/backfill_form_archetype.py --window-days 7   # one window only
     python etl/backfill_form_archetype.py --max-dates 5 --max-runtime 1h
+    python etl/backfill_form_archetype.py --reset            # wipe before run
     python etl/backfill_form_archetype.py --dry-run
 
-Runtime: per (date, window), the builder issues one Statcast pull per HR
-per qualifying batter — slow. Full 188-date x 3-window run is estimated
-~6 hours on a warm pybaseball cache. Use --max-dates / --max-runtime to
-chunk into shorter sessions.
+Runtime: with the bulk-pull architecture, per-(date, window) work is
+in-memory groupby + slicing — seconds, not hours. The dominant cost is
+ONE Statcast pull for the full lookback span (~1 hour on a cold cache,
+free thereafter via the 24h disk cache).
 """
 
 from __future__ import annotations
@@ -187,8 +190,43 @@ def _already_done(
     return n_existing / n_batters > coverage_threshold
 
 
+def _reset_centroids(
+    conn: sqlite3.Connection,
+    start: str,
+    end: str,
+    windows: tuple[int, ...] | None = None,
+) -> int:
+    """Wipe batter_form_archetype rows in [start, end] (date_through inclusive).
+
+    Use after the 2026-05-26 per-batter-API-spam bug to clear the partial
+    bad data before the bulk-pull backfill writes fresh rows. Returns the
+    row count deleted.
+    """
+    if windows is None:
+        cur = conn.execute(
+            """
+            DELETE FROM batter_form_archetype
+            WHERE date_through >= ? AND date_through <= ?
+            """,
+            (start, end),
+        )
+    else:
+        placeholders = ",".join("?" * len(windows))
+        cur = conn.execute(
+            f"""
+            DELETE FROM batter_form_archetype
+            WHERE date_through >= ? AND date_through <= ?
+              AND window_days IN ({placeholders})
+            """,
+            (start, end, *windows),
+        )
+    n = cur.rowcount
+    conn.commit()
+    return n
+
+
 # ---------------------------------------------------------------------------
-# Per-(date, window) worker
+# Per-(date, window) worker — now with shared prefetched frame
 # ---------------------------------------------------------------------------
 
 def backfill_one_date_window(
@@ -198,12 +236,16 @@ def backfill_one_date_window(
     *,
     dry_run: bool = False,
     force: bool = False,
+    prefetched_df=None,
 ) -> dict:
     """Compute + write centroids for one as-of date, one window. Returns counts.
 
     INSERT OR REPLACE keyed on (player_id, date_through, window_days) — safe
     to re-run. Idempotent: a re-run with the same Statcast cache yields the
     same centroid bytes.
+
+    *prefetched_df* — when set, passed through to the builder so the
+    bulk Statcast pull is amortized across many (date, window) iterations.
     """
     t0 = time.time()
     batters = _batters_with_hr_through(conn, date_through)
@@ -241,6 +283,7 @@ def backfill_one_date_window(
         player_ids=batters,
         as_of_date=date_through,
         window_days=window_days,
+        _prefetched_df=prefetched_df,
     )
 
     n_written = 0
@@ -279,6 +322,75 @@ def backfill_one_date_window(
 
 
 # ---------------------------------------------------------------------------
+# Bulk-pull amortization across the entire backfill window
+# ---------------------------------------------------------------------------
+
+def _compute_full_backfill_span(
+    conn: sqlite3.Connection,
+    start: str,
+    end: str,
+    windows: tuple[int, ...],
+) -> tuple[str | None, str | None]:
+    """Return (span_start, span_end) covering EVERY HR that will be sliced
+    by any (date_through, window) iteration in this backfill.
+
+    The Statcast frame must cover [min(hr_date) - max_window, max(hr_date) - 1]
+    so every window slice for every iteration is in-memory.
+
+    *hr_date* range comes from batter_hr_events filtered by the lookback
+    season range relevant to the backfill window — same as the builder.
+
+    Returns (None, None) if the DB has no relevant HR events.
+    """
+    # Honest as-of-date: we need HRs strictly before `end`. The lookback
+    # range starts FORM_ARCHETYPE_LOOKBACK_SEASONS-1 seasons before `start`.
+    from features_v2 import FORM_ARCHETYPE_LOOKBACK_SEASONS
+    start_year = int(start[:4])
+    lookback_floor = f"{start_year - FORM_ARCHETYPE_LOOKBACK_SEASONS + 1}-03-01"
+
+    row = conn.execute(
+        """
+        SELECT MIN(game_date) AS lo, MAX(game_date) AS hi
+        FROM batter_hr_events
+        WHERE game_date >= ? AND game_date < ?
+        """,
+        (lookback_floor, end),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return (None, None)
+
+    lo_str, hi_str = str(row[0]), str(row[1])
+    try:
+        lo_dt = datetime.strptime(lo_str, "%Y-%m-%d")
+        hi_dt = datetime.strptime(hi_str, "%Y-%m-%d")
+    except ValueError:
+        return (None, None)
+
+    # Pad the start by the widest window (always 21 in the 3x3 sweep) so
+    # every per-HR slice [hr_date - window, hr_date - 1] is in-memory.
+    pad_days = max(max(windows), 21)
+    span_start = (lo_dt - timedelta(days=pad_days)).strftime("%Y-%m-%d")
+    span_end = (hi_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    return (span_start, span_end)
+
+
+def _prefetch_bulk_statcast(span_start: str, span_end: str):
+    """Wrapper around features_v2._fetch_form_archetype_bulk_statcast with
+    a more visible progress line — this is the dominant cost of the backfill.
+    """
+    from features_v2 import _fetch_form_archetype_bulk_statcast
+    t0 = time.time()
+    print()
+    print(f"  [bulk] pulling Statcast span {span_start}..{span_end} "
+          f"(ONE call, shared across ALL date×window iterations)...")
+    df = _fetch_form_archetype_bulk_statcast(span_start, span_end)
+    elapsed = time.time() - t0
+    n_rows = 0 if df is None else len(df)
+    print(f"  [bulk] pulled {span_start}..{span_end} — {n_rows} rows, took {_hms(elapsed)}")
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -292,11 +404,18 @@ def backfill_window(
     force: bool = False,
     max_dates: int | None = None,
     max_runtime_s: float | None = None,
+    reset: bool = False,
 ) -> dict:
     """Walk every date * window combo in [start, end]. Returns summary.
 
     *max_dates* counts DATES (not date×window pairs) processed before stop.
     *max_runtime_s* is wall-clock; checked between dates, not mid-date.
+    *reset* — if True, DELETE all batter_form_archetype rows in [start, end]
+              before backfilling. Use this after a botched run.
+
+    Architecture (post-2026-05-26): ONE bulk pybaseball.statcast() pull
+    at the start, shared in-memory across ALL (date, window) iterations.
+    No per-batter API calls.
     """
     conn_path = str(db_path) if db_path else str(DB_PATH)
     conn = sqlite3.connect(conn_path)
@@ -310,12 +429,37 @@ def backfill_window(
         "windows": list(windows),
         "dates_run": 0, "dates_skipped": 0, "dates_failed": 0,
         "total_centroids": 0,
+        "reset_rows_deleted": 0,
+        "bulk_pull_rows": 0,
+        "bulk_pull_seconds": 0.0,
         "stopped_reason": "completed",
         "last_completed": None,
     }
     t_start = time.time()
 
     try:
+        # Optional reset pass — wipe partial data from a previous bad run.
+        if reset and not dry_run:
+            n_deleted = _reset_centroids(conn, start, end, windows)
+            summary["reset_rows_deleted"] = n_deleted
+            print(f"  [reset] deleted {n_deleted} batter_form_archetype rows "
+                  f"in [{start}..{end}] for windows={list(windows)}")
+
+        # Bulk Statcast pull — ONCE, shared across all iterations.
+        prefetched_df = None
+        if not dry_run:
+            span_start, span_end = _compute_full_backfill_span(
+                conn, start, end, windows
+            )
+            if span_start and span_end:
+                t_bulk = time.time()
+                prefetched_df = _prefetch_bulk_statcast(span_start, span_end)
+                summary["bulk_pull_seconds"] = round(time.time() - t_bulk, 1)
+                if prefetched_df is not None:
+                    summary["bulk_pull_rows"] = len(prefetched_df)
+            else:
+                print("  [bulk] no HR events in lookback span — nothing to pull")
+
         for date_str in _date_range(start, end):
             if max_dates is not None and summary["dates_run"] >= max_dates:
                 summary["stopped_reason"] = f"max_dates={max_dates} reached"
@@ -336,6 +480,7 @@ def backfill_window(
                     r = backfill_one_date_window(
                         conn, date_str, w,
                         dry_run=dry_run, force=force,
+                        prefetched_df=prefetched_df,
                     )
                     if not r.get("skipped") and not r.get("dry_run"):
                         date_ran = True
@@ -391,6 +536,10 @@ def main() -> None:
                     help="report counts without calling the Statcast pull")
     ap.add_argument("--force", action="store_true",
                     help="re-run dates even if centroids already populated")
+    ap.add_argument("--reset", action="store_true",
+                    help="DELETE batter_form_archetype rows in [start, end] "
+                         "before backfilling. Use after the 2026-05-26 "
+                         "per-batter-API-spam bug to clear partial bad data.")
     ap.add_argument("--max-dates", type=int, default=None, metavar="N",
                     help="stop after N dates have been processed. Chunked "
                          "run support — same idiom as etl/backfill_2025.py.")
@@ -413,6 +562,7 @@ def main() -> None:
         force=args.force,
         max_dates=args.max_dates,
         max_runtime_s=max_runtime_s,
+        reset=args.reset,
     )
 
     print()
@@ -420,7 +570,7 @@ def main() -> None:
     print("  FORM-ARCHETYPE BACKFILL SUMMARY")
     print("=" * 70)
     for k, v in summary.items():
-        print(f"  {k:<18}  {v}")
+        print(f"  {k:<20}  {v}")
     if summary.get("last_completed"):
         print(
             f"\n  Resume with: python -m etl.backfill_form_archetype "
