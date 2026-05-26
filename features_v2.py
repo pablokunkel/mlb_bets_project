@@ -521,6 +521,304 @@ def fetch_batter_recent_statcast_14d(
 
 
 # ---------------------------------------------------------------------------
+# Batter park archetype centroid — Phase 1 (2026-05-25)
+# ---------------------------------------------------------------------------
+# Background: today's score_park is a handedness-weighted lookup of three
+# numbers per venue (hr_pf_overall / hr_pf_lhb / hr_pf_rhb). It says nothing
+# about whether THIS specific batter has historically gone deep in parks
+# that look like today's park. The archetype signal builds a per-batter
+# centroid of the park-feature vectors at their career HR venues, then
+# scores today's park by L2 distance to that centroid.
+#
+# See docs/park_archetype_design.md for the full math + rollout.
+#
+# Feature vector (6 elements). Pulled entirely from existing data — no
+# new sources in Phase 1. The wishlist features cf_distance / lf_distance
+# / rf_distance / cf_height / pull_lf_factor / oppo_rf_factor / elevation
+# / foul_territory_idx / roof_status are NOT in any existing table and
+# are deliberately dropped (documented in the design doc). If Phase 3
+# shows the 6-feature vector has signal but is leaving lift on the table,
+# the design commits to adding a park_dimensions table as a follow-up.
+PARK_FEATURE_KEYS: tuple[str, ...] = (
+    "hr_pf_overall",
+    "hr_pf_lhb",
+    "hr_pf_rhb",
+    "lhb_advantage",     # = hr_pf_lhb - hr_pf_rhb (dimension asymmetry)
+    "cf_bearing_sin",    # CF compass orientation, sin component
+    "cf_bearing_cos",    # CF compass orientation, cos component
+)
+
+# Below this career-HR count, the builder returns None and score_park
+# skips the archetype term. Swept in the harness at 5 / 10 / 20.
+PARK_ARCHETYPE_MIN_HRS = 10
+
+
+def _compute_park_feature_stats() -> dict[str, tuple[float, float]]:
+    """Compute (mean, std) per PARK_FEATURE_KEYS across the 30-park MLB
+    universe. Used to z-score features before L2 centroiding/distance.
+
+    Imports the seed park factors + CF bearings lazily so this module
+    doesn't pull pandas at import time when scoring runs (the lazy
+    import mirrors fetch_batter_recent_statcast_14d's pybaseball pattern).
+    """
+    try:
+        from etl.park_factors_seed import get_seed_dataframe
+        from score_batters import PARK_CF_BEARING
+    except Exception:
+        # Importable in any environment — return identity scaling if the
+        # seed module isn't reachable (returns mean 0, std 1 -> z-score
+        # is the raw value). Smoke test pin_park_archetype_constants
+        # verifies the stats dict is well-formed in a real environment.
+        return {k: (0.0, 1.0) for k in PARK_FEATURE_KEYS}
+
+    df = get_seed_dataframe()
+    import math
+    vectors: list[list[float]] = []
+    for _, row in df.iterrows():
+        venue = row["venue"]
+        bearing_deg = PARK_CF_BEARING.get(venue, 0)
+        rad = math.radians(bearing_deg)
+        vectors.append([
+            float(row["hr_pf_overall"]),
+            float(row["hr_pf_lhb"]),
+            float(row["hr_pf_rhb"]),
+            float(row["hr_pf_lhb"]) - float(row["hr_pf_rhb"]),
+            math.sin(rad),
+            math.cos(rad),
+        ])
+    if not vectors:
+        return {k: (0.0, 1.0) for k in PARK_FEATURE_KEYS}
+
+    stats: dict[str, tuple[float, float]] = {}
+    for j, key in enumerate(PARK_FEATURE_KEYS):
+        col = [v[j] for v in vectors]
+        mean = sum(col) / len(col)
+        var = sum((x - mean) ** 2 for x in col) / len(col)
+        std = var ** 0.5 if var > 0 else 1.0
+        stats[key] = (mean, std)
+    return stats
+
+
+# Computed once at import time. Stable per (park_factors_seed +
+# PARK_CF_BEARING) pair; refresh manually if either changes.
+PARK_FEATURE_STATS: dict[str, tuple[float, float]] = _compute_park_feature_stats()
+
+
+def build_park_feature_vector(
+    venue: str,
+    park_factors_lookup: dict[str, dict] | None = None,
+) -> list[float] | None:
+    """Build the 6-element standardized park-feature vector for *venue*.
+
+    Returns the z-scored vector (one float per PARK_FEATURE_KEYS entry)
+    or None if the venue isn't in the park-factors lookup. Used both by
+    `compute_batter_park_archetype` (centroiding HR venues) and by
+    `_compute_park_archetype_match` (scoring today's park against
+    a batter's centroid).
+
+    *park_factors_lookup* — optional pre-built dict
+        {venue: {"hr_pf_overall": ..., "hr_pf_lhb": ..., "hr_pf_rhb": ...}}.
+        When None, loads the seed table on the fly.
+    """
+    import math
+
+    if park_factors_lookup is None:
+        try:
+            from etl.park_factors_seed import get_seed_dataframe
+            df = get_seed_dataframe()
+            park_factors_lookup = {
+                str(r["venue"]): {
+                    "hr_pf_overall": float(r["hr_pf_overall"]),
+                    "hr_pf_lhb": float(r["hr_pf_lhb"]),
+                    "hr_pf_rhb": float(r["hr_pf_rhb"]),
+                }
+                for _, r in df.iterrows()
+            }
+        except Exception:
+            return None
+
+    pf = park_factors_lookup.get(venue)
+    if pf is None:
+        return None
+
+    try:
+        from score_batters import PARK_CF_BEARING
+        bearing_deg = PARK_CF_BEARING.get(venue, 0)
+    except Exception:
+        bearing_deg = 0
+    rad = math.radians(bearing_deg)
+
+    raw = {
+        "hr_pf_overall": pf["hr_pf_overall"],
+        "hr_pf_lhb": pf["hr_pf_lhb"],
+        "hr_pf_rhb": pf["hr_pf_rhb"],
+        "lhb_advantage": pf["hr_pf_lhb"] - pf["hr_pf_rhb"],
+        "cf_bearing_sin": math.sin(rad),
+        "cf_bearing_cos": math.cos(rad),
+    }
+
+    out: list[float] = []
+    for key in PARK_FEATURE_KEYS:
+        mean, std = PARK_FEATURE_STATS.get(key, (0.0, 1.0))
+        z = (raw[key] - mean) / std if std > 0 else 0.0
+        out.append(z)
+    return out
+
+
+def _build_park_factors_lookup() -> dict[str, dict]:
+    """Load park factors keyed by venue from the seed table (or the DB
+    if that ever gets richer). Lazy + defensive: returns {} on error so
+    callers degrade to None rather than crash."""
+    try:
+        from etl.park_factors_seed import get_seed_dataframe
+        df = get_seed_dataframe()
+        return {
+            str(r["venue"]): {
+                "hr_pf_overall": float(r["hr_pf_overall"]),
+                "hr_pf_lhb": float(r["hr_pf_lhb"]),
+                "hr_pf_rhb": float(r["hr_pf_rhb"]),
+            }
+            for _, r in df.iterrows()
+        }
+    except Exception as e:
+        print(f"  [features_v2] park factors lookup failed: {e}")
+        return {}
+
+
+def compute_batter_park_archetype(
+    player_ids: list[int],
+    as_of_date: str | None = None,
+    season: int | None = None,
+    db_path: str | None = None,
+) -> dict[int, dict]:
+    """Build per-batter park-feature centroids from career HRs.
+
+    Returns {player_id: {"centroid": list[float] | None, "n_hrs_used": int}}.
+    For each batter in *player_ids*:
+
+      1. Fetch every HR event with game_date < as_of_date (honest as-of-date).
+      2. JOIN to daily_slate.venue via game_pk to learn each HR's venue.
+         HRs whose venue can't be resolved are dropped.
+      3. For each HR, build the standardized 6-element park-feature vector
+         and weight it by `1 / park_neutral_hr_factor` (HRs at Coors get
+         less weight than HRs at Petco — the design's per-HR weighting
+         policy, see docs/park_archetype_design.md).
+      4. Centroid = weighted mean of those vectors.
+
+    None+skip policy: if a batter has fewer than PARK_ARCHETYPE_MIN_HRS
+    HRs (with resolvable venues) before *as_of_date*, the centroid is
+    returned as None. The caller (score_park) treats None as "skip the
+    archetype term" — NOT a league-average fallback. See
+    docs/park_archetype_design.md for the rationale.
+
+    *as_of_date* — YYYY-MM-DD. None (default) = today = production behavior.
+    *season*     — currently unused (kept for signature consistency with
+                   the rest of the features_v2 builders); HR events span
+                   career, not season.
+    *db_path*    — override for test injection. None = production DB.
+
+    The function is callable today (Phase 1) and returns real centroids
+    when fed a populated DB. It is NOT wired into nightly ETL until Phase 2
+    — see the # TODO Phase 2: marker in etl/etl_nightly.py.
+    """
+    out: dict[int, dict] = {}
+    want = {int(b) for b in player_ids if b and b > 0}
+    if not want:
+        return out
+
+    cutoff = as_of_date or datetime.now().strftime("%Y-%m-%d")
+
+    # Resolve DB path (matches etl.db.DB_PATH lookup but avoids circular
+    # import at module load by deferring it).
+    try:
+        from etl.db import DB_PATH as _DB_PATH
+        path = db_path or str(_DB_PATH)
+    except Exception:
+        return {bid: {"centroid": None, "n_hrs_used": 0} for bid in want}
+
+    park_lookup = _build_park_factors_lookup()
+    if not park_lookup:
+        return {bid: {"centroid": None, "n_hrs_used": 0} for bid in want}
+
+    # Pre-compute (vector, weight) per venue once; HRs at the same venue
+    # share the per-event payload.
+    venue_payload: dict[str, tuple[list[float], float]] = {}
+    for venue, pf in park_lookup.items():
+        vec = build_park_feature_vector(venue, park_lookup)
+        if vec is None:
+            continue
+        # park_neutral_hr_factor = hr_pf_overall / 100. Weight = 1 / factor
+        # so HRs at high-factor parks (Coors=130) contribute less.
+        factor = pf["hr_pf_overall"] / 100.0
+        weight = 1.0 / factor if factor > 0 else 1.0
+        venue_payload[venue] = (vec, weight)
+
+    import sqlite3
+    from pathlib import Path as _Path
+    if not _Path(path).exists():
+        return {bid: {"centroid": None, "n_hrs_used": 0} for bid in want}
+
+    try:
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        want_list = sorted(want)
+        placeholders = ", ".join("?" for _ in want_list)
+        rows = conn.execute(
+            f"""
+            SELECT bhe.batter_id, COALESCE(ds.venue, '') AS venue
+            FROM batter_hr_events bhe
+            LEFT JOIN daily_slate ds ON ds.game_pk = bhe.game_pk
+            WHERE bhe.game_date < ?
+              AND bhe.batter_id IN ({placeholders})
+            """,
+            (cutoff, *want_list),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"  [features_v2] park-archetype DB read failed: {e}")
+        return {bid: {"centroid": None, "n_hrs_used": 0} for bid in want}
+
+    # Group HRs by batter, collect weighted vectors for each.
+    per_batter_events: dict[int, list[tuple[list[float], float]]] = {}
+    for r in rows:
+        bid = int(r["batter_id"])
+        if bid not in want:
+            continue
+        venue = r["venue"]
+        if not venue:
+            continue
+        payload = venue_payload.get(venue)
+        if payload is None:
+            continue
+        per_batter_events.setdefault(bid, []).append(payload)
+
+    for bid in want:
+        events = per_batter_events.get(bid, [])
+        if len(events) < PARK_ARCHETYPE_MIN_HRS:
+            # None+skip policy. The caller treats None as "no signal, fall
+            # back to base handedness park-factor logic." Don't insert a
+            # league-mean fallback here.
+            out[bid] = {"centroid": None, "n_hrs_used": len(events)}
+            continue
+
+        # Weighted mean across the (vector, weight) pairs.
+        dim = len(PARK_FEATURE_KEYS)
+        accum = [0.0] * dim
+        total_w = 0.0
+        for vec, w in events:
+            for j, v in enumerate(vec):
+                accum[j] += w * v
+            total_w += w
+        if total_w <= 0:
+            out[bid] = {"centroid": None, "n_hrs_used": len(events)}
+            continue
+        centroid = [a / total_w for a in accum]
+        out[bid] = {"centroid": centroid, "n_hrs_used": len(events)}
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Vegas implied team totals (the-odds-api.com)
 # ---------------------------------------------------------------------------
 

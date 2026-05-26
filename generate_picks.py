@@ -1438,6 +1438,14 @@ def score_live_slate(
         if recent14.get("recent_iso_14d") is not None:
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
+        # Phase 1 (2026-05-25): park-archetype sub-signal centroid.
+        # Default to None — score_park's USE_PARK_ARCHETYPE guard is off
+        # this PR, so the key is read-but-ignored. Phase 2 populates it
+        # via features_v2.compute_batter_park_archetype.
+        # TODO Phase 2: wire bulk_park_archetype = slate.get("bulk_park_archetype")
+        # and overwrite from the dict.
+        entry["park_archetype_centroid"] = None
+
         # Get archetype profiles for v2 matchup scoring
         vp = victim_profiles.get(player_id)
         pp = pitcher_profiles.get(opp_pitcher_name)
@@ -1665,6 +1673,13 @@ def score_untiered_starters(
         if recent14.get("recent_iso_14d") is not None:
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
+        # Phase 1 (2026-05-25): park-archetype centroid. Default to None
+        # on the untiered path too. T4 batters tend to have very thin
+        # career HR samples — the PARK_ARCHETYPE_MIN_HRS gate in the
+        # Phase 2 builder will drop most T4 entries to None automatically,
+        # which is the None+skip path through score_park.
+        entry["park_archetype_centroid"] = None
+
         pp = pitcher_profiles.get(opp_pitcher_name)
 
         result = compute_composite(
@@ -1773,6 +1788,10 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                     "recent_barrel_real_14d": None,
                     "recent_xwoba_contact_14d": None,
                     "recent_iso_14d": None,
+                    # Phase 1 (2026-05-25): park-archetype centroid.
+                    # Offline sim has no HR-event history -> None. With
+                    # USE_PARK_ARCHETYPE off this is ignored anyway.
+                    "park_archetype_centroid": None,
                 }
                 result = compute_composite(
                     entry, opp, venue, weather, pf, config_name,
