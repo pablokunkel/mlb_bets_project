@@ -2811,9 +2811,13 @@ def pin_backtest_park_archetype_skeleton_imports() -> Result:
         if not hasattr(bpa, name):
             failures.append(f"missing {name}")
     if hasattr(bpa, "VARIANTS"):
+        # Phase 2 (2026-05-25) renamed the weighted variants from
+        # _low/_high to _0.25/_0.75 and added _resolve_weighted_thresholds
+        # so main() anchors them to the AUC-winning threshold from the
+        # 5/10/20 sweep.
         expected = {
             "default", "archetype_5hr", "archetype_10hr", "archetype_20hr",
-            "archetype_weighted_low", "archetype_weighted_high",
+            "archetype_weighted_0.25", "archetype_weighted_0.75",
         }
         got = set(bpa.VARIANTS)
         if got != expected:
@@ -2827,6 +2831,302 @@ def pin_backtest_park_archetype_skeleton_imports() -> Result:
         "backtest_park_archetype skeleton", Result.HALT, "; ".join(failures),
     )
 
+
+# ---------------------------------------------------------------------------
+# Park archetype Phase 2 pins (2026-05-25)
+# ---------------------------------------------------------------------------
+
+def pin_backfill_park_archetype_cli_present() -> Result:
+    """Phase 2: etl/backfill_park_archetype imports + exposes the chunked
+    CLI flags from backfill_2025 (--start / --end / --max-dates /
+    --max-runtime). Run via subprocess --help so we don't hit the DB."""
+    import subprocess
+    proj = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "etl.backfill_park_archetype", "--help"],
+            capture_output=True, text=True, timeout=30, cwd=str(proj),
+        )
+    except Exception as e:
+        return Result(
+            "backfill_park_archetype --help", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    if result.returncode != 0:
+        return Result(
+            "backfill_park_archetype --help",
+            Result.HALT,
+            f"exit {result.returncode}: {result.stderr[:300]}",
+        )
+    help_text = result.stdout
+    missing = [f for f in ("--start", "--end", "--max-dates", "--max-runtime")
+               if f not in help_text]
+    if missing:
+        return Result(
+            "backfill_park_archetype CLI flags", Result.HALT,
+            f"missing flags: {missing}",
+        )
+    return Result(
+        "backfill_park_archetype: --start/--end/--max-dates/--max-runtime wired",
+        Result.PASS,
+    )
+
+
+def pin_backfill_park_archetype_idempotent() -> Result:
+    """Phase 2: backfill_one_date is idempotent on (player_id, date_through).
+    Running it twice over the same date is safe (INSERT OR REPLACE)."""
+    import tempfile
+    import gc
+    tmp_dir = tempfile.mkdtemp(prefix="pin_bpa_idem_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    try:
+        from etl.db import create_tables
+        from etl.backfill_park_archetype import backfill_one_date
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            # Single batter, single venue HR -- below 10-HR threshold so
+            # the centroid stays None but the row is still persisted.
+            conn.execute(
+                "INSERT INTO batter_hr_events "
+                "(batter_id, pitcher_id, game_date, game_pk) "
+                "VALUES (?, ?, ?, ?)",
+                (501, 999, "2025-04-15", 700001),
+            )
+            conn.execute(
+                "INSERT INTO daily_slate (game_pk, date, venue) "
+                "VALUES (?, ?, ?)",
+                (700001, "2025-04-15", "Yankee Stadium"),
+            )
+            conn.commit()
+
+            # First pass.
+            r1 = backfill_one_date(conn, "2025-06-01", tmp_path)
+            # Second pass with same args -- should not duplicate rows.
+            r2 = backfill_one_date(conn, "2025-06-01", tmp_path)
+
+            n_rows = conn.execute(
+                "SELECT COUNT(*) FROM batter_park_archetype "
+                "WHERE date_through = '2025-06-01' AND player_id = 501"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    finally:
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass
+
+    if n_rows != 1:
+        return Result(
+            "backfill_park_archetype idempotence", Result.HALT,
+            f"expected 1 row after 2 backfill calls, got {n_rows}",
+        )
+    if r1["batters"] != r2["batters"]:
+        return Result(
+            "backfill_park_archetype idempotence", Result.HALT,
+            f"counts diverged: r1={r1}, r2={r2}",
+        )
+    return Result(
+        "backfill_park_archetype: re-run is idempotent (INSERT OR REPLACE)",
+        Result.PASS,
+    )
+
+
+def pin_pick_inputs_park_archetype_columns_exist() -> Result:
+    """Phase 2: pick_inputs has park_archetype_centroid_json +
+    park_archetype_n_hrs after create_tables migration. NULL-safe additive."""
+    import tempfile
+    import gc
+    tmp_dir = tempfile.mkdtemp(prefix="pin_pi_pa_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    try:
+        from etl.db import create_tables
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(pick_inputs)"
+            ).fetchall()}
+        finally:
+            conn.close()
+    finally:
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass
+
+    missing = [c for c in (
+        "park_archetype_centroid_json", "park_archetype_n_hrs",
+    ) if c not in cols]
+    if missing:
+        return Result(
+            "pick_inputs park_archetype columns", Result.HALT,
+            f"missing: {missing}",
+        )
+    return Result(
+        "pick_inputs.park_archetype_centroid_json + park_archetype_n_hrs added",
+        Result.PASS,
+    )
+
+
+def pin_backtest_park_archetype_runs_against_populated_db() -> Result:
+    """Phase 2: harness runs against a populated DB and produces the
+    6-variant grid with non-zero counts. Builds a tiny synthetic DB
+    (5 dates, ~30 batters, mixed venues) so we can validate the wiring
+    without depending on the production data layer."""
+    import tempfile
+    import gc
+    import subprocess
+    import json as _json
+    import random
+
+    tmp_dir = tempfile.mkdtemp(prefix="pin_bpa_run_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    proj = Path(__file__).resolve().parent.parent
+    try:
+        from etl.db import create_tables
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            # Build a small set of HRs across 5 venues so 3+ batters
+            # clear the 5-HR threshold on dates after 2025-04-15.
+            venues = ["Yankee Stadium", "Fenway Park", "Coors Field",
+                      "Petco Park", "Oracle Park"]
+            random.seed(42)
+            game_pk_seed = 800000
+            for bid in range(601, 630):  # 29 batters
+                n_hrs = 6 + (bid % 8)  # 6..13 HRs per batter
+                for h in range(n_hrs):
+                    gpk = game_pk_seed
+                    game_pk_seed += 1
+                    venue = venues[(bid + h) % len(venues)]
+                    game_date = f"2025-04-{(h % 14) + 1:02d}"
+                    conn.execute(
+                        "INSERT INTO batter_hr_events "
+                        "(batter_id, pitcher_id, game_date, game_pk) "
+                        "VALUES (?, ?, ?, ?)",
+                        (bid, 999, game_date, gpk),
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO daily_slate "
+                        "(game_pk, date, venue) VALUES (?, ?, ?)",
+                        (gpk, game_date, venue),
+                    )
+
+            # Generate pick_inputs + daily_picks + daily_slate + outcomes
+            # for 5 evaluation dates (2025-05-01..05) against those same
+            # batters. The harness JOINs through daily_picks -> daily_slate
+            # to resolve venue, so all three need rows.
+            for d_offset in range(5):
+                eval_date = f"2025-05-{d_offset + 1:02d}"
+                for bid in range(601, 630):
+                    # Half the batters "hit a HR" on each date.
+                    hit_hr = 1 if (bid + d_offset) % 2 == 0 else 0
+                    venue = venues[(bid + d_offset) % len(venues)]
+                    eval_gpk = 900000 + d_offset * 100 + (bid % 30)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO daily_slate "
+                        "(game_pk, date, venue) VALUES (?, ?, ?)",
+                        (eval_gpk, eval_date, venue),
+                    )
+                    conn.execute(
+                        "INSERT INTO pick_inputs "
+                        "(date, batter_id, bats) "
+                        "VALUES (?, ?, ?)",
+                        (eval_date, bid, "R"),
+                    )
+                    conn.execute(
+                        "INSERT INTO daily_picks "
+                        "(date, batter_id, batter_name, game_pk, tier) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (eval_date, bid, f"Batter {bid}", eval_gpk, 1),
+                    )
+                    conn.execute(
+                        "INSERT INTO outcomes "
+                        "(date, batter_id, hr_count, game_pk) "
+                        "VALUES (?, ?, ?, ?)",
+                        (eval_date, bid, hit_hr, eval_gpk),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Run the backfill to populate batter_park_archetype.
+        bf = subprocess.run(
+            [sys.executable, "-m", "etl.backfill_park_archetype",
+             "--start", "2025-05-01", "--end", "2025-05-05",
+             "--db", tmp_path],
+            capture_output=True, text=True, timeout=60, cwd=str(proj),
+        )
+        if bf.returncode != 0:
+            return Result(
+                "backfill_park_archetype run", Result.HALT,
+                f"exit {bf.returncode}: {bf.stderr[:400]}",
+            )
+
+        # Decorate pick_inputs by JOINing back from batter_park_archetype.
+        # Mimics load_picks_to_db's enrichment without exercising the full
+        # picks-JSON flow.
+        conn = sqlite3.connect(tmp_path)
+        try:
+            conn.execute("""
+                UPDATE pick_inputs SET
+                  park_archetype_centroid_json = (
+                    SELECT feature_centroid_json FROM batter_park_archetype
+                    WHERE player_id = pick_inputs.batter_id
+                      AND date_through = pick_inputs.date
+                  ),
+                  park_archetype_n_hrs = (
+                    SELECT n_hrs_used FROM batter_park_archetype
+                    WHERE player_id = pick_inputs.batter_id
+                      AND date_through = pick_inputs.date
+                  )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Run the harness.
+        out = subprocess.run(
+            [sys.executable, "-m", "diagnostics.backtest_park_archetype",
+             "--start", "2025-05-01", "--end", "2025-05-05",
+             "--db", tmp_path],
+            capture_output=True, text=True, timeout=60, cwd=str(proj),
+        )
+        if out.returncode != 0:
+            return Result(
+                "backtest_park_archetype run", Result.HALT,
+                f"exit {out.returncode}: stderr={out.stderr[:300]} "
+                f"stdout={out.stdout[:300]}",
+            )
+        # Sanity: the report contains all 6 variant rows.
+        missing = [v for v in (
+            "default", "archetype_5hr", "archetype_10hr", "archetype_20hr",
+            "archetype_weighted_0.25", "archetype_weighted_0.75",
+        ) if v not in out.stdout]
+        if missing:
+            return Result(
+                "backtest_park_archetype variant grid", Result.HALT,
+                f"missing variants in report: {missing}; "
+                f"got: {out.stdout[:600]}",
+            )
+    finally:
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass
+
+    return Result(
+        "backtest_park_archetype: 6 variants render against populated DB",
+        Result.PASS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3833,6 +4133,11 @@ PIN_TESTS: list[Callable[[], Result]] = [
     # 2026-05-26: URGENT — bulk Statcast pull (no per-batter API spam)
     pin_compute_batter_form_archetype_bulk_pull_at_most_once,
     pin_backfill_form_archetype_reset_flag,
+    # 2026-05-25: Phase 2 — park archetype backfill + harness wiring
+    pin_backfill_park_archetype_cli_present,
+    pin_backfill_park_archetype_idempotent,
+    pin_pick_inputs_park_archetype_columns_exist,
+    pin_backtest_park_archetype_runs_against_populated_db,
 ]
 
 
