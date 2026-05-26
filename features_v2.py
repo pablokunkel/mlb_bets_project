@@ -551,6 +551,94 @@ def fetch_batter_recent_statcast_14d(
 PITCH_TYPE_SPLIT_MIN_BB = 30
 
 
+# Statcast pitch-type code -> bucket. Mirrors pitcher_profile.FASTBALL_TYPES
+# / BREAKING_TYPES / OFFSPEED_TYPES exactly. Codes not in any set (unknown,
+# eephus when not classified, etc.) silently drop from the aggregation.
+_PITCH_BUCKET = {
+    # FB — fastballs (4-seam, 2-seam/sinker, cutter, generic FB)
+    "FF": "fb", "FT": "fb", "SI": "fb", "FC": "fb", "FA": "fb",
+    # BR — breaking (slider, curve, knuckle-curve, slurve, sweeper)
+    "SL": "br", "CU": "br", "KC": "br", "SV": "br", "ST": "br",
+    "CS": "br", "EP": "br",
+    # OS — offspeed (changeup, splitter, screwball, knuckleball, forkball)
+    "CH": "os", "FS": "os", "SP": "os", "KN": "os", "FO": "os", "SC": "os",
+}
+
+# Statcast `events` -> total bases on hit. Non-hit events return 0.
+_HIT_TB = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+
+# PA-ending events that count as an at-bat (excludes BB/HBP/SF/SH/CI).
+# Reuses the same definition _aggregate_recent_statcast uses for 14d ISO.
+_PITCH_SPLIT_AB_EVENTS = {
+    "single", "double", "triple", "home_run",
+    "field_out", "strikeout", "force_out",
+    "grounded_into_double_play", "fielders_choice",
+    "fielders_choice_out", "double_play", "triple_play",
+    "field_error", "strikeout_double_play",
+    "sac_fly_double_play",
+}
+
+
+def _aggregate_pitch_type_splits(df, player_ids: set[int] | None = None) -> dict[int, dict]:
+    """Aggregate a pitch-level Statcast DataFrame to per-batter FB/BR/OS SLG.
+
+    For each (batter, bucket), counts AB events with a pitch in that bucket
+    and computes SLG = (1B + 2*2B + 3*3B + 4*HR) / AB. Returns:
+
+        {player_id: {fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa}}
+
+    *player_ids* — optional filter set; rows for other batters are dropped
+    before aggregation. Skipped batters produce no entry (caller handles).
+
+    Pure-function so backfill / production can call it on any DataFrame.
+    Empty df -> {}; missing pitch_type -> bucket drop, not error.
+    """
+    if df is None or getattr(df, "empty", True):
+        return {}
+    if "batter" not in df.columns or "pitch_type" not in df.columns:
+        return {}
+
+    # Keep only PA-ending rows (`events` is non-null on the last pitch of a
+    # PA). Statcast emits a row per pitch — we only want one row per AB.
+    pa = df.dropna(subset=["events", "batter", "pitch_type"]).copy()
+    if pa.empty:
+        return {}
+
+    pa["batter"] = pa["batter"].astype("int64", errors="ignore")
+    if player_ids is not None:
+        pa = pa[pa["batter"].isin(player_ids)]
+        if pa.empty:
+            return {}
+
+    # Map pitch_type -> bucket. Rows with unknown pitch_type drop out.
+    pa["_bucket"] = pa["pitch_type"].map(_PITCH_BUCKET)
+    pa = pa.dropna(subset=["_bucket"])
+    if pa.empty:
+        return {}
+
+    out: dict[int, dict] = {}
+    for bid, grp in pa.groupby("batter"):
+        bid = int(bid)
+        entry: dict = {}
+        for bucket in ("fb", "br", "os"):
+            sub = grp[grp["_bucket"] == bucket]
+            if sub.empty:
+                entry[f"{bucket}_slg"] = None
+                entry[f"{bucket}_pa"] = 0
+                continue
+            ab_mask = sub["events"].isin(_PITCH_SPLIT_AB_EVENTS)
+            n_ab = int(ab_mask.sum())
+            if n_ab <= 0:
+                entry[f"{bucket}_slg"] = None
+                entry[f"{bucket}_pa"] = 0
+                continue
+            tb = int(sum(_HIT_TB.get(e, 0) for e in sub.loc[ab_mask, "events"]))
+            entry[f"{bucket}_slg"] = round(tb / n_ab, 4)
+            entry[f"{bucket}_pa"] = n_ab
+        out[bid] = entry
+    return out
+
+
 def fetch_batter_pitch_type_splits(
     player_ids: list[int],
     as_of_date: str | None = None,
@@ -562,34 +650,81 @@ def fetch_batter_pitch_type_splits(
     Season-to-date through (as_of_date - 1 day); strictly excludes
     games on/after as_of_date so historical reconstruction is honest.
 
+    *player_ids* — list of MLBAM batter IDs. Empty list short-circuits to {}.
     *as_of_date* — YYYY-MM-DD. None (default) = today = production behavior.
     *season*     — int. None (default) = derive from as_of_date or today.
 
-    **Phase 1 (this PR): signature + skeleton only.** The body is a
-    `# TODO Phase 2:` stub that returns {}. Phase 2 will wire this to
-    the bulk-Statcast-pull-and-slice pattern used by
-    fetch_batter_recent_statcast_14d:
+    Pipeline (one bulk Statcast pull per call, sliced + aggregated in
+    memory — same shape as fetch_batter_recent_statcast_14d):
 
-      1. Bulk-pull pitch-level Statcast for the season window
-         [season-03-20, as_of_date) via `pybaseball.statcast(start, end)`.
-      2. Group by batter and pitch_type, aggregate to per-bucket
-         (FB/BR/OS) SLG via the standard (TB / AB) formula.
-      3. Stamp `*_pa` with the batted-ball count for sample-size gating.
-      4. Cache to data/cache/features_v2/pitch_type_splits/ with
-         cache key including as_of_date (24h TTL, mirrors
-         fetch_batter_recent_statcast_14d).
+      1. Bulk-pull `pybaseball.statcast(season-03-20, as_of_date - 1d)`.
+      2. Filter to the requested player_ids.
+      3. Aggregate per-batter via _aggregate_pitch_type_splits — one row
+         per (batter, bucket) with SLG = TB/AB and *_pa = AB count.
+      4. Cache to data/cache/features_v2/pitch_type_splits/ keyed on
+         (player-set-hash, as_of_date) so the 2025 backfill targets
+         historical dates without colliding with daily noon-run cache.
 
-    Phase 2 will also persist the result to `batter_pitch_type_splits`
-    in SQLite and to `pick_inputs.{fb_slg, br_slg, os_slg}` for the
-    backtest harness.
-
-    Until Phase 2 lands, callers get an empty dict — and the scoring
-    path skips the arsenal sub-signal via its USE_ARSENAL_SUBSIGNAL=False
-    guard, so this no-op is safe in production.
+    Returns {} on any pull / aggregation failure — score_matchup's None+skip
+    policy (`_compute_xslg_vs_arsenal` returns None when ANY group is below
+    PITCH_TYPE_SPLIT_MIN_BB) absorbs missing entries cleanly.
     """
-    # TODO Phase 2: implement bulk Statcast pull + per-batter aggregation.
-    # See features_v2.fetch_batter_recent_statcast_14d for the pattern.
-    return {}
+    if not player_ids:
+        return {}
+
+    # Resolve dates.
+    end_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        print(f"  [features_v2] bad as_of_date {end_date!r}; using today")
+        end_dt = datetime.now()
+        end_date = end_dt.strftime("%Y-%m-%d")
+    if season is None:
+        season = end_dt.year
+    # Window: [season-03-20, as_of_date - 1d] inclusive on both ends.
+    # Strictly-before as_of_date semantics so games ON that date are excluded
+    # (matches the 14d window convention and the as_of_date doc).
+    start_str = f"{season}-03-20"
+    last_completed = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Defensive: if as_of_date is before season-03-20, return empty rather
+    # than ask pybaseball for a negative-width window.
+    if last_completed < start_str:
+        return {}
+
+    player_set = set(int(p) for p in player_ids if p)
+    if not player_set:
+        return {}
+
+    # Cache key: hash the player-set so distinct slates don't collide.
+    # Same date + same player set = cache hit.
+    import hashlib
+    pid_hash = hashlib.md5(
+        ",".join(str(p) for p in sorted(player_set)).encode()
+    ).hexdigest()[:10]
+    cache_key = f"pitch_type_splits_{season}_{end_date}_{pid_hash}"
+    cached = _cache_get("pitch_type_splits", cache_key, TTL_RECENT_STATCAST)
+    if cached is not None:
+        return {int(k): v for k, v in cached.items()}
+
+    try:
+        from pybaseball import statcast
+        df = statcast(start_dt=start_str, end_dt=last_completed, verbose=False)
+    except Exception as e:
+        print(
+            f"  [features_v2] bulk pitch-type-splits Statcast fetch failed "
+            f"({start_str}..{last_completed}): {e}"
+        )
+        return {}
+
+    out = _aggregate_pitch_type_splits(df, player_ids=player_set)
+
+    if out:
+        _cache_set(
+            "pitch_type_splits", cache_key,
+            {str(k): v for k, v in out.items()},
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------

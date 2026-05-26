@@ -1431,6 +1431,17 @@ def compute_composite(
         # batter dict by generate_picks.load_season_hr_lookup; persisted
         # here so backtest_factors.rescore_row can apply the same floor.
         "season_hr":               batter.get("season_hr"),
+        # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal
+        # inputs. Batter season-to-date SLG against each bucket + AB count.
+        # Set on the batter dict by fetch_batter_pitch_type_splits via
+        # generate_picks; persist here so backtest_arsenal_inputs.py can
+        # replay variants off pick_inputs without re-pulling Statcast.
+        "fb_slg":                  batter.get("fb_slg"),
+        "fb_pa":                   batter.get("fb_pa"),
+        "br_slg":                  batter.get("br_slg"),
+        "br_pa":                   batter.get("br_pa"),
+        "os_slg":                  batter.get("os_slg"),
+        "os_pa":                   batter.get("os_pa"),
     }
 
     return {

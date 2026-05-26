@@ -140,8 +140,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source,
-            season_hr
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?)
+            season_hr,
+            fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -281,6 +282,19 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     # and backtest_factors.rescore_row falls through to its
                     # legacy behavior for those rows.
                     inputs.get("season_hr"),
+                    # Phase 2 (2026-05-25): pitch-type archetype matchup
+                    # sub-signal inputs. NULL on rows where
+                    # fetch_batter_pitch_type_splits returned nothing for
+                    # the batter (thin season-to-date sample or empty pull).
+                    # _compute_xslg_vs_arsenal's None+skip policy absorbs
+                    # NULLs; backtest_arsenal_inputs reads these directly
+                    # to replay variants without re-pulling Statcast.
+                    inputs.get("fb_slg"),
+                    inputs.get("fb_pa"),
+                    inputs.get("br_slg"),
+                    inputs.get("br_pa"),
+                    inputs.get("os_slg"),
+                    inputs.get("os_pa"),
                 ))
                 n_inputs += 1
             except Exception:

@@ -498,6 +498,19 @@ def create_tables(conn: sqlite3.Connection):
         recent_xwoba_contact_14d REAL,   -- mean est_woba_using_speedangle on contact
         recent_iso_14d           REAL,   -- (TB - H) / AB in window
 
+        -- Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal
+        -- inputs. Batter's season-to-date SLG against each bucket (FB / BR
+        -- / OS), with the AB-with-pitch-in-bucket count for sample-size
+        -- gating. Populated by features_v2.fetch_batter_pitch_type_splits
+        -- via etl/backfill_pitch_type_splits.py + load_picks_to_db.py.
+        -- See docs/pitch_type_archetype_design.md.
+        fb_slg                  REAL,    -- SLG on FB-bucket pitches (FF/FT/SI/FC/FA)
+        fb_pa                   INTEGER, -- ABs with a FB-bucket pitch (denominator)
+        br_slg                  REAL,    -- SLG on BR-bucket pitches (SL/CU/KC/ST/SV)
+        br_pa                   INTEGER,
+        os_slg                  REAL,    -- SLG on OS-bucket pitches (CH/FS/KN/SP)
+        os_pa                   INTEGER,
+
         -- Matchup: pitcher inputs
         pitcher_hr_per_9        REAL,
         pitcher_era             REAL,
@@ -899,6 +912,34 @@ def create_tables(conn: sqlite3.Connection):
          "ALTER TABLE pick_inputs ADD COLUMN recent_xwoba_contact_28d REAL"),
         ("recent_iso_28d",
          "ALTER TABLE pick_inputs ADD COLUMN recent_iso_28d REAL"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
+    # 2026-05-25: Phase 2 — pitch-type archetype matchup sub-signal columns.
+    # Six NULL-safe additive columns on pick_inputs so the per-pick row
+    # carries the batter's FB/BR/OS SLG splits at scoring time. Lets
+    # backtest_arsenal_inputs.py replay variants off the persisted snapshot
+    # without re-pulling Statcast.
+    #
+    # Populated by load_picks_to_db.py from batter dict keys
+    # {fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa}, which generate_picks
+    # sets from features_v2.fetch_batter_pitch_type_splits. *_slg is the
+    # SLG against pitches in that bucket; *_pa is the AB-with-bucket count
+    # for sample-size gating (PITCH_TYPE_SPLIT_MIN_BB=30 default).
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("fb_slg", "ALTER TABLE pick_inputs ADD COLUMN fb_slg REAL"),
+        ("fb_pa",  "ALTER TABLE pick_inputs ADD COLUMN fb_pa INTEGER"),
+        ("br_slg", "ALTER TABLE pick_inputs ADD COLUMN br_slg REAL"),
+        ("br_pa",  "ALTER TABLE pick_inputs ADD COLUMN br_pa INTEGER"),
+        ("os_slg", "ALTER TABLE pick_inputs ADD COLUMN os_slg REAL"),
+        ("os_pa",  "ALTER TABLE pick_inputs ADD COLUMN os_pa INTEGER"),
     ]:
         if col not in existing_cols:
             try:

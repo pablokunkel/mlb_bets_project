@@ -2117,10 +2117,366 @@ def pin_pitch_type_split_min_bb_constant() -> Result:
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 (2026-05-25): pitch-type archetype real builder + backfill + harness
+# ---------------------------------------------------------------------------
+
+def pin_aggregate_pitch_type_splits_basic() -> Result:
+    """Phase 2: _aggregate_pitch_type_splits buckets pitch_type codes into
+    FB/BR/OS, computes SLG = TB/AB per bucket, and stamps *_pa = AB count.
+
+    Synthetic 6-event sample for one batter:
+      FF  home_run -> FB: 1 AB, 4 TB                  (slg=4.000)
+      SI  single   -> FB: 2 AB, 5 TB                  (slg=2.500)
+      SL  double   -> BR: 1 AB, 2 TB                  (slg=2.000)
+      CU  field_out-> BR: 2 AB, 2 TB                  (slg=1.000)
+      CH  strikeout-> OS: 1 AB, 0 TB                  (slg=0.000)
+      CH  home_run -> OS: 2 AB, 4 TB                  (slg=2.000)
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return Result("_aggregate_pitch_type_splits (pandas missing — skipped)",
+                      Result.INFO, "pandas not installed")
+    from features_v2 import _aggregate_pitch_type_splits
+    df = pd.DataFrame([
+        {"batter": 99999, "pitch_type": "FF", "events": "home_run"},
+        {"batter": 99999, "pitch_type": "SI", "events": "single"},
+        {"batter": 99999, "pitch_type": "SL", "events": "double"},
+        {"batter": 99999, "pitch_type": "CU", "events": "field_out"},
+        {"batter": 99999, "pitch_type": "CH", "events": "strikeout"},
+        {"batter": 99999, "pitch_type": "CH", "events": "home_run"},
+    ])
+    out = _aggregate_pitch_type_splits(df, player_ids={99999})
+    if 99999 not in out:
+        return Result("_aggregate_pitch_type_splits basic", Result.HALT,
+                      f"missing batter in output: {out!r}")
+    e = out[99999]
+    failures = []
+    if e.get("fb_pa") != 2 or abs(e.get("fb_slg", 0) - 2.5) > 0.001:
+        failures.append(f"fb_pa={e.get('fb_pa')} fb_slg={e.get('fb_slg')}; want 2 / 2.5")
+    if e.get("br_pa") != 2 or abs(e.get("br_slg", 0) - 1.0) > 0.001:
+        failures.append(f"br_pa={e.get('br_pa')} br_slg={e.get('br_slg')}; want 2 / 1.0")
+    if e.get("os_pa") != 2 or abs(e.get("os_slg", 0) - 2.0) > 0.001:
+        failures.append(f"os_pa={e.get('os_pa')} os_slg={e.get('os_slg')}; want 2 / 2.0")
+    if failures:
+        return Result("_aggregate_pitch_type_splits basic", Result.HALT,
+                      "; ".join(failures))
+    return Result(
+        "_aggregate_pitch_type_splits basic (FB/BR/OS bucketed, SLG=TB/AB)",
+        Result.PASS,
+    )
+
+
+def pin_aggregate_pitch_type_splits_empty() -> Result:
+    """Phase 2: empty/null DataFrames don't blow up — returns {}."""
+    from features_v2 import _aggregate_pitch_type_splits
+    if _aggregate_pitch_type_splits(None) != {}:
+        return Result("aggregate empty None", Result.HALT, "None did not return {}")
+    try:
+        import pandas as pd
+        if _aggregate_pitch_type_splits(pd.DataFrame()) != {}:
+            return Result("aggregate empty df", Result.HALT,
+                          "empty DF did not return {}")
+    except ImportError:
+        pass
+    return Result("_aggregate_pitch_type_splits empty inputs -> {} (no crash)",
+                  Result.PASS)
+
+
+def pin_fetch_batter_pitch_type_splits_empty_ids() -> Result:
+    """Phase 2: empty player_ids list short-circuits to {} without
+    hitting the Statcast API. (Defensive — production noon runs send
+    only the current slate's batters.)"""
+    from features_v2 import fetch_batter_pitch_type_splits
+    out = fetch_batter_pitch_type_splits([], as_of_date="2025-06-01")
+    if out != {}:
+        return Result("fetch_batter_pitch_type_splits([]) -> {}", Result.HALT,
+                      f"got {out!r}")
+    return Result(
+        "fetch_batter_pitch_type_splits empty list -> {} (no Statcast pull)",
+        Result.PASS,
+    )
+
+
+def pin_pick_inputs_phase2_columns_exist() -> Result:
+    """Phase 2: pick_inputs has fb_slg/fb_pa/br_slg/br_pa/os_slg/os_pa
+    after create_tables runs. Lets load_picks_to_db.py persist the
+    splits per pick row so backtest_arsenal_inputs can replay variants
+    without re-pulling Statcast."""
+    import sqlite3
+    import tempfile
+    from etl.db import create_tables
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        conn = sqlite3.connect(tmp_path)
+        create_tables(conn)
+        cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+        }
+        conn.close()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    expected = {"fb_slg", "fb_pa", "br_slg", "br_pa", "os_slg", "os_pa"}
+    missing = expected - cols
+    if missing:
+        return Result(
+            "pick_inputs Phase 2 columns",
+            Result.HALT, f"missing: {sorted(missing)}",
+        )
+    return Result(
+        "pick_inputs.{fb,br,os}_slg + *_pa columns present after migration",
+        Result.PASS,
+    )
+
+
+def pin_batter_pitch_type_splits_idempotent_write() -> Result:
+    """Phase 2: writing the same (player_id, date_through) row twice
+    REPLACES rather than duplicating. INSERT OR REPLACE on the primary
+    key is how the backfill orchestrator stays idempotent on re-runs."""
+    import sqlite3
+    import tempfile
+    from etl.db import create_tables
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        conn = sqlite3.connect(tmp_path)
+        create_tables(conn)
+        sql = """
+            INSERT OR REPLACE INTO batter_pitch_type_splits (
+                player_id, date_through,
+                fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        conn.execute(sql, (12345, "2025-06-01", 0.500, 100, 0.350, 60, 0.400, 40))
+        conn.execute(sql, (12345, "2025-06-01", 0.550, 110, 0.360, 65, 0.410, 45))
+        conn.commit()
+        row = conn.execute(
+            "SELECT fb_slg, fb_pa FROM batter_pitch_type_splits "
+            "WHERE player_id = 12345 AND date_through = '2025-06-01'"
+        ).fetchall()
+        conn.close()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    if len(row) != 1:
+        return Result(
+            "batter_pitch_type_splits idempotent write",
+            Result.HALT, f"got {len(row)} rows; want exactly 1",
+        )
+    fb_slg, fb_pa = row[0]
+    if abs(fb_slg - 0.550) > 0.001 or fb_pa != 110:
+        return Result(
+            "batter_pitch_type_splits idempotent value",
+            Result.HALT, f"got fb_slg={fb_slg}, fb_pa={fb_pa}; want 0.55 / 110",
+        )
+    return Result(
+        "batter_pitch_type_splits INSERT OR REPLACE is idempotent on PK",
+        Result.PASS,
+    )
+
+
+def pin_backfill_pitch_type_splits_imports() -> Result:
+    """Phase 2: etl/backfill_pitch_type_splits.py imports and exposes the
+    documented entry points (backfill_window, backfill_one_date, main)."""
+    try:
+        from etl import backfill_pitch_type_splits as bpts
+    except Exception as e:
+        return Result(
+            "backfill_pitch_type_splits import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in (
+        "backfill_window", "backfill_one_date", "main",
+        "parse_duration", "DEFAULT_START", "DEFAULT_END",
+        "_active_batters_for_date", "_coverage_for_date",
+    ):
+        if not hasattr(bpts, name):
+            failures.append(f"missing {name}")
+    if bpts.DEFAULT_START != "2025-03-27":
+        failures.append(f"DEFAULT_START={bpts.DEFAULT_START}; want 2025-03-27")
+    if bpts.DEFAULT_END != "2025-09-30":
+        failures.append(f"DEFAULT_END={bpts.DEFAULT_END}; want 2025-09-30")
+    if failures:
+        return Result(
+            "backfill_pitch_type_splits skeleton",
+            Result.HALT, "; ".join(failures),
+        )
+    return Result(
+        "backfill_pitch_type_splits.py: entry points + 2025 window defaults wired",
+        Result.PASS,
+    )
+
+
+def pin_load_picks_persists_pitch_type_splits() -> Result:
+    """Phase 2: load_picks_to_db.load_picks writes fb_slg/br_slg/os_slg +
+    *_pa from inputs dict into pick_inputs columns. Replay idempotency:
+    after one load, re-reading pick_inputs returns identical values."""
+    import json
+    import sqlite3
+    import tempfile
+    from etl.db import create_tables
+    from load_picks_to_db import load_picks
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_db:
+        tmp_db_path = Path(tmp_db.name)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as tmp_json:
+        tmp_json_path = Path(tmp_json.name)
+        payload = {
+            "date": "2025-06-01",
+            "picks": [],
+            "full_board": [
+                {
+                    "player_id": 99001,
+                    "name": "Test Batter",
+                    "team": "TST",
+                    "game_pk": 7777777,
+                    "composite": 75.0,
+                    "inputs": {
+                        "barrel_pct": 10.0, "exit_velo": 90.0,
+                        "hr_fb_pct": 15.0, "iso": 0.200,
+                        "fb_slg": 0.550, "fb_pa": 200,
+                        "br_slg": 0.420, "br_pa": 110,
+                        "os_slg": 0.385, "os_pa": 55,
+                    },
+                }
+            ],
+            "scoring_config": "default",
+            "mode": "live",
+        }
+        json.dump(payload, tmp_json)
+    try:
+        conn = sqlite3.connect(str(tmp_db_path))
+        create_tables(conn)
+        conn.close()
+        load_picks(tmp_json_path, db_path=tmp_db_path)
+        conn = sqlite3.connect(str(tmp_db_path))
+        row = conn.execute(
+            "SELECT fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa "
+            "FROM pick_inputs WHERE date='2025-06-01' AND batter_id=99001"
+        ).fetchone()
+        conn.close()
+    finally:
+        tmp_db_path.unlink(missing_ok=True)
+        tmp_json_path.unlink(missing_ok=True)
+    if not row:
+        return Result(
+            "load_picks persists pitch-type splits",
+            Result.HALT, "no pick_inputs row written",
+        )
+    fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa = row
+    if (abs(fb_slg - 0.550) > 0.001 or fb_pa != 200
+            or abs(br_slg - 0.420) > 0.001 or br_pa != 110
+            or abs(os_slg - 0.385) > 0.001 or os_pa != 55):
+        return Result(
+            "load_picks splits values",
+            Result.HALT,
+            f"got fb={fb_slg}/{fb_pa} br={br_slg}/{br_pa} os={os_slg}/{os_pa}; "
+            "want 0.55/200 0.42/110 0.385/55",
+        )
+    return Result(
+        "load_picks_to_db persists fb/br/os SLG + PA into pick_inputs",
+        Result.PASS,
+    )
+
+
+def pin_load_pitch_type_splits_lookup_empty() -> Result:
+    """Phase 2: load_pitch_type_splits_lookup returns {} on a fresh DB
+    with no batter_pitch_type_splits rows — safe no-op default."""
+    from generate_picks import load_pitch_type_splits_lookup
+    out = load_pitch_type_splits_lookup("1999-01-01")
+    if not isinstance(out, dict):
+        return Result(
+            "load_pitch_type_splits_lookup returns dict",
+            Result.HALT, f"got type {type(out).__name__}",
+        )
+    return Result(
+        "load_pitch_type_splits_lookup safe on missing data (empty dict)",
+        Result.PASS,
+    )
+
+
+def pin_backtest_arsenal_inputs_score_variants() -> Result:
+    """Phase 2: score_variants computes scores under all 6 variants on a
+    synthetic 2-row dataset. The arsenal-blend variant should differ
+    from 'current' when the row carries the full arsenal signal; the
+    weight_1.0 variant equals arsenal_only score."""
+    from diagnostics.backtest_arsenal_inputs import (
+        score_variants, VARIANTS, _arsenal_score, _baseline_matchup,
+    )
+    rows = [
+        # Full signal row: pitcher arsenal usage measured, batter splits
+        # all >= 30 PA. Should get all variants scored.
+        {
+            "date": "2025-06-01", "batter_id": 100, "hit_hr": 1,
+            "pitcher_hr_per_9": 1.5, "pitcher_hh_pct": 38,
+            "woba_vs_hand": 0.340,
+            "archetype_similarity": 60,
+            "vegas_team_total_pct": 70,
+            "pitcher_fb_usage_pct": 0.55,
+            "pitcher_br_usage_pct": 0.30,
+            "pitcher_os_usage_pct": 0.15,
+            "fb_slg": 0.500, "fb_pa": 100,
+            "br_slg": 0.380, "br_pa": 50,
+            "os_slg": 0.410, "os_pa": 40,
+        },
+        # No-arsenal row: pitcher usage missing -> all variants fall back
+        # to baseline (None+skip absorbed by _matchup_score).
+        {
+            "date": "2025-06-01", "batter_id": 200, "hit_hr": 0,
+            "pitcher_hr_per_9": 1.2, "pitcher_hh_pct": 33,
+            "woba_vs_hand": 0.310, "archetype_similarity": 40,
+            "vegas_team_total_pct": 50,
+            "pitcher_fb_usage_pct": None,
+            "pitcher_br_usage_pct": None,
+            "pitcher_os_usage_pct": None,
+            "fb_slg": None, "fb_pa": 0,
+            "br_slg": None, "br_pa": 0,
+            "os_slg": None, "os_pa": 0,
+        },
+    ]
+    out = score_variants(rows)
+    if len(out) != 2:
+        return Result("score_variants row count", Result.HALT, f"got {len(out)}")
+    full = out[0]
+    no_arsenal = out[1]
+    if not full["has_arsenal"]:
+        return Result(
+            "score_variants common-subset gate",
+            Result.HALT, "full-signal row was flagged has_arsenal=False",
+        )
+    if no_arsenal["has_arsenal"]:
+        return Result(
+            "score_variants common-subset gate",
+            Result.HALT, "no-arsenal row was flagged has_arsenal=True",
+        )
+    # All 6 variants present per row.
+    for v in VARIANTS:
+        if v not in full["matchup"]:
+            return Result("variants present", Result.HALT, f"missing {v}")
+    # weight_1.0 should equal arsenal score alone (within rounding).
+    arsenal_only = _arsenal_score(rows[0])
+    if arsenal_only is None:
+        return Result("arsenal score derivable", Result.HALT, "got None")
+    if abs(full["matchup"]["arsenal_weight_1.0"] - arsenal_only) > 0.01:
+        return Result(
+            "arsenal_weight_1.0 == arsenal_only",
+            Result.HALT,
+            f"weight_1.0={full['matchup']['arsenal_weight_1.0']} vs "
+            f"arsenal_only={arsenal_only}",
+        )
+    return Result(
+        "backtest_arsenal_inputs.score_variants: 6 variants computed, "
+        "weight_1.0 == arsenal_only",
+        Result.PASS,
+    )
+
+
 def pin_backtest_arsenal_inputs_skeleton_imports() -> Result:
-    """Phase 1: backtest_arsenal_inputs imports and exposes documented
-    entry points + 2 variants. Doesn't run it — the SQL fetch requires
-    Phase 2 columns."""
+    """Phase 2: backtest_arsenal_inputs imports and exposes documented
+    entry points + 6 variants (baseline + production blend + 4-point
+    weight sweep)."""
     try:
         from diagnostics import backtest_arsenal_inputs as bai
     except Exception as e:
@@ -2137,13 +2493,17 @@ def pin_backtest_arsenal_inputs_skeleton_imports() -> Result:
         if not hasattr(bai, name):
             failures.append(f"missing {name}")
     if hasattr(bai, "VARIANTS"):
-        expected = {"current", "arsenal_blend"}
+        expected = {
+            "current", "arsenal_blend",
+            "arsenal_weight_0.25", "arsenal_weight_0.5",
+            "arsenal_weight_0.75", "arsenal_weight_1.0",
+        }
         got = set(bai.VARIANTS)
         if got != expected:
             failures.append(f"VARIANTS = {sorted(got)}, want {sorted(expected)}")
     if not failures:
         return Result(
-            "backtest_arsenal_inputs: 2 variants + entry points wired",
+            "backtest_arsenal_inputs: 6 variants + entry points wired",
             Result.PASS,
         )
     return Result(
@@ -2234,6 +2594,16 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_fetch_batter_pitch_type_splits_signature,
     pin_pitch_type_split_min_bb_constant,
     pin_backtest_arsenal_inputs_skeleton_imports,
+    # 2026-05-25: Phase 2 — real builder + 2025 backfill + harness wiring
+    pin_aggregate_pitch_type_splits_basic,
+    pin_aggregate_pitch_type_splits_empty,
+    pin_fetch_batter_pitch_type_splits_empty_ids,
+    pin_pick_inputs_phase2_columns_exist,
+    pin_batter_pitch_type_splits_idempotent_write,
+    pin_backfill_pitch_type_splits_imports,
+    pin_load_picks_persists_pitch_type_splits,
+    pin_load_pitch_type_splits_lookup_empty,
+    pin_backtest_arsenal_inputs_score_variants,
 ]
 
 
