@@ -140,8 +140,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source,
-            season_hr
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?)
+            season_hr,
+            form_archetype_centroid_json, form_archetype_window, form_archetype_n_hrs
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -281,6 +282,16 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     # and backtest_factors.rescore_row falls through to its
                     # legacy behavior for those rows.
                     inputs.get("season_hr"),
+                    # Phase 2 form-archetype (2026-05-26). Centroid persisted
+                    # so backtest_factors.rescore_row can replay historical
+                    # archetype-match scores without re-pulling Statcast.
+                    # None for picks JSON pre-Phase-2 or batters with
+                    # <FORM_ARCHETYPE_MIN_HRS HRs in lookback (None+skip per
+                    # design). score_form ignores when USE_FORM_ARCHETYPE is
+                    # False (default through Phase 2).
+                    inputs.get("form_archetype_centroid_json"),
+                    inputs.get("form_archetype_window"),
+                    inputs.get("form_archetype_n_hrs"),
                 ))
                 n_inputs += 1
             except Exception:

@@ -57,6 +57,22 @@ DB_PATH = Path(__file__).parent.parent / "data" / "hr_bets.db"
 JSON_OUT = Path(__file__).parent / "mlb_hr_bet_site" / "data" / "factor_accuracy.json"
 
 
+def _parse_centroid_json(raw):
+    """Deserialize a JSON centroid blob into a list; None on bad/missing input.
+
+    Phase 2 helper for backtest_factors.rescore_row — the centroid lives in
+    pick_inputs.form_archetype_centroid_json as a JSON string. score_form
+    expects the parsed list-of-floats. Silent None on parse failure so old
+    rows (pre-Phase-2 migration, no JSON column) fall through to skip.
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
@@ -147,6 +163,15 @@ def rescore_row(row: pd.Series) -> dict:
         # falls through to no-op there (matches the pre-B8 backtest
         # behavior, so old rows remain comparable).
         "season_hr": row.get("season_hr"),
+        # Phase 2 form-archetype (2026-05-26): persisted centroid for
+        # this batter at the row's date. Read as JSON; score_form only
+        # consumes it when USE_FORM_ARCHETYPE is True (off by default).
+        # NULL for rows older than Phase 2 — score_form skips cleanly.
+        "form_archetype_centroid": _parse_centroid_json(
+            row.get("form_archetype_centroid_json"),
+        ),
+        "form_archetype_window": row.get("form_archetype_window"),
+        "form_archetype_n_hrs": row.get("form_archetype_n_hrs"),
     }
     # Audit LOW: drop the `1.2` / `35` league-mean defaults so missing
     # pitcher_hr_per_9 / pitcher_hh_pct skip-on-missing through the v1

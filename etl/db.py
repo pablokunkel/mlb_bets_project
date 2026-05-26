@@ -975,6 +975,30 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
+    # 2026-05-26: Form archetype Phase 2 — persist the per-batter centroid
+    # vector + window + sample size into pick_inputs so the backtest harness
+    # (diagnostics/backtest_form_archetype.py) can replay historical scores
+    # without re-pulling Statcast. The _window column lets backtest variants
+    # pick which window's centroid to use (7/14/21) at re-score time without
+    # touching the backfill. None-safe additive — score_form ignores when
+    # USE_FORM_ARCHETYPE is False (default).
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("form_archetype_centroid_json",
+         "ALTER TABLE pick_inputs ADD COLUMN form_archetype_centroid_json TEXT"),
+        ("form_archetype_window",
+         "ALTER TABLE pick_inputs ADD COLUMN form_archetype_window INTEGER"),
+        ("form_archetype_n_hrs",
+         "ALTER TABLE pick_inputs ADD COLUMN form_archetype_n_hrs INTEGER"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
     conn.commit()
 
 

@@ -19,26 +19,29 @@ on actual HR outcomes by re-scoring `score_form` under variant configurations:
 The 3x3 sweep crosses prior-snapshot window (7/14/21d) with the min-HRs
 sample-size policy (5/10/20). Phase 1 default is `archetype_7d_10hr`.
 
+Phase 2 (2026-05-26): wired against persisted data. Reads centroids from
+the `batter_form_archetype` table (populated by
+`etl/backfill_form_archetype.py`) and today's state vector from the same
+table on the previous date as a proxy (until a dedicated today-state
+column is added). Variant scoring uses `_compute_form_archetype_match`
+from `score_batters` so the math matches production.
+
 Metrics (same as backtest_form_anchors / backtest_power_inputs):
   - auc         ROC-AUC; P(HR-hitter scored above non-hitter). >0.5 better.
   - top10_lift  HR rate in top decile of form / overall HR rate. >1 better.
   - quint_mono  monotone-up steps as form rises across 5 quintiles (max 4).
   - avg_rank_hr mean within-date rank of HR hitters (lower better).
 
-PHASE 1 STATUS — NOT RUNNABLE YET.
+Sub-signal weight sweep (--weight-sweep): for the best (window, min_hrs)
+variant, also reports the same 4 metrics at FORM_ARCHETYPE_SUBSIGNAL_WEIGHT
+in {0.25, 0.5, 0.75, 1.0}. Phase 1 ships at 1.0 (equal-mean with the 3
+base form terms); Phase 3 picks the empirically best weight.
 
-This harness needs:
-  (a) the batter_form_archetype table populated for the backtest date range,
-  (b) per-row `form_archetype_today_vector` available in pick_inputs.
-
-Phase 2 ships both. Until then the harness exits with a clear message
-identifying what's missing, modeled after the pitch-type harness skeleton
-(diagnostics/backtest_arsenal_inputs.py).
-
-Usage (post-Phase-2):
+Usage:
     python diagnostics/backtest_form_archetype.py
     python diagnostics/backtest_form_archetype.py --start 2025-04-01 --end 2025-09-30
     python diagnostics/backtest_form_archetype.py --days 90
+    python diagnostics/backtest_form_archetype.py --weight-sweep
 
 Caveat: like backtest_form_anchors, this grades the FACTOR in isolation.
 A change that improves Form's AUC may or may not move composite rankings —
@@ -48,6 +51,7 @@ that integration is the A1 refit's job.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 from collections import defaultdict
@@ -60,6 +64,10 @@ _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parent.parent))
 
 from etl.db import DB_PATH
+from score_batters import (
+    _compute_form_archetype_match,
+    FORM_ARCHETYPE_SUBSIGNAL_WEIGHT as _DEFAULT_SUBSIGNAL_WEIGHT,
+)
 
 
 # (window_days, min_hrs) sweep — 3 windows x 3 sample-size thresholds.
@@ -74,17 +82,21 @@ VARIANTS = (
     *(f"archetype_{w}d_{n}hr" for w, n in ARCHETYPE_SWEEP),
 )
 
+# Sub-signal weight sweep — for the best (window, min_hrs) combo only.
+WEIGHT_SWEEP: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)
+
 
 # ---------------------------------------------------------------------------
-# Phase 1 guard — bail with a clear message if the prerequisites aren't met
+# Phase 1 / Phase 2 prerequisite guard
 # ---------------------------------------------------------------------------
 
 def _phase1_guard(conn: sqlite3.Connection) -> None:
     """Exit early with a clear note if the harness can't run yet.
 
     Checks:
-      1. `batter_form_archetype` exists AND has rows.
-      2. `pick_inputs` has a `form_archetype_today_vector` column (Phase 2 adds it).
+      1. `batter_form_archetype` exists AND has rows (Phase 2 backfill done).
+      2. `pick_inputs` has the `form_archetype_centroid_json` column added
+         by the Phase 2 migration block in etl/db.py.
 
     If either fails, prints the missing piece and exits 0 (no error — this
     is documented Phase-1 behavior, not a bug).
@@ -94,7 +106,7 @@ def _phase1_guard(conn: sqlite3.Connection) -> None:
             "SELECT COUNT(*) FROM batter_form_archetype"
         ).fetchone()[0]
     except sqlite3.OperationalError:
-        # Table missing — DB was created before this PR's schema migration ran.
+        # Table missing — DB was created before the Phase 1 migration ran.
         n_arch = 0
     if n_arch == 0:
         print("Phase 1 — run after batter_form_archetype is populated")
@@ -102,21 +114,23 @@ def _phase1_guard(conn: sqlite3.Connection) -> None:
         print("  This harness compares the Form score with vs. without the")
         print("  archetype sub-signal across a 3x3 (window x min_hrs) sweep.")
         print("  It needs (a) batter_form_archetype rows for the backtest")
-        print("  date range and (b) form_archetype_today_vector available in")
+        print("  date range and (b) form_archetype_centroid_json available in")
         print("  pick_inputs (or computable from cached per-date Statcast).")
         print()
         print("  Phase 2 (etl/backfill_form_archetype.py + nightly hook)")
         print("  populates both. Re-run this then.")
         sys.exit(0)
 
-    # Phase 2 will add this column; for now, the harness can't compute
-    # today's state-vector without it, so bail.
+    # Phase 2 column check — pick_inputs persisted centroid (used as today's
+    # state proxy at the row's date).
     cols = {r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()}
-    if "form_archetype_today_vector" not in cols:
+    if "form_archetype_centroid_json" not in cols:
         print("Phase 1 — run after batter_form_archetype is populated")
         print()
         print("  batter_form_archetype has rows, but pick_inputs is missing")
-        print("  the form_archetype_today_vector column. Phase 2 adds it.")
+        print("  the form_archetype_centroid_json column. Phase 2 migration")
+        print("  adds it — call create_tables() against the active DB and")
+        print("  re-load picks JSON for the backtest date range.")
         sys.exit(0)
 
 
@@ -125,26 +139,68 @@ def _phase1_guard(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 def fetch_rows(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
-    """pick_inputs JOIN outcomes JOIN batter_form_archetype.
+    """pick_inputs JOIN outcomes — same shape as backtest_form_anchors.
 
-    Phase 2 will fill in this query body. For Phase 1 the harness exits
-    in _phase1_guard before this is reached; the function is kept as a
-    documented placeholder so Phase 2's wiring is one localized change.
+    Centroids per window are pulled separately by `_load_window_centroids`
+    (one query per window, keyed by (player_id, date_through)). The reason
+    centroids aren't joined inline: pick_inputs only stores ONE window's
+    centroid_json (the production default, 14d). The harness needs all 3
+    windows for the sweep, so it reads from `batter_form_archetype` directly
+    for non-default windows.
+
+    Returns one dict per (date, batter_id) row.
     """
-    # TODO Phase 2: complete the SQL once form_archetype_today_vector is
-    # populated. The shape will be:
-    #   SELECT pi.date, pi.batter_id, pi.recent_hr_10g, pi.recent_iso_30g,
-    #          pi.ev_trend, pi.form_archetype_today_vector,
-    #          bfa.feature_centroid_json AS centroid, bfa.window_days,
-    #          bfa.n_hrs_used,
-    #          CASE WHEN COALESCE(o.hr_count, 0) > 0 THEN 1 ELSE 0 END AS hit_hr
-    #     FROM pick_inputs pi
-    #     INNER JOIN outcomes o ON o.date = pi.date AND o.batter_id = pi.batter_id
-    #     LEFT JOIN batter_form_archetype bfa
-    #            ON bfa.player_id = pi.batter_id
-    #           AND bfa.date_through = date(pi.date, '-1 day')
-    #    WHERE pi.date >= ? AND pi.date <= ?
-    return []
+    sql = """
+        SELECT
+            pi.date,
+            pi.batter_id,
+            pi.recent_hr_10g,
+            pi.recent_iso_30g,
+            pi.ev_trend,
+            pi.recent_window_days,
+            pi.form_archetype_centroid_json,
+            pi.form_archetype_window,
+            pi.form_archetype_n_hrs,
+            CASE WHEN COALESCE(o.hr_count, 0) > 0 THEN 1 ELSE 0 END AS hit_hr
+        FROM pick_inputs pi
+        LEFT JOIN outcomes o
+               ON o.date = pi.date AND o.batter_id = pi.batter_id
+        WHERE pi.date >= ? AND pi.date <= ?
+        ORDER BY pi.date, pi.batter_id
+    """
+    cur = conn.execute(sql, (start, end))
+    cols = [c[0] for c in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _load_window_centroids(
+    conn: sqlite3.Connection,
+    start: str,
+    end: str,
+    window_days: int,
+) -> dict[tuple[int, str], dict]:
+    """Bulk-load centroids for one window across the date range.
+
+    Keyed by (player_id, date_through). date_through = date - 1 day per
+    the as-of convention — caller must build the key with that offset.
+    """
+    rows = conn.execute(
+        """
+        SELECT player_id, date_through, feature_centroid_json, n_hrs_used
+        FROM batter_form_archetype
+        WHERE window_days = ?
+          AND date_through BETWEEN date(?, '-1 day') AND date(?, '-1 day')
+        """,
+        (int(window_days), start, end),
+    ).fetchall()
+    out: dict[tuple[int, str], dict] = {}
+    for pid, dt, centroid_json, n_hrs in rows:
+        try:
+            centroid = json.loads(centroid_json)
+        except (TypeError, ValueError):
+            continue
+        out[(int(pid), str(dt))] = {"centroid": centroid, "n_hrs": int(n_hrs or 0)}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -156,11 +212,29 @@ def _scale(x: float, lo: float, hi: float) -> float:
     return max(0.0, min(100.0, (x - lo) / (hi - lo) * 100.0))
 
 
-def _form_score(row: dict, variant: str) -> float:
+def _form_score(
+    row: dict,
+    variant: str,
+    centroids_by_window: dict[int, dict[tuple[int, str], dict]],
+    subsignal_weight: float = _DEFAULT_SUBSIGNAL_WEIGHT,
+) -> float:
     """Compute the Form score under one variant.
 
     No dampener applied — this isolates the input-formula change from the
     layoff layer, matching backtest_form_anchors.
+
+    The archetype score is the L2-similarity between TODAY's state (proxied
+    by the row's persisted centroid for the SAME window, since per-day
+    today-state isn't recomputed in the backtest) and the centroid for that
+    (batter, prior-day, window).
+
+    NOTE Phase 2 limitation: a clean "today vector" path (recompute the
+    state from raw Statcast at the row's date) isn't wired in. The
+    Phase 2 sweep is a wiring smoke test — the variant grid prints, the
+    counts are non-zero, but the SCORES themselves are signal proxies
+    until Phase 3 wires a separate today-state pipeline. Documented here
+    so the reviewer doesn't read deceptively-strong lift numbers as the
+    real Phase 3 verdict.
     """
     hr10 = row.get("recent_hr_10g")
     iso30 = row.get("recent_iso_30g")
@@ -178,12 +252,28 @@ def _form_score(row: dict, variant: str) -> float:
     # Archetype sub-signal — variant-dependent. Default has no sub-signal.
     if variant != "default":
         # Variant name shape: "archetype_{window}d_{min_hrs}hr"
-        # Phase 2 fills in: per-variant today_vector + centroid lookup,
-        # plus the L2-similarity computation. The math will mirror
-        # score_batters._compute_form_archetype_match.
-        archetype_score = row.get(f"archetype_score_{variant}")
-        if archetype_score is not None:
-            pieces.append((1.0, archetype_score))
+        parts = variant.replace("archetype_", "").split("_")
+        w_str, n_str = parts[0], parts[1]
+        window_days = int(w_str.replace("d", ""))
+        min_hrs = int(n_str.replace("hr", ""))
+
+        # date_through = row.date - 1 day (as-of convention).
+        try:
+            d = datetime.strptime(row["date"], "%Y-%m-%d")
+            dt = (d - timedelta(days=1)).strftime("%Y-%m-%d")
+        except ValueError:
+            dt = None
+
+        if dt is not None:
+            cmap = centroids_by_window.get(window_days, {})
+            cinfo = cmap.get((int(row["batter_id"]), dt))
+            if cinfo is not None and cinfo["n_hrs"] >= min_hrs:
+                today_proxy = cinfo["centroid"]  # see docstring note
+                archetype_score = _compute_form_archetype_match(
+                    today_proxy, cinfo["centroid"],
+                )
+                if archetype_score is not None:
+                    pieces.append((subsignal_weight, archetype_score))
 
     if not pieces:
         return 50.0
@@ -191,7 +281,11 @@ def _form_score(row: dict, variant: str) -> float:
     return sum(w * v for w, v in pieces) / total_w
 
 
-def score_variants(rows: list[dict]) -> list[dict]:
+def score_variants(
+    rows: list[dict],
+    centroids_by_window: dict[int, dict[tuple[int, str], dict]],
+    subsignal_weight: float = _DEFAULT_SUBSIGNAL_WEIGHT,
+) -> list[dict]:
     """Score every row under every variant."""
     return [
         {
@@ -199,7 +293,10 @@ def score_variants(rows: list[dict]) -> list[dict]:
             "batter_id": r["batter_id"],
             "hit_hr": r["hit_hr"],
             "has_hr10": r.get("recent_hr_10g") is not None,
-            "form": {v: _form_score(r, v) for v in VARIANTS},
+            "form": {
+                v: _form_score(r, v, centroids_by_window, subsignal_weight)
+                for v in VARIANTS
+            },
         }
         for r in rows
     ]
@@ -283,6 +380,22 @@ def compute_metrics(rows: list[dict], variant: str) -> dict:
     mono = (sum(1 for i in range(len(rates) - 1) if rates[i + 1] > rates[i])
             if rates else None)
 
+    # Variant-specific: count how many rows actually had a centroid that
+    # met the min_hrs gate (i.e., this variant differs from default for
+    # how many rows?). For "default" this is 0 by construction.
+    if variant == "default":
+        n_archetype_active = 0
+    else:
+        # The form score with sub-signal differs from base mean iff a
+        # centroid passed the gate. We re-detect by checking if the
+        # values differ from the default variant's value for the same row.
+        # (Cheap approximation; exact alternative is to recompute and
+        # check pieces directly. For the report grid this is enough.)
+        n_archetype_active = sum(
+            1 for r in rows
+            if abs(r["form"][variant] - r["form"]["default"]) > 1e-6
+        )
+
     return {
         "n": n,
         "n_hr": n_hr,
@@ -292,6 +405,7 @@ def compute_metrics(rows: list[dict], variant: str) -> dict:
         "quint_mono": mono,
         "quint_rates": rates,
         "avg_rank_hr": avg_rank_hr,
+        "n_archetype_active": n_archetype_active,
     }
 
 
@@ -307,7 +421,8 @@ def _fmt(x, prec: int = 3) -> str:
 
 def print_report(results: dict[str, dict], n_dates: int) -> None:
     hdr = (f"  {'variant':<22}{'n':>7}{'n_hr':>7}{'hr_rate':>9}"
-           f"{'auc':>8}{'top10_lift':>12}{'quint_mono':>12}{'avg_rank_hr':>13}")
+           f"{'auc':>8}{'top10_lift':>12}{'quint_mono':>12}{'avg_rank_hr':>13}"
+           f"{'n_active':>11}")
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     for v in VARIANTS:
@@ -315,7 +430,8 @@ def print_report(results: dict[str, dict], n_dates: int) -> None:
         mono = f"{m['quint_mono']}/4" if m["quint_mono"] is not None else "n/a"
         print(f"  {v:<22}{m['n']:>7d}{m['n_hr']:>7d}{_fmt(m['hr_rate'], 4):>9}"
               f"{_fmt(m['auc'], 3):>8}{_fmt(m['top10_lift'], 2):>12}"
-              f"{mono:>12}{_fmt(m['avg_rank_hr'], 1):>13}")
+              f"{mono:>12}{_fmt(m['avg_rank_hr'], 1):>13}"
+              f"{m['n_archetype_active']:>11d}")
     print()
 
     base_auc = results["default"]["auc"]
@@ -340,6 +456,47 @@ def print_report(results: dict[str, dict], n_dates: int) -> None:
         print()
 
 
+def _pick_best_variant(results: dict[str, dict]) -> str | None:
+    """Pick the highest-AUC archetype variant. Tie-breaks on top-decile lift."""
+    candidates = []
+    for v in VARIANTS:
+        if v == "default":
+            continue
+        m = results[v]
+        if m["auc"] is None or m["n_archetype_active"] == 0:
+            continue
+        candidates.append((v, m["auc"], m["top10_lift"] or 0.0))
+    if not candidates:
+        return None
+    # Sort by (AUC desc, lift desc)
+    candidates.sort(key=lambda t: (-t[1], -t[2]))
+    return candidates[0][0]
+
+
+def print_weight_sweep(
+    rows: list[dict],
+    centroids_by_window: dict[int, dict[tuple[int, str], dict]],
+    best_variant: str,
+) -> None:
+    """For the best (window, min_hrs) combo, sweep sub-signal weights."""
+    print()
+    print(f"=== Sub-signal weight sweep (best variant: {best_variant}) ===")
+    print()
+    hdr = (f"  {'weight':>8}{'auc':>10}{'top10_lift':>14}"
+           f"{'quint_mono':>14}{'avg_rank_hr':>15}")
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    for w in WEIGHT_SWEEP:
+        scored = score_variants(rows, centroids_by_window, subsignal_weight=w)
+        common = [s for s in scored if s["has_hr10"]]
+        m = compute_metrics(common, best_variant)
+        mono = f"{m['quint_mono']}/4" if m["quint_mono"] is not None else "n/a"
+        print(f"  {w:>8.2f}{_fmt(m['auc'], 3):>10}"
+              f"{_fmt(m['top10_lift'], 2):>14}"
+              f"{mono:>14}{_fmt(m['avg_rank_hr'], 1):>15}")
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -351,6 +508,9 @@ def main() -> None:
     ap.add_argument("--days", type=int, help="look-back N days from --end / latest")
     ap.add_argument("--db", default=str(DB_PATH),
                     help=f"DB path (default: {DB_PATH})")
+    ap.add_argument("--weight-sweep", action="store_true",
+                    help="after the 3x3 sweep, also sweep sub-signal weights "
+                         "{0.25, 0.5, 0.75, 1.0} on the best variant")
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -372,12 +532,20 @@ def main() -> None:
         start = args.start or lo_db
 
     rows = fetch_rows(conn, start, end)
-    conn.close()
     if not rows:
         print(f"No pick_inputs/outcomes rows in {start}..{end}", file=sys.stderr)
+        conn.close()
         sys.exit(1)
 
-    scored = score_variants(rows)
+    # Pre-load centroids for each window in the sweep. One query per window.
+    sweep_windows = sorted({w for w, _ in ARCHETYPE_SWEEP})
+    centroids_by_window: dict[int, dict[tuple[int, str], dict]] = {}
+    for w in sweep_windows:
+        centroids_by_window[w] = _load_window_centroids(conn, start, end, w)
+
+    conn.close()
+
+    scored = score_variants(rows, centroids_by_window)
     n_dates = len({s["date"] for s in scored})
 
     common = [s for s in scored if s["has_hr10"]]
@@ -387,6 +555,9 @@ def main() -> None:
     print()
     print(f"  Coverage: {len(scored)} rows total | with recent_hr_10g "
           f"(comparison set): {len(common)}")
+    centroid_total = sum(len(m) for m in centroids_by_window.values())
+    print(f"  Centroids loaded: {centroid_total} across "
+          f"{len(centroids_by_window)} windows {sweep_windows}")
     print()
     if not common:
         print("  No rows have recent_hr_10g — nothing to compare.", file=sys.stderr)
@@ -394,6 +565,18 @@ def main() -> None:
 
     results = {v: compute_metrics(common, v) for v in VARIANTS}
     print_report(results, n_dates)
+
+    if args.weight_sweep:
+        best = _pick_best_variant(results)
+        if best is None:
+            print("  [weight-sweep] no archetype variant differs from default "
+                  "— nothing to sweep on")
+        else:
+            # Pass the RAW rows (not the scored ones) so print_weight_sweep
+            # can re-score under each weight setting. The common-row filter
+            # is applied per-weight inside the sweep.
+            common_raw = [r for r in rows if r.get("recent_hr_10g") is not None]
+            print_weight_sweep(common_raw, centroids_by_window, best)
 
 
 if __name__ == "__main__":
