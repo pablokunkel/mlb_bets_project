@@ -609,9 +609,27 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** Root cause documented; a loud-failure guard exists.
 
-### B15. Form archetype — Phases 2-4 (per-batter pre-HR state-of-play sub-signal)
+### C4. Park archetype sub-signal — populate the table, run the backtest
 
-**Status.** Phase 1 shipped (this PR — `claude/form-archetype-foundation`). Phases 2-4 queued. Independent of A1; will fold into the next A1 refit per Phase 4.
+**Status.** Phase 1 design + foundation shipped (2026-05-25; see `docs/park_archetype_design.md`). Phases 2-4 ready to start in order.
+
+**Why it matters.** Today's `score_park` is a handedness-weighted lookup of three numbers per venue. It says nothing about whether *this specific batter* has historically gone deep in parks that look like today's park. Foundation now in place behind `USE_PARK_ARCHETYPE=False` — strictly additive when flipped on. Notably, `score_park` is currently weighted 0.000 in `WEIGHT_CONFIGS["default"]`; the archetype signal is a candidate for bringing park back at the next A1 refit.
+
+**Phase 1 (DONE).** `batter_park_archetype` table created; `compute_batter_park_archetype` implemented in `features_v2.py` (not stubbed — math is live, callable today); `USE_PARK_ARCHETYPE` flag, `_compute_park_archetype_match` helper, guarded read in `score_park`; `diagnostics/backtest_park_archetype.py` skeleton (bails until Phase 2); 8 smoke pin tests. Production scoring byte-identical with flag off.
+
+**Phase 2.** Wire `compute_batter_park_archetype` into nightly ETL (`etl/etl_nightly.py`) behind a `# Step N: park archetype` block. One-shot `etl/backfill_park_archetype.py` (same chunked, `--max-runtime` orchestrator pattern as `etl/backfill_2025.py`). Add `pick_inputs.park_archetype_centroid_json` + `park_archetype_n_hrs` via idempotent ALTER. Backfill writes those columns across the 2025 season.
+
+**Phase 3.** Run `diagnostics/backtest_park_archetype.py` on the full 2025 backfill. Compare default vs the 5 archetype variants on AUC / top10_lift / quint_mono / avg_rank_hr. Decision rule (B6 + B12 precedent): ship only if 2+ metrics win with no decisive loss; validate on full season + ≥3 monthly slices. Document in `WEIGHT_REFIT_LOG.md`. Set the sub-signal weight + flip `USE_PARK_ARCHETYPE = True`.
+
+**Phase 4.** 14 days of clean post-Phase-3 monitoring. Then fold into the next A1 refit cycle — park's top-level weight may need to lift off 0.
+
+**Files (Phase 2).** `etl/etl_nightly.py`, `etl/backfill_park_archetype.py` (new), `etl/db.py` (ALTER), `generate_picks.py` (wire `park_archetype_centroid` from the bulk dict). **Files (Phase 3).** `score_batters.py` (flip flag), `WEIGHT_REFIT_LOG.md`, smoke pins update.
+
+**Source.** Design doc `docs/park_archetype_design.md` (PR #85). Parallel build to the pitch-type archetype foundation (commit `026d756`).
+
+### C5. Form archetype — Phases 2-4 (per-batter pre-HR state-of-play sub-signal)
+
+**Status.** Phase 1 shipped (this PR — `claude/form-archetype-foundation` cherry-picked via #86 carry-forward). Phases 2-4 queued. Independent of A1; will fold into the next A1 refit per Phase 4.
 
 **Why it matters.** Today's `score_form` reads "is the batter producing recently" (recent_hr_10g + recent_iso_30g + ev_trend). It does NOT capture **whether today's state-of-play looks like the state the batter was in the last few times he went deep.** A feast-or-famine power hitter (Gallo-type) has a distinctly different pre-HR pattern from a contact-hitter slugger (Freeman-type), and today's Form score blurs the two when they happen to land at the same value. Per-batter centroid of past pre-HR state-of-play + L2 distance to today's state would add a complementary signal.
 

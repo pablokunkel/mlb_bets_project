@@ -2152,6 +2152,324 @@ def pin_backtest_arsenal_inputs_skeleton_imports() -> Result:
 
 
 # ---------------------------------------------------------------------------
+# Phase 1 (2026-05-25): park archetype sub-signal scaffolding
+# ---------------------------------------------------------------------------
+
+def pin_batter_park_archetype_table_exists() -> Result:
+    """Phase 1: batter_park_archetype table is created by create_tables."""
+    import tempfile
+    import gc
+    from etl.db import create_tables
+
+    tmp_dir = tempfile.mkdtemp(prefix="pin_bpa_table_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    try:
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='batter_park_archetype'"
+            ).fetchall()
+            cols = {
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(batter_park_archetype)"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+    finally:
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass
+
+    if not rows:
+        return Result(
+            "batter_park_archetype table exists", Result.HALT,
+            "create_tables did not create the table",
+        )
+    expected = {
+        "player_id", "date_through", "feature_centroid_json",
+        "n_hrs_used", "fetched_at",
+    }
+    missing = expected - cols
+    if missing:
+        return Result(
+            "batter_park_archetype columns", Result.HALT,
+            f"missing columns: {sorted(missing)}",
+        )
+    return Result(
+        "batter_park_archetype table created with required columns",
+        Result.PASS,
+    )
+
+
+def pin_use_park_archetype_flag_default_off() -> Result:
+    """Phase 1: USE_PARK_ARCHETYPE must default off until the Phase 3
+    backtest validates the lift."""
+    from score_batters import USE_PARK_ARCHETYPE
+    if USE_PARK_ARCHETYPE is False:
+        return Result(
+            "USE_PARK_ARCHETYPE default = False (pre-backtest)",
+            Result.PASS,
+        )
+    return Result(
+        "USE_PARK_ARCHETYPE default = False",
+        Result.HALT,
+        f"got {USE_PARK_ARCHETYPE}; flipping the park-archetype sub-signal "
+        "on requires the Phase 3 backtest evidence + a documented "
+        "decision in WEIGHT_REFIT_LOG.md.",
+    )
+
+
+def pin_score_park_archetype_flag_off_no_op() -> Result:
+    """Phase 1: with USE_PARK_ARCHETYPE off, park_archetype_centroid on the
+    batter dict is IGNORED by score_park - score is byte-identical to a
+    batter dict without the key. This is the load-bearing
+    "production scoring is unchanged this PR" guarantee."""
+    import pandas as pd
+    import score_batters as sb
+
+    park_factors = pd.DataFrame([
+        {"venue": "Yankee Stadium",
+         "hr_pf_overall": 115, "hr_pf_lhb": 128, "hr_pf_rhb": 105},
+    ])
+    # The centroid is wildly out-of-distribution; would massively shift
+    # the score if the flag accidentally read it.
+    bogus_centroid = [99.0, 99.0, 99.0, 99.0, 99.0, 99.0]
+
+    base = sb.score_park({"bats": "L"}, "Yankee Stadium", park_factors)
+    with_centroid = sb.score_park(
+        {"bats": "L", "park_archetype_centroid": bogus_centroid},
+        "Yankee Stadium", park_factors,
+    )
+    if abs(with_centroid - base) < 0.01:
+        return Result(
+            f"score_park(centroid) ignored when flag off ({base:.2f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_park archetype flag-off no-op",
+        Result.HALT,
+        f"base={base}, with_centroid={with_centroid}; the centroid leaked "
+        "into the score with USE_PARK_ARCHETYPE=False",
+    )
+
+
+def pin_compute_park_archetype_match_none_passes_through() -> Result:
+    """Phase 1: helper returns None when either input is None.
+
+    None propagation is the load-bearing semantic - the caller (score_park)
+    uses None as the "skip the archetype term, fall back to base park
+    logic" signal. NEVER a league-avg fallback."""
+    from score_batters import _compute_park_archetype_match
+    failures = []
+    if _compute_park_archetype_match(None, [1.0, 2.0, 3.0]) is not None:
+        failures.append("today_vec=None did not produce None")
+    if _compute_park_archetype_match([1.0, 2.0, 3.0], None) is not None:
+        failures.append("batter_centroid=None did not produce None")
+    if _compute_park_archetype_match(None, None) is not None:
+        failures.append("both None did not produce None")
+    if _compute_park_archetype_match([], [1.0, 2.0]) is not None:
+        failures.append("empty today_vec did not produce None")
+    if _compute_park_archetype_match([1.0, 2.0], []) is not None:
+        failures.append("empty batter_centroid did not produce None")
+    if _compute_park_archetype_match([1.0, 2.0], [1.0, 2.0, 3.0]) is not None:
+        failures.append("dimension mismatch did not produce None")
+    if not failures:
+        return Result(
+            "_compute_park_archetype_match(None/empty/mismatch) -> None",
+            Result.PASS,
+        )
+    return Result(
+        "_compute_park_archetype_match None propagation",
+        Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_compute_park_archetype_match_basic() -> Result:
+    """Phase 1: helper produces the documented L2-distance-to-score mapping.
+
+    Identical vectors -> distance 0 -> score 100.
+    Vectors at the FAR anchor distance -> score 0.
+    Halfway -> ~50.
+    """
+    from score_batters import (
+        _compute_park_archetype_match,
+        PARK_ARCHETYPE_DIST_FAR,
+    )
+    # Distance 0: identical vectors -> score 100.
+    v = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    s_identical = _compute_park_archetype_match(v, v)
+    if s_identical is None or abs(s_identical - 100.0) > 0.1:
+        return Result(
+            "_compute_park_archetype_match identical vectors",
+            Result.HALT,
+            f"expected 100, got {s_identical}",
+        )
+    # Distance == FAR anchor along one axis -> score 0.
+    today_far = [PARK_ARCHETYPE_DIST_FAR, 0.0, 0.0, 0.0, 0.0, 0.0]
+    centroid_zero = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    s_far = _compute_park_archetype_match(today_far, centroid_zero)
+    if s_far is None or abs(s_far - 0.0) > 0.5:
+        return Result(
+            "_compute_park_archetype_match at FAR anchor",
+            Result.HALT,
+            f"expected ~0, got {s_far}",
+        )
+    return Result(
+        f"_compute_park_archetype_match(identical -> {s_identical:.1f}, "
+        f"far -> {s_far:.1f})",
+        Result.PASS,
+    )
+
+
+def pin_compute_batter_park_archetype_below_threshold_returns_none() -> Result:
+    """Phase 1: builder returns None centroid for batters with fewer than
+    PARK_ARCHETYPE_MIN_HRS HRs - the None+skip policy, NOT a league-avg
+    fallback."""
+    import tempfile
+    import gc
+    from etl.db import create_tables
+    from features_v2 import compute_batter_park_archetype, PARK_ARCHETYPE_MIN_HRS
+
+    tmp_dir = tempfile.mkdtemp(prefix="pin_bpa_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    try:
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            # Populate one HR event (well below the 10-HR threshold) so
+            # we can verify the under-threshold branch.
+            conn.execute(
+                "INSERT INTO batter_hr_events "
+                "(batter_id, pitcher_id, game_date, game_pk) "
+                "VALUES (?, ?, ?, ?)",
+                (123, 999, "2024-04-15", 700001),
+            )
+            conn.execute(
+                "INSERT INTO daily_slate (game_pk, date, venue) "
+                "VALUES (?, ?, ?)",
+                (700001, "2024-04-15", "Yankee Stadium"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result = compute_batter_park_archetype(
+            [123], as_of_date="2026-01-01", db_path=tmp_path,
+        )
+    finally:
+        gc.collect()  # Windows: release any lingering sqlite handles.
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass  # Cleanup best-effort; the temp dir is short-lived anyway.
+
+    entry = result.get(123)
+    if entry is None:
+        return Result(
+            "compute_batter_park_archetype(below-threshold)",
+            Result.HALT, "no entry for batter 123",
+        )
+    if entry.get("centroid") is not None:
+        return Result(
+            "compute_batter_park_archetype below threshold",
+            Result.HALT,
+            f"got centroid={entry['centroid']!r}; expected None for "
+            f"{entry.get('n_hrs_used')} HRs (< MIN={PARK_ARCHETYPE_MIN_HRS}). "
+            "None+skip policy is the load-bearing constraint.",
+        )
+    return Result(
+        f"compute_batter_park_archetype(n_hrs={entry.get('n_hrs_used')} "
+        f"< MIN={PARK_ARCHETYPE_MIN_HRS}) -> centroid=None (skip)",
+        Result.PASS,
+    )
+
+
+def pin_park_archetype_constants() -> Result:
+    """Phase 1: PARK_ARCHETYPE_MIN_HRS, PARK_FEATURE_KEYS, and
+    PARK_FEATURE_STATS are exposed with sane shapes."""
+    from features_v2 import (
+        PARK_ARCHETYPE_MIN_HRS, PARK_FEATURE_KEYS, PARK_FEATURE_STATS,
+    )
+    failures = []
+    if not isinstance(PARK_ARCHETYPE_MIN_HRS, int):
+        failures.append(f"MIN_HRS is {type(PARK_ARCHETYPE_MIN_HRS).__name__}")
+    elif not (3 <= PARK_ARCHETYPE_MIN_HRS <= 50):
+        failures.append(
+            f"MIN_HRS={PARK_ARCHETYPE_MIN_HRS} outside sane [3, 50] range"
+        )
+    if not isinstance(PARK_FEATURE_KEYS, tuple):
+        failures.append(f"PARK_FEATURE_KEYS is {type(PARK_FEATURE_KEYS).__name__}")
+    elif len(PARK_FEATURE_KEYS) < 4:
+        failures.append(
+            f"PARK_FEATURE_KEYS too short: {len(PARK_FEATURE_KEYS)} elements"
+        )
+    if not isinstance(PARK_FEATURE_STATS, dict):
+        failures.append(
+            f"PARK_FEATURE_STATS is {type(PARK_FEATURE_STATS).__name__}"
+        )
+    else:
+        for k in PARK_FEATURE_KEYS:
+            ms = PARK_FEATURE_STATS.get(k)
+            if not isinstance(ms, tuple) or len(ms) != 2:
+                failures.append(f"stat for {k} is {ms!r}")
+                break
+    if not failures:
+        return Result(
+            f"PARK_FEATURE_KEYS ({len(PARK_FEATURE_KEYS)}), "
+            f"MIN_HRS={PARK_ARCHETYPE_MIN_HRS}, stats well-formed",
+            Result.PASS,
+        )
+    return Result(
+        "park archetype constants", Result.HALT, "; ".join(failures),
+    )
+
+
+def pin_backtest_park_archetype_skeleton_imports() -> Result:
+    """Phase 1: backtest_park_archetype imports and exposes documented
+    entry points + 6 variants. Doesn't run it - the SQL fetch requires
+    Phase 2 columns."""
+    try:
+        from diagnostics import backtest_park_archetype as bpa
+    except Exception as e:
+        return Result(
+            "backtest_park_archetype import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in (
+        "fetch_rows", "score_variants", "compute_metrics", "main",
+        "_base_park_score", "_archetype_score", "_park_score",
+        "_has_archetype_signal", "VARIANTS",
+    ):
+        if not hasattr(bpa, name):
+            failures.append(f"missing {name}")
+    if hasattr(bpa, "VARIANTS"):
+        expected = {
+            "default", "archetype_5hr", "archetype_10hr", "archetype_20hr",
+            "archetype_weighted_low", "archetype_weighted_high",
+        }
+        got = set(bpa.VARIANTS)
+        if got != expected:
+            failures.append(f"VARIANTS = {sorted(got)}, want {sorted(expected)}")
+    if not failures:
+        return Result(
+            "backtest_park_archetype: 6 variants + entry points wired",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_park_archetype skeleton", Result.HALT, "; ".join(failures),
+    )
+
+
+
+# ---------------------------------------------------------------------------
 # 2026-05-26: Form archetype Phase 1 (sub-signal scaffolding)
 # ---------------------------------------------------------------------------
 
@@ -2508,6 +2826,15 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_fetch_batter_pitch_type_splits_signature,
     pin_pitch_type_split_min_bb_constant,
     pin_backtest_arsenal_inputs_skeleton_imports,
+    # 2026-05-25: Phase 1 — park archetype sub-signal scaffolding
+    pin_batter_park_archetype_table_exists,
+    pin_use_park_archetype_flag_default_off,
+    pin_score_park_archetype_flag_off_no_op,
+    pin_compute_park_archetype_match_none_passes_through,
+    pin_compute_park_archetype_match_basic,
+    pin_compute_batter_park_archetype_below_threshold_returns_none,
+    pin_park_archetype_constants,
+    pin_backtest_park_archetype_skeleton_imports,
     # 2026-05-26: Form archetype Phase 1 (sub-signal scaffolding)
     pin_use_form_archetype_default_off,
     pin_score_form_archetype_flag_off_no_op,

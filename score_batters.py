@@ -517,6 +517,35 @@ USE_SEASON_HR_FLOOR = True   # 2026-05-03: flipped on after 14d harness showed
 USE_RECENT_STATCAST_BLEND = False
 
 
+# Phase 1 (2026-05-25): park archetype sub-signal for score_park. OFF by
+# default — flip True in Phase 3 after backtest validates the lift.
+#
+# Per-batter centroid of "park features at venues where this batter has
+# historically hit HRs", scored against today's park by L2 distance.
+# Intuition: does today's park look like the parks this hitter normally
+# goes deep in? When on, the resulting score joins the base handedness-
+# weighted park-factor logic inside score_park's mean.
+#
+# Foundation only this PR: helper exists, gate is in score_park, the
+# sub-signal weight is 0 (no signal contribution while the flag is off).
+# The full math + rollout is in docs/park_archetype_design.md.
+USE_PARK_ARCHETYPE = False
+
+# Sub-signal weight applied when USE_PARK_ARCHETYPE is True. Phase 3
+# backtest sets the empirical value; the harness sweeps 0.25 / 0.50 / 0.75.
+# Lives here so the helper math is fully transparent without touching
+# WEIGHT_CONFIGS["default"] (which would require an A1 refit). Inert in
+# Phase 1 because the gate is off.
+PARK_ARCHETYPE_SUBSIGNAL_WEIGHT = 0.5
+
+# L2-distance anchors for mapping standardized-feature distance to 0-100.
+# Picked from the design doc's expected range: a batter whose centroid sits
+# exactly on today's park's vector gets distance 0 -> score 100; a batter
+# whose centroid is ~3 standard deviations away (the design-doc cap) gets
+# distance ~7 (in 6-D standardized space) -> score 0. Re-tunable in Phase 3.
+PARK_ARCHETYPE_DIST_NEAR = 0.0
+PARK_ARCHETYPE_DIST_FAR = 7.0
+
 # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal. OFF by
 # default — flip True in Phase 3 after backtest validates the lift.
 #
@@ -882,6 +911,46 @@ def score_matchup(
     return min(100, base + platoon_bonus + rookie_bonus)
 
 
+def _compute_park_archetype_match(
+    today_park_features: list[float] | None,
+    batter_archetype_vector: list[float] | None,
+) -> float | None:
+    """Phase 1 helper: park-archetype match score for today's park.
+
+    Computes L2 distance between the batter's career HR-venue centroid and
+    today's park's feature vector (both in standardized 6-D space), then
+    maps the distance to 0-100 via the
+    [PARK_ARCHETYPE_DIST_NEAR, PARK_ARCHETYPE_DIST_FAR] anchors. Close to
+    the centroid -> 100; far away -> 0. Re-tunable in Phase 3 after the
+    backtest is run on real backfill data.
+
+    **Returns None** when either input is None (or empty/mismatched
+    dimension). None propagation lets score_park skip the archetype term
+    cleanly — NOT a league-average fallback. See
+    docs/park_archetype_design.md for the rationale (#small-sample-policy).
+    """
+    if today_park_features is None or batter_archetype_vector is None:
+        return None
+    if not today_park_features or not batter_archetype_vector:
+        return None
+    if len(today_park_features) != len(batter_archetype_vector):
+        return None
+
+    sq = 0.0
+    for a, b in zip(today_park_features, batter_archetype_vector):
+        sq += (float(a) - float(b)) ** 2
+    dist = sq ** 0.5
+
+    # Inverse mapping: smaller distance -> higher score. min_max_scale
+    # would do the opposite, so we flip via the [FAR, NEAR] swap and let
+    # clamping handle out-of-range values.
+    return min_max_scale(
+        PARK_ARCHETYPE_DIST_FAR - dist,
+        PARK_ARCHETYPE_DIST_FAR - PARK_ARCHETYPE_DIST_FAR,  # = 0
+        PARK_ARCHETYPE_DIST_FAR - PARK_ARCHETYPE_DIST_NEAR,
+    )
+
+
 def score_park(
     batter: dict,
     venue: str,
@@ -899,10 +968,20 @@ def score_park(
     Note: park_score is currently weighted 0 in the default config (the
     20-day backfit found near-zero predictive coefficient). Function is
     retained so it can be brought back if future seasons show signal.
+
+    Phase 1 (2026-05-25): park-archetype sub-signal gated by
+    USE_PARK_ARCHETYPE (default False — additive, no-op until Phase 3
+    flips it). When on, the per-batter centroid-based archetype score
+    blends additively with the base handedness-weighted park factor.
+    None propagation means a missing batter centroid (small sample) or
+    missing today-park features skip cleanly. See
+    docs/park_archetype_design.md.
     """
     if not venue:
         return 50.0
 
+    # Base score: existing handedness-weighted park-factor logic.
+    base_score: float
     # Slate-relative path
     if slate_ctx and slate_ctx.get("active") and venue in slate_ctx.get("park_pct", {}):
         base_pct = slate_ctx["park_pct"][venue]
@@ -923,30 +1002,52 @@ def score_park(
                         else:
                             adj = 0.0
                         base_pct = max(0, min(100, base_pct + adj * 50))
-        return base_pct
-
-    # Fallback: fixed-anchor scaling (legacy)
-    pf = 100.0
-    if park_factors is not None and not park_factors.empty:
-        match = park_factors[park_factors["venue"] == venue]
-        if not match.empty:
-            row = match.iloc[0]
-            bats = batter.get("bats", "R") or "R"
-            if "hr_pf_lhb" in row.index and "hr_pf_rhb" in row.index:
-                lhb = float(row["hr_pf_lhb"])
-                rhb = float(row["hr_pf_rhb"])
-                if bats == "L":
-                    pf = lhb
-                elif bats == "R":
-                    pf = rhb
-                elif bats == "S":
-                    pf = (lhb + rhb) / 2.0
+        base_score = base_pct
+    else:
+        # Fallback: fixed-anchor scaling (legacy)
+        pf = 100.0
+        if park_factors is not None and not park_factors.empty:
+            match = park_factors[park_factors["venue"] == venue]
+            if not match.empty:
+                row = match.iloc[0]
+                bats = batter.get("bats", "R") or "R"
+                if "hr_pf_lhb" in row.index and "hr_pf_rhb" in row.index:
+                    lhb = float(row["hr_pf_lhb"])
+                    rhb = float(row["hr_pf_rhb"])
+                    if bats == "L":
+                        pf = lhb
+                    elif bats == "R":
+                        pf = rhb
+                    elif bats == "S":
+                        pf = (lhb + rhb) / 2.0
+                    else:
+                        pf = float(row.get("hr_pf_overall", (lhb + rhb) / 2.0))
                 else:
-                    pf = float(row.get("hr_pf_overall", (lhb + rhb) / 2.0))
-            else:
-                pf = float(row.get("hr_park_factor", row.get("hr_pf_overall", 100.0)))
+                    pf = float(row.get("hr_park_factor", row.get("hr_pf_overall", 100.0)))
 
-    return min_max_scale(pf, 70, 130)
+        base_score = min_max_scale(pf, 70, 130)
+
+    # Phase 1 (2026-05-25): park-archetype sub-signal. Gated by
+    # USE_PARK_ARCHETYPE (default False — additive, no-op until Phase 3
+    # flips it). When on, the archetype score blends additively with
+    # base_score via PARK_ARCHETYPE_SUBSIGNAL_WEIGHT. None propagation
+    # means a missing batter centroid (small sample) or missing today-park
+    # features skip cleanly — base_score is returned unchanged.
+    if USE_PARK_ARCHETYPE:
+        centroid = batter.get("park_archetype_centroid")
+        if centroid is not None:
+            from features_v2 import build_park_feature_vector
+            today_vec = build_park_feature_vector(venue)
+            arch_score = _compute_park_archetype_match(today_vec, centroid)
+            if arch_score is not None:
+                w = PARK_ARCHETYPE_SUBSIGNAL_WEIGHT
+                # Weighted blend: base contributes (1-w), archetype w.
+                # When w=0.5 -> equal-mean addition (same pattern as
+                # pitch-type's `scores.append(...)` inside score_matchup).
+                return float(max(0.0, min(100.0,
+                    (1.0 - w) * base_score + w * arch_score)))
+
+    return base_score
 
 
 def _layoff_dampener(form: float, window_days) -> float:
