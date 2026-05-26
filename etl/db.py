@@ -119,6 +119,43 @@ def create_tables(conn: sqlite3.Connection):
     );
 
     -- ================================================================
+    -- Batter pitch-type SLG splits — season-to-date snapshots
+    -- (added 2026-05-25, Phase 1 scaffolding for the pitch-type
+    -- archetype matchup signal)
+    --
+    -- One row per (batter, date_through). Each row stores SLG against
+    -- the FB / BR / OS pitch-type groups (see
+    -- docs/pitch_type_archetype_design.md for the bucket definitions),
+    -- aggregated from Statcast pitch-level data for games strictly
+    -- before date_through. `*_pa` carries the batted-ball count for
+    -- sample-size gating — under PITCH_TYPE_SPLIT_MIN_BB (30), the
+    -- corresponding *_slg should be treated as missing and the
+    -- league-average fallback (LEAGUE_AVG_PITCH_TYPE_SLG) used in its
+    -- place.
+    --
+    -- Empty in Phase 1 (this PR introduces the schema only).
+    -- Phase 2 populates via etl/backfill_pitch_type_splits.py +
+    -- nightly ETL hook. See docs/pitch_type_archetype_design.md.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS batter_pitch_type_splits (
+        player_id       INTEGER NOT NULL,
+        date_through    TEXT NOT NULL,
+        fb_slg          REAL,
+        fb_pa           INTEGER,
+        br_slg          REAL,
+        br_pa           INTEGER,
+        os_slg          REAL,
+        os_pa           INTEGER,
+        fetched_at      TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (player_id, date_through)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bpts_date
+        ON batter_pitch_type_splits(date_through);
+    CREATE INDEX IF NOT EXISTS idx_bpts_player
+        ON batter_pitch_type_splits(player_id);
+
+    -- ================================================================
     -- Daily game slate (morning ETL)
     -- ================================================================
     CREATE TABLE IF NOT EXISTS daily_slate (
