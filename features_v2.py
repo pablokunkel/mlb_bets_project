@@ -722,6 +722,301 @@ def _team_to_abbrev(name: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Form archetype centroid builder (Phase 1 — added 2026-05-26)
+# ---------------------------------------------------------------------------
+# Per-batter "pre-HR state-of-play" centroid. Mirrors the archetype pattern
+# in pitcher_profile._build_victim_profiles_from_db: for each HR a batter
+# has hit, snapshot their state-of-play in the window_days days BEFORE the
+# HR (strictly excluding HR-day games). Aggregate to a centroid feature
+# vector. Today's same-features vector is then compared via L2 distance
+# at scoring time (score_batters._compute_form_archetype_match).
+#
+# The vector is built from features that DO NOT OVERLAP with score_form's
+# base inputs (recent_hr_10g, recent_iso_30g, ev_trend). See
+# docs/form_archetype_design.md for the non-overlap-with-Form-inputs
+# guardrail and the per-feature rationale.
+#
+# Phase 1 ships this builder callable but uncalled — no nightly ETL
+# wiring, no production use. Phase 2 adds the backfill orchestrator;
+# Phase 3 runs the backtest; Phase 4 enables it in production.
+# ---------------------------------------------------------------------------
+
+# Pre-HR state-of-play feature names. ORDER MATTERS — the centroid is
+# stored as a positional JSON list, so changing the order would silently
+# corrupt the L2 distance computation at read time. Append-only; if a
+# feature is dropped in Phase 3, leave its slot as None rather than
+# re-ordering.
+FORM_ARCHETYPE_FEATURES = [
+    "recent_xwoba_14d",       # contact-quality reading, 14d window
+    "recent_barrel_pct_14d",  # quality-contact frequency
+    "recent_swstr_pct_7d",    # plate-discipline / whiff rate
+    "recent_pull_pct_14d",    # pull-direction signal
+    "days_since_last_hr",     # rest-pattern marker
+    "days_since_off",         # rest from baseball entirely
+    "recent_avg_30g",         # state-descriptor (NOT load-bearing in B11 score_form)
+]
+
+FORM_ARCHETYPE_MIN_HRS = 10           # min career HRs in lookback window for centroid
+FORM_ARCHETYPE_LOOKBACK_SEASONS = 2   # how many seasons of HRs to use
+FORM_ARCHETYPE_DEFAULT_WINDOW = 7     # 7-day pre-HR snapshot (Phase 1 default)
+
+
+def _per_hr_state_snapshot(
+    df_window,  # pitch-level Statcast DataFrame for a single batter's pre-HR window
+    hr_date: str,
+    prev_hr_date: str | None,
+    last_off_date: str | None,
+) -> dict | None:
+    """Compute the 7-element state-of-play vector for one pre-HR window.
+
+    Returns a dict keyed by FORM_ARCHETYPE_FEATURES, or None if the window
+    has insufficient data (< 5 PA-ending events).
+
+    *df_window* — already filtered to [hr_date - window_days, hr_date) for
+                  this one batter.
+    *hr_date*   — the HR date itself ('YYYY-MM-DD'); used for the rest-day
+                  computations.
+    *prev_hr_date* — most recent HR before this one (None = first season HR).
+    *last_off_date* — most recent off-day before hr_date (None = unknown).
+    """
+    if df_window is None or df_window.empty:
+        return None
+
+    import pandas as pd
+
+    # PA-terminal events only — non-terminal pitches have events == NaN.
+    if "events" not in df_window.columns:
+        return None
+    pa = df_window.dropna(subset=["events"]).copy()
+    if len(pa) < 5:
+        return None  # window too thin to characterize a state-of-play
+
+    # Batted-ball mask
+    if "bb_type" in pa.columns:
+        bb_mask = pa["bb_type"].notna()
+    else:
+        bb_mask = pa["events"].isin(_HIT_EVENTS)
+    n_bb = int(bb_mask.sum())
+
+    out: dict[str, float | int | None] = {f: None for f in FORM_ARCHETYPE_FEATURES}
+
+    # 1. recent_xwoba_14d — mean xwOBA over contact events (14d window)
+    if "estimated_woba_using_speedangle" in pa.columns:
+        xwoba_series = pa["estimated_woba_using_speedangle"].dropna()
+        if len(xwoba_series) >= 5:
+            out["recent_xwoba_14d"] = round(float(xwoba_series.mean()), 3)
+
+    # 2. recent_barrel_pct_14d — exact Statcast barrel (launch_speed_angle == 6)
+    if "launch_speed_angle" in pa.columns and n_bb > 0:
+        n_barrel = int(((pa["launch_speed_angle"] == 6) & bb_mask).sum())
+        out["recent_barrel_pct_14d"] = round(n_barrel / n_bb * 100.0, 2)
+
+    # 3. recent_swstr_pct_7d — swinging-strike% across all pitches in window.
+    # Use the raw pitch-level df (not the PA-terminal slice) so balls/swings
+    # are properly denominator-counted. swstr = swinging strike per pitch.
+    if "description" in df_window.columns:
+        descs = df_window["description"].dropna()
+        if len(descs) >= 10:
+            n_swstr = int(descs.isin([
+                "swinging_strike",
+                "swinging_strike_blocked",
+                "missed_bunt",
+            ]).sum())
+            out["recent_swstr_pct_7d"] = round(n_swstr / len(descs) * 100.0, 2)
+
+    # 4. recent_pull_pct_14d — pulled batted balls / total batted balls.
+    # Uses hc_x (Statcast spray-direction proxy, center ~125) and `stand`.
+    if "hc_x" in pa.columns and "stand" in pa.columns and n_bb > 0:
+        bb_rows = pa[bb_mask]
+        pulled = 0
+        for _, row in bb_rows.iterrows():
+            hc_x = row.get("hc_x")
+            stand = row.get("stand", "R")
+            if hc_x is None or (isinstance(hc_x, float) and hc_x != hc_x):
+                continue
+            if stand == "R" and hc_x < 125:
+                pulled += 1
+            elif stand == "L" and hc_x > 125:
+                pulled += 1
+        out["recent_pull_pct_14d"] = round(pulled / n_bb * 100.0, 2)
+
+    # 5. days_since_last_hr — calendar days between this HR and the previous one
+    if prev_hr_date:
+        try:
+            d1 = datetime.strptime(hr_date, "%Y-%m-%d")
+            d0 = datetime.strptime(prev_hr_date, "%Y-%m-%d")
+            out["days_since_last_hr"] = max(0, (d1 - d0).days)
+        except ValueError:
+            pass
+
+    # 6. days_since_off — last_off_date is supplied by the caller; if it
+    # can't be computed (e.g., season opener) leave as None.
+    if last_off_date:
+        try:
+            d1 = datetime.strptime(hr_date, "%Y-%m-%d")
+            d0 = datetime.strptime(last_off_date, "%Y-%m-%d")
+            out["days_since_off"] = max(0, (d1 - d0).days)
+        except ValueError:
+            pass
+
+    # 7. recent_avg_30g — for the pre-HR snapshot we proxy this from the
+    # window AB sample (true 30g requires gamelog access; the window
+    # AVG is a reasonable approximation for the state-of-play centroid).
+    ab_mask = pa["events"].isin(_PA_AB_EVENTS)
+    n_ab = int(ab_mask.sum())
+    if n_ab >= 5:
+        n_hits = int(pa["events"].isin(_HIT_EVENTS).sum())
+        out["recent_avg_30g"] = round(n_hits / n_ab, 3)
+
+    return out
+
+
+def _aggregate_centroid(snapshots: list[dict]) -> list[float | None]:
+    """Mean-aggregate a list of state-of-play snapshots into a centroid.
+
+    Returns a positional list (one entry per FORM_ARCHETYPE_FEATURES slot).
+    Missing values (None) are skipped per slot — if no snapshot has a value
+    for that feature, the centroid slot is None.
+    """
+    if not snapshots:
+        return [None] * len(FORM_ARCHETYPE_FEATURES)
+
+    centroid: list[float | None] = []
+    for feat in FORM_ARCHETYPE_FEATURES:
+        vals = [s.get(feat) for s in snapshots if s.get(feat) is not None]
+        centroid.append(round(sum(vals) / len(vals), 4) if vals else None)
+    return centroid
+
+
+def compute_batter_form_archetype(
+    player_ids: list[int],
+    as_of_date: str | None = None,
+    window_days: int = FORM_ARCHETYPE_DEFAULT_WINDOW,
+) -> dict[int, dict | None]:
+    """Build per-batter pre-HR state-of-play centroids.
+
+    For each batter in *player_ids*:
+      1. Pull every HR they hit in the prior FORM_ARCHETYPE_LOOKBACK_SEASONS
+         seasons, filtered to game_date < as_of_date (honest as-of-date).
+      2. For each HR, snapshot the state-of-play in the *window_days* days
+         BEFORE the HR. Bulk Statcast pull, then per-batter slice.
+      3. Mean-aggregate the snapshots into a 7-element centroid.
+      4. If fewer than FORM_ARCHETYPE_MIN_HRS HRs feed the centroid, return
+         None for that batter — caller skips via None propagation.
+
+    Returns {player_id: {feature_centroid, n_hrs_used} | None}.
+
+    *as_of_date* — YYYY-MM-DD. None (default) = today = production behavior.
+    *window_days* — pre-HR snapshot window. 7 by default (sweep dimension
+                    for the Phase 3 backtest harness).
+
+    Phase 1: this builder is callable but uncalled.
+    # TODO Phase 2: wire into etl/etl_nightly.py + etl/backfill_form_archetype.py.
+
+    NOTE: each HR triggers one bulk Statcast pull for the prior
+    *window_days*. For large batter lists, this can be slow — Phase 2 will
+    de-duplicate by date (one bulk pull per unique window-end-date) and
+    cache the per-batter slices. Phase 1 ships the simpler per-HR pull so
+    the math is verifiable on a small slate first.
+    """
+    end_str = as_of_date or datetime.now().strftime("%Y-%m-%d")
+    try:
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d")
+    except ValueError:
+        return {pid: None for pid in player_ids}
+
+    season = end_dt.year
+    season_lo = season - FORM_ARCHETYPE_LOOKBACK_SEASONS + 1
+
+    out: dict[int, dict | None] = {}
+    if not player_ids:
+        return out
+
+    # Step 1: pull all relevant HR events from the local DB.
+    # Mirrors pitcher_profile._build_victim_profiles_from_db's pattern —
+    # DB-first, no per-player Statcast roundtrips for the HR list.
+    try:
+        from etl.db import DB_PATH
+        import sqlite3
+        if not DB_PATH.exists():
+            return {pid: None for pid in player_ids}
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        # parameterized IN clause — sqlite3 doesn't accept tuples for IN, so
+        # build the placeholder string manually.
+        placeholders = ",".join("?" * len(player_ids))
+        rows = conn.execute(
+            f"""
+            SELECT batter_id, game_date
+            FROM batter_hr_events
+            WHERE batter_id IN ({placeholders})
+              AND game_date >= ?
+              AND game_date < ?
+            ORDER BY batter_id, game_date
+            """,
+            (*player_ids, f"{season_lo}-03-01", end_str),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"  [features_v2] form_archetype HR-events DB load failed: {e}")
+        return {pid: None for pid in player_ids}
+
+    hrs_by_batter: dict[int, list[str]] = {}
+    for r in rows:
+        bid = int(r["batter_id"])
+        date = str(r["game_date"])
+        hrs_by_batter.setdefault(bid, []).append(date)
+
+    # Step 2 + 3 + 4: per batter, build per-HR snapshots and aggregate.
+    for pid in player_ids:
+        hr_dates = hrs_by_batter.get(int(pid), [])
+        if len(hr_dates) < FORM_ARCHETYPE_MIN_HRS:
+            out[pid] = None
+            continue
+
+        snapshots = []
+        prev_hr: str | None = None
+        for hr_date in hr_dates:
+            try:
+                hr_dt = datetime.strptime(hr_date, "%Y-%m-%d")
+            except ValueError:
+                prev_hr = hr_date
+                continue
+            window_start = (hr_dt - timedelta(days=window_days)).strftime("%Y-%m-%d")
+            window_end = (hr_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+            # Bulk pitch-level pull for one batter's pre-HR window.
+            try:
+                from pybaseball import statcast_batter
+                df_window = statcast_batter(window_start, window_end, int(pid))
+            except Exception:
+                prev_hr = hr_date
+                continue
+
+            snap = _per_hr_state_snapshot(
+                df_window=df_window,
+                hr_date=hr_date,
+                prev_hr_date=prev_hr,
+                last_off_date=None,  # Phase 2 fills this from gamelog
+            )
+            if snap is not None:
+                snapshots.append(snap)
+            prev_hr = hr_date
+
+        if len(snapshots) < FORM_ARCHETYPE_MIN_HRS:
+            # Not enough usable snapshots — None+skip per design.
+            out[pid] = None
+            continue
+
+        centroid = _aggregate_centroid(snapshots)
+        out[pid] = {
+            "feature_centroid": centroid,
+            "n_hrs_used": len(snapshots),
+        }
+
+    return out
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Inspect features_v2 fetchers")

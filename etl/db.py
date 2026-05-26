@@ -128,10 +128,9 @@ def create_tables(conn: sqlite3.Connection):
     -- docs/pitch_type_archetype_design.md for the bucket definitions),
     -- aggregated from Statcast pitch-level data for games strictly
     -- before date_through. `*_pa` carries the batted-ball count for
-    -- sample-size gating — under PITCH_TYPE_SPLIT_MIN_BB (30), the
-    -- corresponding *_slg should be treated as missing and the
-    -- league-average fallback (LEAGUE_AVG_PITCH_TYPE_SLG) used in its
-    -- place.
+    -- sample-size gating — under PITCH_TYPE_SPLIT_MIN_BB (30) the
+    -- helper returns None and score_matchup skips the term. No
+    -- league-avg fallback (per Phase 1 follow-up #83).
     --
     -- Empty in Phase 1 (this PR introduces the schema only).
     -- Phase 2 populates via etl/backfill_pitch_type_splits.py +
@@ -154,6 +153,42 @@ def create_tables(conn: sqlite3.Connection):
         ON batter_pitch_type_splits(date_through);
     CREATE INDEX IF NOT EXISTS idx_bpts_player
         ON batter_pitch_type_splits(player_id);
+
+    -- ================================================================
+    -- Per-batter Form archetype centroid (Phase 1 scaffolding for the
+    -- form-archetype sub-signal of score_form, added 2026-05-26).
+    --
+    -- One row per (batter, date_through, window_days). Each row stores
+    -- the centroid of the batter's pre-HR state-of-play across all
+    -- HRs they hit in the prior two seasons (strictly before
+    -- date_through). The state-of-play vector is a 7-element list
+    -- covering recent xwoba / barrel% / swstr% / pull% / days_since_*
+    -- / recent_avg_30g — see docs/form_archetype_design.md for the
+    -- full feature list, window choice, and non-overlap-with-score_form
+    -- guardrail.
+    --
+    -- Empty in Phase 1 (this PR introduces the schema only).
+    -- Phase 2 populates via etl/backfill_form_archetype.py + nightly
+    -- ETL hook. See docs/form_archetype_design.md for the rollout plan.
+    --
+    -- *window_days* lets the Phase-3 backtest sweep 7d / 14d / 21d
+    -- prior-snapshot windows without schema changes — one row per
+    -- (batter, date, window) tuple.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS batter_form_archetype (
+        player_id            INTEGER NOT NULL,
+        date_through         TEXT NOT NULL,
+        window_days          INTEGER NOT NULL,
+        feature_centroid_json TEXT NOT NULL,
+        n_hrs_used           INTEGER NOT NULL,
+        fetched_at           TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (player_id, date_through, window_days)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bfa_date
+        ON batter_form_archetype(date_through);
+    CREATE INDEX IF NOT EXISTS idx_bfa_player
+        ON batter_form_archetype(player_id);
 
     -- ================================================================
     -- Daily game slate (morning ETL)
