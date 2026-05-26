@@ -119,6 +119,40 @@ def create_tables(conn: sqlite3.Connection):
     );
 
     -- ================================================================
+    -- Batter park archetype centroid — career snapshots
+    -- (added 2026-05-25, Phase 1 scaffolding for the park-archetype
+    -- sub-signal of score_park)
+    --
+    -- One row per (batter, date_through). Stores a JSON-encoded
+    -- 6-element feature centroid built from the venues where the
+    -- batter has homered in their career, weighted by 1 /
+    -- park_neutral_hr_factor (so HRs at Coors count for less than HRs
+    -- at Petco). See docs/park_archetype_design.md for the full math.
+    --
+    -- `feature_centroid_json` is NULL when the batter has fewer than
+    -- PARK_ARCHETYPE_MIN_HRS HRs as of `date_through` — None+skip
+    -- policy means score_park bypasses the archetype term and falls
+    -- back to the base handedness-weighted park-factor logic.
+    --
+    -- Empty in Phase 1 (this PR introduces the schema only).
+    -- Phase 2 populates via etl/backfill_park_archetype.py + nightly
+    -- ETL hook. See docs/park_archetype_design.md.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS batter_park_archetype (
+        player_id            INTEGER NOT NULL,
+        date_through         TEXT NOT NULL,
+        feature_centroid_json TEXT,
+        n_hrs_used           INTEGER,
+        fetched_at           TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (player_id, date_through)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bpa_date
+        ON batter_park_archetype(date_through);
+    CREATE INDEX IF NOT EXISTS idx_bpa_player
+        ON batter_park_archetype(player_id);
+
+    -- ================================================================
     -- Batter pitch-type SLG splits — season-to-date snapshots
     -- (added 2026-05-25, Phase 1 scaffolding for the pitch-type
     -- archetype matchup signal)
@@ -128,10 +162,9 @@ def create_tables(conn: sqlite3.Connection):
     -- docs/pitch_type_archetype_design.md for the bucket definitions),
     -- aggregated from Statcast pitch-level data for games strictly
     -- before date_through. `*_pa` carries the batted-ball count for
-    -- sample-size gating — under PITCH_TYPE_SPLIT_MIN_BB (30), the
-    -- corresponding *_slg should be treated as missing and the
-    -- league-average fallback (LEAGUE_AVG_PITCH_TYPE_SLG) used in its
-    -- place.
+    -- sample-size gating — under PITCH_TYPE_SPLIT_MIN_BB (30) the
+    -- helper returns None and score_matchup skips the term. No
+    -- league-avg fallback (per Phase 1 follow-up #83).
     --
     -- Empty in Phase 1 (this PR introduces the schema only).
     -- Phase 2 populates via etl/backfill_pitch_type_splits.py +

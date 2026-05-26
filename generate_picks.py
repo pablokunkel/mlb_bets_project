@@ -1582,6 +1582,12 @@ def score_live_slate(
         if recent14.get("recent_iso_14d") is not None:
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
+        # Phase 1 (2026-05-25): park-archetype sub-signal centroid.
+        # Default to None — score_park's USE_PARK_ARCHETYPE guard is off,
+        # so the key is read-but-ignored until park-archetype Phase 2 (PR #87)
+        # wires it via the bulk slate dict. Stays None on this PR.
+        entry["park_archetype_centroid"] = None
+
         # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal.
         # Read from batter_pitch_type_splits via slate-level lookup. Keys
         # default to None when no row for this batter on this date —
@@ -1846,6 +1852,12 @@ def score_untiered_starters(
         if recent14.get("recent_iso_14d") is not None:
             entry["recent_iso_14d"] = recent14["recent_iso_14d"]
 
+        # Phase 1 (2026-05-25): park-archetype centroid. Default to None
+        # on the untiered path. T4 batters tend to have very thin career
+        # HR samples — the PARK_ARCHETYPE_MIN_HRS gate in the Phase 2
+        # builder will drop most T4 entries to None automatically.
+        entry["park_archetype_centroid"] = None
+
         # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal —
         # read from batter_pitch_type_splits via slate-level lookup. T4
         # batters tend to have thin samples — _compute_xslg_vs_arsenal's
@@ -1972,6 +1984,10 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                     "recent_barrel_real_14d": None,
                     "recent_xwoba_contact_14d": None,
                     "recent_iso_14d": None,
+                    # Phase 1 (2026-05-25): park-archetype centroid.
+                    # Offline sim has no HR-event history -> None. With
+                    # USE_PARK_ARCHETYPE off this is ignored anyway.
+                    "park_archetype_centroid": None,
                     # Phase 1 (2026-05-25): pitch-type archetype splits.
                     # Offline sim has no Statcast — leave None. With
                     # USE_ARSENAL_SUBSIGNAL off these are ignored.
