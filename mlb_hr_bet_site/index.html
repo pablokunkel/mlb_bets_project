@@ -518,6 +518,24 @@
       font-size: 11px;
       color: var(--ink-soft);
     }
+    /* B7 (2026-05-25): IL/scratch badge on the Big Board.
+       Shown when daily_picks.is_likely_out=1 (Tier 2/3 fallback batter
+       whose roster status flags them as IL/Paternity/Bereavement/etc).
+       Top-8 card never shows this since those rows have selected=0. */
+    .big-board-table .bb-il {
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      background: rgba(248, 113, 113, 0.15);
+      color: var(--red);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      vertical-align: middle;
+    }
+    .big-board-table tr.is-il td { opacity: 0.65; }
 
     .badge {
       display: inline-block; padding: 3px 9px; border-radius: 999px;
@@ -4846,9 +4864,29 @@
         const star = p.selected
           ? '<span class="bb-star" title="Selected — on today\'s 8-pick card">★</span>'
           : '';
-        html += `<tr data-pid="${pid}" class="clickable-row">
+        // B7 (2026-05-25): IL/scratch badge. status_description is the
+        // MLB roster API's human label ('10-Day Injured List', 'Paternity
+        // List', etc.). We compress to a short tag — 'IL' for any injured
+        // list code (D7/D10/D60), otherwise the first 8 chars of the
+        // description. is_likely_out=1 always implies a non-null status
+        // (set together in load_player_status_lookup).
+        let ilBadge = '';
+        const isIl = p.is_likely_out === 1 || p.is_likely_out === true;
+        if (isIl) {
+          const desc = p.status_description || 'Out';
+          const lower = desc.toLowerCase();
+          let tag = 'Out';
+          if (lower.includes('injured') || lower.match(/\bil\b/)) tag = 'IL';
+          else if (lower.includes('paternity')) tag = 'PAT';
+          else if (lower.includes('bereavement')) tag = 'BRV';
+          else if (lower.includes('suspend')) tag = 'SUS';
+          else if (lower.includes('restrict')) tag = 'RST';
+          ilBadge = `<span class="bb-il" title="${desc}">${tag}</span>`;
+        }
+        const rowCls = isIl ? 'clickable-row is-il' : 'clickable-row';
+        html += `<tr data-pid="${pid}" class="${rowCls}">
           <td class="bb-rank">${i + 1}</td>
-          <td><span class="player-link" style="font-weight:600">${star}${name}</span><span class="bb-team">${p.team || ''}</span></td>
+          <td><span class="player-link" style="font-weight:600">${star}${name}</span>${ilBadge}<span class="bb-team">${p.team || ''}</span></td>
           <td class="num bb-comp">${(p.composite || 0).toFixed(1)}</td>
           <td class="num${factorHm('power_score')}">${fmtScore(p.power_score)}</td>
           <td class="num${factorHm('matchup_score')}">${fmtScore(p.matchup_score)}</td>

@@ -5,6 +5,8 @@ etl_morning.py — Morning data pipeline for Daily HR Bet.
 Runs at ~10:00 AM. Fetches today's fresh data:
   1. Schedule + probable pitchers from MLB Stats API
   2. Confirmed lineups from bdfed matchup endpoint
+  2.5. Roster status (IL / Paternity / Bereavement / Suspended) for any
+       Tier 2/3 fallback lineup rows — B7 IL/scratch filter
   3. Weather from Open-Meteo
   4. Pitcher profiles for today's starters (from DB, no API unless missing)
 
@@ -134,7 +136,7 @@ def normalize_venue(raw: str) -> str:
 
 def fetch_schedule(conn, date_str: str) -> list[dict]:
     """Fetch MLB schedule and write to daily_slate."""
-    print("\n  [1/3] Fetching schedule + probable pitchers...")
+    print("\n  [1/4] Fetching schedule + probable pitchers...")
 
     url = f"{MLB_API}/schedule"
     params = {
@@ -186,7 +188,7 @@ def fetch_schedule(conn, date_str: str) -> list[dict]:
         ))
 
     conn.commit()
-    print(f"  [1/3] Done. {len(games)} games written to daily_slate.")
+    print(f"  [1/4] Done. {len(games)} games written to daily_slate.")
     return games
 
 
@@ -216,7 +218,7 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
     so downstream consumers don't pretend an alphabetical roster is a
     starting lineup.
     """
-    print("\n  [2/3] Fetching confirmed lineups...")
+    print("\n  [2/4] Fetching confirmed lineups...")
 
     # Import here (not at module top) to avoid a circular import: this
     # module is loaded by run_daily.bat as `etl.etl_morning`, but
@@ -289,11 +291,14 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
                 position = p.get("position")
                 if isinstance(position, dict):
                     position = position.get("abbreviation") or ""
+                # B7 (2026-05-25): persist lineup_source so ETL Step 2.5
+                # can identify Tier 2/3 fallback rows to override with
+                # roster-status data. Tier 1 (posted) rows are trusted as-is.
                 conn.execute("""
                     INSERT OR REPLACE INTO daily_lineup
                     (game_pk, date, side, batting_order, player_id,
-                     player_name, position, team)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     player_name, position, team, lineup_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     gpk, date_str, side,
                     p.get("batting_order"),  # 1-9 when posted, None when fallback
@@ -301,6 +306,7 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
                     p.get("name", ""),       # fullName when posted, boxscoreName when fallback
                     position or "",
                     g[f"{side}_team"],
+                    p.get("lineup_source"),  # 'posted' / 'recent:DATE' / 'roster_fallback'
                 ))
                 total_players += 1
                 has_lineup = True
@@ -310,10 +316,120 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
 
     conn.commit()
     total_sides = len(games) * 2
-    print(f"  [2/3] Done. {total_players} players across {games_with_lineups}/{len(games)} games "
+    print(f"  [2/4] Done. {total_players} players across {games_with_lineups}/{len(games)} games "
           f"({posted_sides}/{total_sides} posted, {recent_sides}/{total_sides} recent-fallback, "
           f"{fallback_sides}/{total_sides} roster-fallback).")
     return games_with_lineups
+
+
+# ---------------------------------------------------------------------------
+# Step 2.5: Roster status (IL / Paternity / Bereavement / Suspended)
+# B7 (2026-05-25): only overrides Tier 2/3 fallback lineups — never a
+# posted (Tier 1) lineup. If the team posted today's lineup with player X,
+# they're starting; the IL/scratch filter must not second-guess that.
+# ---------------------------------------------------------------------------
+
+def fetch_roster_status(conn, games: list[dict], date_str: str):
+    """For every Tier 2/3 fallback-sourced daily_lineup row, look up the
+    player's roster status and persist to daily_player_status.
+
+    Idempotent: deletes existing rows for *date_str* before inserting,
+    so a re-run produces the same result without duplicates.
+
+    Only writes rows for players currently on a fallback lineup. Posted-
+    lineup rows are skipped entirely (we trust the posted lineup).
+    """
+    print("\n  [2.5/4] Fetching roster status for fallback lineups...")
+
+    # Import here to avoid a circular import (this module is loaded as
+    # `etl.etl_morning` but fetch_daily_data is in the project root).
+    from fetch_daily_data import (
+        fetch_lineups_for_date,
+        fetch_team_roster_status,
+    )
+
+    # Idempotent re-run: clear the date's existing rows.
+    conn.execute("DELETE FROM daily_player_status WHERE date = ?", (date_str,))
+    conn.commit()
+
+    # Find all players on a fallback lineup for the date. Need the team_id
+    # so we can hit /teams/{team_id}/roster?date=DATE. fetch_lineups_for_date
+    # is cached per process, so this is a free lookup of the team_id we
+    # already used in Step 2.
+    by_game = fetch_lineups_for_date(date_str)
+
+    # Pull (game_pk, player_id, lineup_source) for every fallback row.
+    # We pre-filter to lineup_source LIKE 'recent:%' OR = 'roster_fallback'
+    # in SQL so we don't waste a roster fetch on posted-lineup rows.
+    fallback_rows = conn.execute("""
+        SELECT game_pk, player_id, lineup_source
+        FROM daily_lineup
+        WHERE date = ?
+          AND lineup_source IS NOT NULL
+          AND lineup_source != 'posted'
+    """, (date_str,)).fetchall()
+
+    if not fallback_rows:
+        print("  [2.5/4] Done. No fallback-sourced lineup rows; nothing to override.")
+        return
+
+    # Group player_ids by team_id so we make ~30 calls max (one per team)
+    # instead of one per player. The team_id comes from by_game[gpk] —
+    # which side of the game each player_id is on is detectable from
+    # daily_lineup.side, but the cleaner approach is to fetch BOTH sides'
+    # roster status for any game with at least one fallback player (~30
+    # team-roster calls in the worst case; typical day is far fewer).
+    needed_team_ids: set[int] = set()
+    for row in fallback_rows:
+        gpk = row[0]
+        entry = by_game.get(gpk) or {}
+        for k in ("home_team_id", "away_team_id"):
+            tid = entry.get(k)
+            if tid:
+                needed_team_ids.add(tid)
+
+    if not needed_team_ids:
+        print("  [2.5/4] Done. No team_ids resolvable for fallback rows.")
+        return
+
+    # Fetch roster status per team. ~30 HTTP calls max.
+    status_by_pid: dict[int, dict] = {}
+    n_teams_ok = 0
+    for tid in needed_team_ids:
+        statuses = fetch_team_roster_status(tid, date_str)
+        if statuses:
+            status_by_pid.update(statuses)
+            n_teams_ok += 1
+
+    # Persist rows. Only write the players actually in a fallback lineup
+    # for this date — keeps daily_player_status compact and on-topic
+    # (the table is the IL filter's input, not a full roster archive).
+    n_written = 0
+    n_likely_out = 0
+    for row in fallback_rows:
+        pid = row[1]
+        st = status_by_pid.get(pid)
+        if not st:
+            # Player not in the team roster snapshot — could be a new
+            # call-up the API hasn't reflected, or a stale fallback row.
+            # Skip (no override means the row stays eligible).
+            continue
+        code = st.get("status_code")
+        desc = st.get("status_description") or ""
+        is_likely_out = 1 if (code and code != "A") else 0
+        if is_likely_out:
+            n_likely_out += 1
+        conn.execute("""
+            INSERT OR REPLACE INTO daily_player_status
+                (date, player_id, status_code, status_description,
+                 is_likely_out, source)
+            VALUES (?, ?, ?, ?, ?, 'mlb_roster_api')
+        """, (date_str, pid, code, desc, is_likely_out))
+        n_written += 1
+
+    conn.commit()
+    print(f"  [2.5/4] Done. {n_teams_ok}/{len(needed_team_ids)} team rosters OK; "
+          f"{n_written} status rows written ({n_likely_out} flagged is_likely_out=1).")
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +438,7 @@ def fetch_lineups(conn, games: list[dict], date_str: str):
 
 def fetch_weather(conn, games: list[dict], date_str: str):
     """Fetch weather for each venue and update daily_slate."""
-    print("\n  [3/3] Fetching weather...")
+    print("\n  [3/4] Fetching weather...")
 
     ok = 0
     for g in games:
@@ -403,7 +519,7 @@ def fetch_weather(conn, games: list[dict], date_str: str):
             """, (g["game_pk"], date_str))
 
     conn.commit()
-    print(f"  [3/3] Done. Weather fetched for {ok}/{len(games)} games.")
+    print(f"  [4/4] Done. Weather fetched for {ok}/{len(games)} games.")
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +544,10 @@ def run_morning(date_str: str):
             return
 
         lineup_count = fetch_lineups(conn, games, date_str)
+        # B7 (2026-05-25): IL/scratch filter step. Walks Tier 2/3 fallback
+        # lineup rows and writes is_likely_out flags into daily_player_status.
+        # generate_picks reads this in its eligible_batters assembly.
+        fetch_roster_status(conn, games, date_str)
         fetch_weather(conn, games, date_str)
 
         # Summary

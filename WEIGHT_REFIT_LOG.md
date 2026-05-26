@@ -2,11 +2,114 @@
 
 A running log of monthly weight-refit decisions for `WEIGHT_CONFIGS["default"]` in `score_batters.py`. Each entry captures what was tried, what was learned, and whether anything actually shipped.
 
-Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr-refit-weights-monthly`). Training data feeder: `backfill_features_v2_bulk.py --season 2026` (refreshes Savant feature columns in `raw_data.csv` / `raw_data_v2.csv`). Score-curve / flag decisions are driven separately by `backtest_flags.py`, a same-data harness that compares scoring variants (anchor sets, floor on/off, prior on/off) against the canonical default on lift / AUC / top-8 / top-30 / monotonicity over a fixed window.
+Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr-refit-weights-monthly`). As of A1 (2026-05-26) refit reads directly from `pick_inputs ⨝ outcomes` in `data/hr_bets.db` — the 2025-season backfill closed the prior CSV-extension data-source gate. Score-curve / flag decisions are driven separately by `backtest_flags.py`, a same-data harness that compares scoring variants (anchor sets, floor on/off, prior on/off) against the canonical default on lift / AUC / top-8 / top-30 / monotonicity over a fixed window.
+
+---
+
+## 2026-05-26 — A1 refit on the 188-date 2025 backfill (post-B11 score_form)
+
+**Status: candidate weights presented; user to flip the switch in a follow-up.** First true post-v2 / post-B11 refit. The 2025-season backfill (PR #69) and B11 (PR #78, score_form drops recent_avg_30g) jointly unblocked A1. `refit_weights.py` was rebuilt this cycle (see "Refit tool changes" below).
+
+### Sample
+
+- **Source.** `pick_inputs ⨝ outcomes`, 2025-03-27 → 2025-09-30. 41,590 rows over 183 dates (the 188-date headline drops 5 dates where outcomes are missing). Overall HR rate 11.90%. `as_of_date` semantics inherited from the backfill — every row was scored using only data available before its own morning, matching the production flow.
+- **Why pick_inputs, not daily_picks.** Pre-A1 `refit_weights.py` joined `daily_picks ⨝ pick_inputs ⨝ outcomes`. `daily_picks` is the model's already-selected top-N per day (≤8 selected + ~50 unselected ranked board), so refitting there biased the regression toward "what production already thinks is a HR candidate" — circular. Pulling from `pick_inputs` exposes the full ~220-row daily slate.
+- **Re-scoring.** Persisted `form_score` in `daily_picks` was computed pre-B11 (still includes `recent_avg_30g`). The refit recomputes every factor row-by-row using the CURRENT `score_*` functions so B11's drop-AVG change is honored. Sanity print confirmed 38,486/41,590 (92.5%) of rows have `new_form ≠ persisted_form`, as expected.
+
+### Method
+
+Logistic regression `hit_hr ~ {power, matchup, park, form, weather, lineup}` on factor scores normalized to [0, 1] (raw 0-100 / 100). L2 regularization at C=1.0 (mild shrinkage; not enough to swamp signal). Two candidate variants emitted:
+
+- **FREE.** Raw logreg coefficients, negatives clipped to 0, normalized to sum to 1.0. No structural priors.
+- **PINNED.** Same logreg, then `lineup = 0.15` floor (opportunity-arithmetic anchor; lineup_score is a 9-step function whose logreg coefficient is noisy across refits) and `park = 0` pin (rationale: batters play their home park ~50% of games, so a season-aggregate park weight averages out; the +0.05*park additive bonus added 2026-05-03 handles within-slate park signal outside the weighted average).
+
+Verdict driven by **out-of-sample** holdout: chronological 70/30 split (train 2025-03-27 → 08-05, holdout 2025-08-06 → 09-30). Refitting on the full 188 dates and grading on the same 188 dates is in-sample — the lift it shows is partly overfit. The OOS numbers are what should drive the ship decision.
+
+### Coefficients (full-sample fit, on [0, 1] factor inputs)
+
+```
+power      +0.99
+matchup    +2.10
+park       -1.23   (negative — gets clipped to 0)
+form       +0.14
+weather    +0.44
+lineup     -0.15   (negative — gets clipped to 0 under FREE; pinned 0.15 under PINNED)
+intercept  -2.85
+```
+
+### Candidate weights — both variants
+
+| factor   | current_default | FREE  | PINNED |
+|----------|----------------:|------:|-------:|
+| power    | 0.250           | 0.271 | 0.230  |
+| matchup  | 0.264           | 0.572 | 0.486  |
+| park     | 0.000           | 0.000 | 0.000  |
+| form     | 0.279           | 0.038 | 0.033  |
+| weather  | 0.057           | 0.119 | 0.101  |
+| lineup   | 0.150           | 0.000 | 0.150  |
+| **sum**  | 1.000           | 1.000 | 1.000  |
+
+### OOS backtest (holdout: 12,382 rows, 55 dates 2025-08-06 → 09-30, HR rate 12.30%)
+
+| Variant                      | AUC    | Top-decile rate | Top-decile lift pp | Avg HR rank | Top-8 hit rate | Quintile mono |
+|------------------------------|-------:|----------------:|-------------------:|------------:|---------------:|--------------:|
+| persisted (live, pre-B11)    | 0.5965 | 0.1955          | +7.25 pp           | 99.7        | 83.64%         | 4/4 strict    |
+| current_default (re-scored)  | 0.6085 | 0.1971          | +7.41 pp           | 97.2        | 81.82%         | 4/4 strict    |
+| **candidate FREE**           | 0.6232 | 0.2246          | **+10.16 pp**      | 94.3        | **90.91%**     | 4/4 strict    |
+| candidate PINNED             | 0.6143 | 0.2019          | +7.89 pp           | 96.3        | 80.00%         | 4/4 strict    |
+
+Deltas vs `current_default` on OOS:
+
+- **FREE.** Top-decile lift +2.75 pp (threshold > +1.00 pp). AUC +0.0148 (must be > -0.005). **SHIP-eligible.** Top-8 hit rate +9.1 pp.
+- **PINNED.** Top-decile lift +0.48 pp (below threshold). AUC +0.0059. **HOLD per the rule.**
+
+Sensitivity check: 80/20 and 60/40 chronological splits both rate FREE as SHIP (+2.55 pp / +3.06 pp) and PINNED as HOLD (+0.97 pp / +0.54 pp). Robust to split choice.
+
+### Why each weight moved (FREE variant)
+
+- **Matchup 0.264 → 0.572.** Strongest standalone factor (Pearson r=0.121, top-quintile lift 1.53x). The regression assigns it the largest coefficient (+2.10) because matchup_score already absorbs four signals — pitcher vulnerability (slate-percentile), woba_vs_hand, Vegas team total (the v2 Vegas signal that landed 2026-04-29), and platoon/rookie bonuses. That's why doubling matchup's weight doesn't double-count the same input multiple times: matchup IS the multi-input bucket.
+- **Power 0.250 → 0.271.** Small bump. Power's Pearson r=0.115 is close to matchup's; the coefficient (+0.99) is roughly half matchup's. Synthetic-input power (barrel%/exit_velo/HR_FB% derived from season SLG-encoded inputs) was already strong (see 2026-05-25 backtest_power_inputs results) — the refit didn't unlock new signal here, just re-weighted slightly upward.
+- **Form 0.279 → 0.038.** This is the biggest swing and the one to scrutinize. **Multicollinearity drives it.** On the re-scored data the factor-to-factor correlations are: power×form r=0.49, matchup×form r=0.30, power×matchup r=0.34. Power and matchup together already absorb most of the "good hitter quality" signal that form contributed before B6+B11; once they're in the model, the marginal info form adds drops near zero. The 2026-05-25 standalone form backtest still showed form's own AUC 0.564 — that's not invalidated; it just means form's *unique* contribution above power+matchup is tiny. Form's Pearson r=0.080 stays the same; what changed is the joint regression's accounting.
+- **Park 0.000 → 0.000.** Consistent with every refit since v1. Park's logreg coefficient is -1.23 (negative — clipped to 0). The score_park rescore returns 50.0 for all rows in the harness fallback (no slate_ctx, empty park_factors), so this number is structurally about score_park's variance rather than predictive value — but the prior reasoning (the +0.05*park additive bonus handles real park signal outside the weighted average) still holds. Park stays at 0.
+- **Weather 0.057 → 0.119.** Doubled. Weather's Pearson r is small (0.023) but positive; coefficient (+0.44) is positive in the joint fit. This is plausible — temperature + wind alignment carries some real HR signal that nothing else captures. But +6.2 pp on a factor with r=0.023 is partly a "you have to put weight somewhere" effect of the form drop.
+- **Lineup 0.150 → 0.000.** Lineup_score has *negative* Pearson r with HR (-0.020) on this sample. Mechanism: top-of-order hitters (#1/#2) are typically contact-oriented (high lineup_score, low HR-per-PA); power hitters cluster in #3/#4/#5 (mid lineup_score) and HR more. The opportunity-arithmetic rationale for the carve-out (more PAs at the top) is real but the contact-vs-power composition effect outweighs it on a per-batter level. PINNED preserves the carve-out at 0.15 anyway; OOS shows PINNED fails the +1.0 pp threshold, which is the empirical evidence that the carve-out is net-hurting.
+
+### Skepticism / artifacts the user should consider before flipping
+
+1. **Form 0.279 → 0.038 is a wild swing.** The user prompt explicitly flagged this kind of redistribution as "likely an artifact of the small per-batter HR sample." It IS large. The defense is OOS validation: the FREE candidate still beats current_default on 55 untouched dates. But the candidate places ~93% of its weight on power + matchup. If matchup is mis-specified for any season-on-season reason (rule changes, Vegas line drift, etc.), the candidate has less ballast.
+2. **Multicollinearity inflates matchup's apparent contribution.** Coefficients in a correlated-input regression are not stable across slightly different training sets; refit again in 6 weeks and the matchup/power split could shift by ±0.05 to ±0.10. The PINNED variant is more robust to that drift (15% lineup keeps the composite from rotating entirely on power+matchup) but pays for that robustness with worse OOS lift.
+3. **The 188-date sample is one season.** 2025 had specific rule + ball + roster characteristics. 2024 weights may have looked different; 2026 weights may look different again. The +2.75 pp OOS lift is genuine on THIS data, not necessarily a permanent improvement.
+4. **Pre-B11 vs post-B11 form_score on the SAME training rows.** Re-scoring every row with the post-B11 score_form is the correct apples-to-apples comparison for the refit. But the live production data over the next 6 weeks will be POST-B11 scored — so the re-scored numbers here ARE the relevant baseline for the candidate.
+
+### Decision
+
+**Recommendation: present both variants; defer the final flip to the user.** Per the A1 plan in the original instruction, this PR is the analysis + recommendation, not the actual weight change. The FREE candidate ships under the +1.0 pp / -0.005 AUC rule; PINNED holds. User to choose:
+
+- **Ship FREE** if comfortable with form ≈ 0 and lineup ≈ 0 (the OOS lift is empirically supported; multicollinearity concerns are real but the data is on-side).
+- **Ship PINNED** if structural priors (lineup carve-out, form-floor) outweigh the marginal lift (PINNED missed the threshold by 0.52 pp on 70/30 OOS — not by much; could ship as a "less risky" variant if appetite is low).
+- **Hold** if the form/lineup swings feel uncomfortable enough that another 2-4 weeks of post-B11 live data is preferred before committing.
+
+**This PR does NOT modify `score_batters.py`.** The candidate lines are in `refit_weights.py --update` output; flipping the switch is a one-line follow-up.
+
+### Refit tool changes (this cycle)
+
+- `refit_weights.py` rebuilt:
+  - Reads `pick_inputs ⨝ outcomes` (full slate) instead of `daily_picks ⨝ pick_inputs ⨝ outcomes` (selected picks only — was biased / circular).
+  - Re-scores every row with current `score_*` functions so B11 (and any future score-curve changes) are reflected without re-running production.
+  - Chronological train/test split (`--holdout-frac`, default 0.3) prevents in-sample overfitting from driving the ship-or-hold call.
+  - Emits two variants per fit (FREE / PINNED with lineup-carve-out + park-pin).
+  - `current_default` baseline is now imported live from `WEIGHT_CONFIGS["default"]` (was a stale hardcoded v1_learned line; this finally closes the 2026-05-01 / 2026-05-13 action item).
+- Decision rule embedded: ship IF (OOS top-decile lift improvement > +1.0 pp) AND (OOS AUC regression ≤ 0.005).
+
+### Verification
+
+`score_batters` and `generate_picks` import cleanly (no changes to either). Sanity check inside `refit_weights.py`: 38,486/41,590 rows differ between `new_form` (post-B11) and `persisted_form` (pre-B11), confirming the rescore path actually exercises score_form's new code.
 
 ---
 
 ## 2026-05-25 — backtest-harness decision phase (B6 + Form anchors)
+
+> See 2026-05-26 entry above. The B11 score_form change (drop recent_avg_30g) that this entry pre-committed has now shipped (PR #78); the A1 refit that this entry was gating has been run.
 
 **Status: harnesses shipped, weight changes pending.** Two new backtest tools landed against the 2025-season backfill; preliminary findings on the partial sample are clean enough to pre-commit two A1-prep directions, but the weight refit itself is still gated on (a) full-backfill re-run after a data-recovery incident, and (b) a wider-real-Statcast variant.
 
@@ -46,6 +149,8 @@ Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr
 ---
 
 ## 2026-05-13 — 14d refit (scheduled task: `mlb-hr-refit-weights-14d`)
+
+> See 2026-05-26 entry above. The "still-open action items" called out here (CSV extension, `pull_fb_pct` bulk crawl, stale `current_default` baseline) are all resolved by the A1 rebuild: refit now reads `pick_inputs` directly from the DB, and `SHIPPED_DEFAULT_W` is imported live from `WEIGHT_CONFIGS["default"]`. The 2026-05-13 coefficients themselves (within ±0.001 of then-current default) reflect a stale, no-new-data window — superseded by the 188-date 2025 backfill.
 
 **Status: no change shipped.** First post-v2 checkpoint (v2 features shipped 2026-04-29). New weights are within ±0.001 of current default; backtest lift is +0.62 pp, below the +1.0 pp shipping threshold. Vegas signal could not be validated this run — same infra blocker that was open on 2026-05-01.
 
@@ -135,6 +240,8 @@ Both flagged as still open:
 ---
 
 ## 2026-05-01 — monthly refit (scheduled task: `mlb-hr-refit-weights-monthly`)
+
+> See 2026-05-26 entry above. Both action items called out here (CSV-extension job and `current_default` baseline staleness) are resolved by the A1 rebuild — refit reads `pick_inputs` directly from the DB, and `SHIPPED_DEFAULT_W` is now imported live from `WEIGHT_CONFIGS["default"]`. The 2026-05-01 coefficients themselves (effectively unchanged from current default on a stale 20-day window) are superseded by the 188-date 2025 backfill.
 
 **Status: no change shipped.**
 

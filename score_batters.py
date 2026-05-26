@@ -546,6 +546,19 @@ PARK_ARCHETYPE_SUBSIGNAL_WEIGHT = 0.5
 PARK_ARCHETYPE_DIST_NEAR = 0.0
 PARK_ARCHETYPE_DIST_FAR = 7.0
 
+# Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal. OFF by
+# default — flip True in Phase 3 after backtest validates the lift.
+#
+# Blends pitcher arsenal usage (fb / breaking / offspeed %) with the
+# batter's SLG-by-pitch-type-group to produce an expected SLG vs the
+# specific arsenal this pitcher throws. When on, the resulting score
+# joins vuln / sim / total / woba inside score_matchup's mean.
+#
+# Foundation only this PR: helper exists, gate is in score_matchup,
+# weight is 0 (no signal contribution). The full math + rollout is in
+# docs/pitch_type_archetype_design.md.
+USE_ARSENAL_SUBSIGNAL = False
+
 # (season_hr_threshold, power_score_floor_when_qualified)
 # Calibrated on 2026-05-02 HR data:
 #   - 5 HR  → 50  (a guy with 5 HR shouldn't score below league average)
@@ -737,6 +750,66 @@ def score_power(batter: dict) -> float:
     return base_score
 
 
+def _compute_xslg_vs_arsenal(batter: dict, pitcher: dict) -> float | None:
+    """Phase 1 helper: blended expected SLG vs. today's pitcher arsenal.
+
+    Formula:
+        xSLG = pitcher.fb_usage_pct  * batter.fb_slg
+             + pitcher.br_usage_pct  * batter.br_slg
+             + pitcher.os_usage_pct  * batter.os_slg
+
+    Small-sample policy: **None+skip, NOT league-avg fallback** (changed
+    2026-05-26 per user feedback). If ANY of the three pitch-type groups
+    is below the PA threshold (features_v2.PITCH_TYPE_SPLIT_MIN_BB, 30 BB),
+    return None and let score_matchup skip the whole sub-signal. Rationale:
+    a league-avg fill artificially compresses every small-sample batter to
+    a neutral xSLG, which inflates their matchup score above where their
+    actual signal would land. "No data" should mean "no opinion," not
+    "average opinion" — same convention score_form uses for None inputs.
+
+    Returns None when:
+      - The pitcher arsenal usages aren't available (no measured mix), OR
+      - Any of the batter's three group splits is missing or below
+        PITCH_TYPE_SPLIT_MIN_BB. The composite is honest about uncertainty;
+        the missing-data hit gets absorbed by the other matchup signals.
+
+    See docs/pitch_type_archetype_design.md for the rationale.
+    """
+    fb_use = pitcher.get("fb_usage_pct")
+    br_use = pitcher.get("breaking_usage_pct")
+    os_use = pitcher.get("offspeed_usage_pct")
+    if fb_use is None and br_use is None and os_use is None:
+        return None
+
+    # Import here so the module doesn't pay for it at top level.
+    from features_v2 import PITCH_TYPE_SPLIT_MIN_BB
+
+    def _slg(group: str) -> float | None:
+        slg = batter.get(f"{group}_slg")
+        pa = batter.get(f"{group}_pa") or 0
+        if slg is None or pa < PITCH_TYPE_SPLIT_MIN_BB:
+            return None
+        return float(slg)
+
+    fb_slg = _slg("fb")
+    br_slg = _slg("br")
+    os_slg = _slg("os")
+    if fb_slg is None or br_slg is None or os_slg is None:
+        # Insufficient sample on at least one group — skip the term entirely.
+        # Don't impute league-avg; that would falsely flatten small-sample
+        # batters into the middle of the distribution.
+        return None
+
+    # Treat missing pitcher usage as 0 (its events contribute nothing
+    # to the blend); typical pitcher dict has all three filled, so this
+    # only fires for league-avg-default pitchers without a measured mix.
+    fb_use = fb_use or 0.0
+    br_use = br_use or 0.0
+    os_use = os_use or 0.0
+
+    return fb_use * fb_slg + br_use * br_slg + os_use * os_slg
+
+
 def score_matchup(
     batter: dict,
     pitcher: dict,
@@ -806,6 +879,18 @@ def score_matchup(
         and batter_team in slate_ctx["team_total_pct"]
     ):
         scores.append(slate_ctx["team_total_pct"][batter_team])
+
+    # Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal.
+    # Gated by USE_ARSENAL_SUBSIGNAL (default False — additive, no-op
+    # until Phase 3 flips it). When on, blended xSLG-vs-arsenal joins
+    # the matchup mean. None propagation means a missing arsenal /
+    # missing batter splits skip cleanly. Score mapping: 0.350-0.500
+    # SLG -> 0-100, matching the league-distribution anchors documented
+    # in docs/pitch_type_archetype_design.md (re-tuned in Phase 3).
+    if USE_ARSENAL_SUBSIGNAL:
+        xslg = _compute_xslg_vs_arsenal(batter, pitcher)
+        if xslg is not None:
+            scores.append(min_max_scale(xslg, 0.350, 0.500))
 
     batter_hand = batter.get("bats", "R")
     pitcher_hand = pitcher.get("throws", "R")
@@ -983,15 +1068,24 @@ def _layoff_dampener(form: float, window_days) -> float:
 
 def score_form(batter: dict) -> float:
     """
-    Factor 4: Recent form, on split game-count windows (rebuilt 2026-05-19).
+    Factor 4: Recent form, on split game-count windows (rebuilt 2026-05-19,
+    AVG term dropped 2026-05-26 per B11).
     Returns 0-100.
 
       - recent_hr_10g    HR over the last ~10 games — HRs are lumpy, short window
       - recent_iso_30g   ISO over the last ~30 games — rate stat, bigger sample
-      - recent_avg_30g   batting AVG over the last ~30 games — contact signal
       - ev_trend         real exit-velocity trend vs season (mph). Phase 2:
                          populated by the nightly Statcast ETL; None until then
                          and simply skipped.
+
+    B11 (2026-05-26): dropped recent_avg_30g. `backtest_form_anchors.py` showed
+    on 3 sample sizes (90 / 148 / 188 dates) that the AVG term is net-noise for
+    HR prediction — dropping it lifts AUC +0.018 consistently. Mechanism: AVG
+    mostly captures singles + groundballs falling in; ISO already covers the
+    power dimension; feast-or-famine power hitters (Bader 5/23 grand slam,
+    Form 35.1 under the old formula) have lower AVG by definition, so the AVG
+    term anti-correlates with the HR signal we want. Column stays in
+    pick_inputs so backtest replay of pre-B11 dates remains possible.
 
     None vs 0: a None input is SKIPPED (no data); a real 0 is scored honestly.
     Score is the mean of whatever was measured, then run through the long-rest
@@ -1006,10 +1100,6 @@ def score_form(batter: dict) -> float:
     recent_iso = batter.get("recent_iso_30g")
     if recent_iso is not None and recent_iso > 0:
         scores.append(min_max_scale(recent_iso, 0.100, 0.300))
-
-    recent_avg = batter.get("recent_avg_30g")
-    if recent_avg is not None and recent_avg > 0:
-        scores.append(min_max_scale(recent_avg, 0.210, 0.330))
 
     ev_trend = batter.get("ev_trend")
     if ev_trend is not None:

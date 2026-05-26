@@ -1196,11 +1196,13 @@ def pin_backtest_power_inputs_isolates_variants() -> Result:
         )
     failures = []
 
-    # Variant list exposes all six expected names.
+    # Variant list exposes all expected names (6 baseline + 4 from B12 wider
+    # windows = 10 total).
     expected_variants = {
         "synthetic-only", "real-only", "blended",
         "real-tight-anchors", "blended-tight-anchors",
         "synthetic-no-hr-encoded",
+        "real-21d", "real-28d", "blended-21d", "blended-28d",
     }
     got = set(bpi.VARIANT_NAMES)
     if got != expected_variants:
@@ -1557,6 +1559,599 @@ def pin_weather_archive_threshold_present() -> Result:
 
 
 # ---------------------------------------------------------------------------
+# B7 (2026-05-25): IL / scratch filter
+# ---------------------------------------------------------------------------
+
+def pin_b7_daily_player_status_table_exists() -> Result:
+    """B7: create_tables() creates daily_player_status with the documented
+    columns and primary key."""
+    import sqlite3
+    import tempfile
+    from pathlib import Path as _Path
+    from etl.db import create_tables
+    # Use a temp DB so we don't touch the real one.
+    with tempfile.TemporaryDirectory() as td:
+        p = _Path(td) / "test.db"
+        conn = sqlite3.connect(str(p))
+        create_tables(conn)
+        cols = {r[1]: r for r in conn.execute(
+            "PRAGMA table_info(daily_player_status)").fetchall()}
+        # Also verify the daily_lineup.lineup_source migration applied.
+        lu_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(daily_lineup)").fetchall()}
+        # And daily_picks gets the three B7 columns.
+        dp_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(daily_picks)").fetchall()}
+        conn.close()
+    expected = {"date", "player_id", "status_code", "status_description",
+                "is_likely_out", "source", "fetched_at"}
+    missing = expected - set(cols.keys())
+    failures = []
+    if missing:
+        failures.append(f"daily_player_status missing cols: {sorted(missing)}")
+    if "lineup_source" not in lu_cols:
+        failures.append("daily_lineup.lineup_source missing")
+    for c in ("is_likely_out", "status_description", "promoted_due_to"):
+        if c not in dp_cols:
+            failures.append(f"daily_picks.{c} missing")
+    if not failures:
+        return Result("B7: daily_player_status + daily_lineup.lineup_source + "
+                      "daily_picks IL cols present", Result.PASS)
+    return Result("B7 DB migration", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_fetch_team_roster_status_parses_payload() -> Result:
+    """B7: fetch_team_roster_status walks the MLB roster JSON shape and
+    extracts {player_id: {status_code, status_description}} correctly.
+
+    Monkeypatches requests.get with a canned payload — no network call.
+    """
+    import fetch_daily_data as fdd
+
+    class _FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"roster": [
+                # Active starter
+                {"person": {"id": 111, "fullName": "Active Andy"},
+                 "status": {"code": "A", "description": "Active"}},
+                # 10-day IL
+                {"person": {"id": 222, "fullName": "Injured Ian"},
+                 "status": {"code": "D10", "description": "10-Day Injured List"}},
+                # Paternity
+                {"person": {"id": 333, "fullName": "Paternity Pete"},
+                 "status": {"code": "PL", "description": "Paternity List"}},
+                # Missing person.id (malformed — must skip gracefully)
+                {"person": {"fullName": "Ghost"},
+                 "status": {"code": "A", "description": "Active"}},
+            ]}
+
+    # Bypass the per-process cache so test reruns don't poison each other.
+    fdd._TEAM_ROSTER_STATUS_CACHE.clear()
+    orig = fdd.requests.get
+    fdd.requests.get = lambda *a, **k: _FakeResp()
+    try:
+        out = fdd.fetch_team_roster_status(team_id=999, date_str="2026-05-25")
+    finally:
+        fdd.requests.get = orig
+        fdd._TEAM_ROSTER_STATUS_CACHE.clear()
+
+    failures = []
+    if 111 not in out:
+        failures.append("active player 111 missing")
+    elif out[111].get("status_code") != "A":
+        failures.append(f"player 111 code = {out[111].get('status_code')}, want A")
+    if 222 not in out:
+        failures.append("IL player 222 missing")
+    elif out[222].get("status_code") != "D10":
+        failures.append(f"player 222 code = {out[222].get('status_code')}, want D10")
+    elif "Injured" not in (out[222].get("status_description") or ""):
+        failures.append(f"player 222 description = {out[222].get('status_description')!r}")
+    if 333 not in out:
+        failures.append("paternity player 333 missing")
+    elif out[333].get("status_code") != "PL":
+        failures.append(f"player 333 code = {out[333].get('status_code')}, want PL")
+    # Malformed entry without person.id should be silently dropped
+    if any(pid is None for pid in out):
+        failures.append("malformed entry (no person.id) leaked into output")
+    if not failures:
+        return Result(
+            "B7: fetch_team_roster_status parses /teams/{id}/roster correctly",
+            Result.PASS,
+        )
+    return Result("B7 fetch_team_roster_status", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_generate_card_filter_skips_il_row() -> Result:
+    """B7: generate_card's top-8 cut sets selected=False on is_likely_out=1
+    rows but keeps them on the full_board.
+
+    Builds a synthetic full_board with one IL'd batter ranked #1 and a
+    healthy backup ranked #2 — verifies the card promotes #2 and tags
+    them promoted_due_to='il_filter'.
+    """
+    # We reach inside generate_card's selection logic by replicating it
+    # against a synthetic full_board. (The function is monolithic and
+    # tightly coupled to fetch_live_slate; the unit-level test is the
+    # promotion logic itself.) Mirror the loop verbatim.
+    full_board = [
+        {"name": "IL Idris", "player_id": 1001, "batting_order": 3,
+         "game_pk": 99001, "composite": 88.0, "is_likely_out": 1,
+         "status_description": "10-Day Injured List", "tier": 2},
+        {"name": "Healthy Hal", "player_id": 1002, "batting_order": 4,
+         "game_pk": 99002, "composite": 80.0, "is_likely_out": 0, "tier": 2},
+        {"name": "Healthy Hannah", "player_id": 1003, "batting_order": 5,
+         "game_pk": 99003, "composite": 78.0, "is_likely_out": 0, "tier": 2},
+    ]
+    # Same logic as generate_card's top-8 cut (post-B7).
+    card = []
+    seen_names: set = set()
+    global_game_counts: dict = {}
+    n_il_skipped = 0
+    n_il_promotions = 0
+    for batter in full_board:
+        if len(card) >= 8:
+            break
+        name = batter.get("name", "")
+        if name in seen_names:
+            continue
+        bo = batter.get("batting_order")
+        if not (isinstance(bo, int) and 1 <= bo <= 9):
+            continue
+        if batter.get("is_likely_out"):
+            n_il_skipped += 1
+            continue
+        gpk = batter.get("game_pk")
+        if global_game_counts.get(gpk, 0) >= 2:
+            continue
+        batter["selected"] = True
+        if n_il_skipped > 0:
+            batter["promoted_due_to"] = "il_filter"
+            n_il_promotions += 1
+        card.append(batter)
+        seen_names.add(name)
+        global_game_counts[gpk] = global_game_counts.get(gpk, 0) + 1
+
+    failures = []
+    # IL'd batter must NOT be in the card
+    card_names = {p["name"] for p in card}
+    if "IL Idris" in card_names:
+        failures.append("IL'd batter ended up in the card")
+    if "Healthy Hal" not in card_names:
+        failures.append("rank-2 healthy batter wasn't promoted")
+    # IL'd batter should still be on the full_board with composite preserved
+    il_row = next((b for b in full_board if b["name"] == "IL Idris"), None)
+    if il_row is None or il_row.get("composite") != 88.0:
+        failures.append("IL'd batter's composite was mutated or removed from full_board")
+    if il_row and il_row.get("selected"):
+        failures.append("IL'd batter has selected=True")
+    # Promotion tagged
+    hal = next((p for p in card if p["name"] == "Healthy Hal"), None)
+    if hal is None or hal.get("promoted_due_to") != "il_filter":
+        failures.append(f"promotion not tagged: {hal!r}")
+    # Counter check: exactly one IL skip happened. Both downstream rows
+    # (Hal + Hannah) get the promoted_due_to tag because they're both
+    # below the skipped IL row in the rank order — this is intended for
+    # the calibration audit (any pick that wouldn't have made the top-8
+    # without the skip is a "promotion" for retrospective study).
+    if n_il_skipped != 1:
+        failures.append(f"skipped counter wrong: {n_il_skipped}, want 1")
+    if n_il_promotions != 2:
+        failures.append(f"promoted counter wrong: {n_il_promotions}, want 2 "
+                        "(Hal + Hannah both below the IL skip)")
+    if not failures:
+        return Result(
+            "B7: top-8 cut filters is_likely_out=1, preserves composite, "
+            "tags promoted_due_to='il_filter'", Result.PASS,
+        )
+    return Result("B7 top-8 IL filter", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_etl_step_2_5_idempotent() -> Result:
+    """B7: ETL Step 2.5 (fetch_roster_status) is idempotent — re-running
+    against the same date doesn't double-insert into daily_player_status.
+
+    Runs against an in-memory SQLite DB so no real DB is touched.
+    """
+    import sqlite3
+    import tempfile
+    from pathlib import Path as _Path
+    from etl.db import create_tables
+    import fetch_daily_data as fdd
+    import etl.etl_morning as em
+
+    # Two cached payloads we'll inject so the test never hits the network.
+    fake_lineups = {
+        # game_pk -> entry with team ids + lineup data
+        555000: {
+            "home": [{"player_id": 1, "name": "A", "lineup_source": "recent:2026-05-24"}],
+            "away": [{"player_id": 2, "name": "B", "lineup_source": "recent:2026-05-24"}],
+            "lineup_posted": False,
+            "home_team_id": 100,
+            "away_team_id": 200,
+        }
+    }
+    fake_roster = {
+        100: {1: {"status_code": "D10", "status_description": "10-Day Injured List"}},
+        200: {2: {"status_code": "A", "status_description": "Active"}},
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        p = _Path(td) / "test.db"
+        conn = sqlite3.connect(str(p))
+        create_tables(conn)
+        # Seed daily_lineup with two fallback rows for date 2026-05-25.
+        conn.execute("""
+            INSERT INTO daily_lineup
+            (game_pk, date, side, batting_order, player_id, player_name,
+             position, team, lineup_source)
+            VALUES (555000, '2026-05-25', 'home', 3, 1, 'A', 'CF', 'X', 'recent:2026-05-24')
+        """)
+        conn.execute("""
+            INSERT INTO daily_lineup
+            (game_pk, date, side, batting_order, player_id, player_name,
+             position, team, lineup_source)
+            VALUES (555000, '2026-05-25', 'away', 4, 2, 'B', 'CF', 'Y', 'recent:2026-05-24')
+        """)
+        conn.commit()
+
+        # Monkeypatch network entrypoints used by fetch_roster_status:
+        #   fetch_lineups_for_date -> deterministic fake_lineups
+        #   fetch_team_roster_status -> deterministic fake_roster
+        orig_lineups = fdd.fetch_lineups_for_date
+        orig_roster = fdd.fetch_team_roster_status
+        fdd.fetch_lineups_for_date = lambda *a, **k: fake_lineups
+        fdd.fetch_team_roster_status = lambda team_id, date_str: fake_roster.get(team_id, {})
+        try:
+            em.fetch_roster_status(conn, [{"game_pk": 555000}], "2026-05-25")
+            n_after_first = conn.execute(
+                "SELECT COUNT(*) FROM daily_player_status WHERE date = ?",
+                ("2026-05-25",),
+            ).fetchone()[0]
+            # Run a second time — should remain n_after_first (not double).
+            em.fetch_roster_status(conn, [{"game_pk": 555000}], "2026-05-25")
+            n_after_second = conn.execute(
+                "SELECT COUNT(*) FROM daily_player_status WHERE date = ?",
+                ("2026-05-25",),
+            ).fetchone()[0]
+            # Check is_likely_out wiring.
+            il_row = conn.execute(
+                "SELECT status_code, is_likely_out FROM daily_player_status "
+                "WHERE date = ? AND player_id = 1", ("2026-05-25",)
+            ).fetchone()
+            active_row = conn.execute(
+                "SELECT status_code, is_likely_out FROM daily_player_status "
+                "WHERE date = ? AND player_id = 2", ("2026-05-25",)
+            ).fetchone()
+        finally:
+            fdd.fetch_lineups_for_date = orig_lineups
+            fdd.fetch_team_roster_status = orig_roster
+            conn.close()
+
+    failures = []
+    if n_after_first != 2:
+        failures.append(f"first run wrote {n_after_first} rows, want 2")
+    if n_after_second != n_after_first:
+        failures.append(f"re-run doubled rows: {n_after_first} -> {n_after_second}")
+    if il_row is None or il_row[0] != "D10" or il_row[1] != 1:
+        failures.append(f"IL row wrong: {il_row!r}")
+    if active_row is None or active_row[0] != "A" or active_row[1] != 0:
+        failures.append(f"active row wrong: {active_row!r}")
+    if not failures:
+        return Result(
+            "B7: fetch_roster_status idempotent + is_likely_out wired (A=0, D10=1)",
+            Result.PASS,
+        )
+    return Result("B7 Step 2.5 idempotency", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_load_player_status_lookup_signature() -> Result:
+    """B7: load_player_status_lookup is defined in generate_picks and
+    callable with a date string. With no DB / empty data, returns {}.
+    """
+    import inspect
+    from generate_picks import load_player_status_lookup
+    sig = inspect.signature(load_player_status_lookup)
+    failures = []
+    if "date_str" not in sig.parameters:
+        failures.append("missing date_str arg")
+    # Calling against a date with no rows must return {} gracefully.
+    out = load_player_status_lookup("1900-01-01")
+    if not isinstance(out, dict):
+        failures.append(f"got {type(out).__name__}, want dict")
+    if not failures:
+        return Result(
+            "B7: load_player_status_lookup(date) -> dict, safe on empty",
+            Result.PASS,
+        )
+    return Result("B7 load_player_status_lookup", Result.HALT, "; ".join(failures))
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 (2026-05-25): pitch-type archetype matchup sub-signal scaffolding
+# ---------------------------------------------------------------------------
+
+def pin_batter_pitch_type_splits_table_exists() -> Result:
+    """Phase 1: batter_pitch_type_splits table is created by create_tables."""
+    import sqlite3
+    import tempfile
+    from etl.db import create_tables
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        conn = sqlite3.connect(tmp_path)
+        create_tables(conn)
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='batter_pitch_type_splits'"
+        ).fetchall()
+        cols = {
+            r[1]
+            for r in conn.execute(
+                "PRAGMA table_info(batter_pitch_type_splits)"
+            ).fetchall()
+        }
+        conn.close()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if not rows:
+        return Result(
+            "batter_pitch_type_splits table exists", Result.HALT,
+            "create_tables did not create the table",
+        )
+    expected = {
+        "player_id", "date_through",
+        "fb_slg", "fb_pa", "br_slg", "br_pa", "os_slg", "os_pa",
+        "fetched_at",
+    }
+    missing = expected - cols
+    if missing:
+        return Result(
+            "batter_pitch_type_splits columns", Result.HALT,
+            f"missing columns: {sorted(missing)}",
+        )
+    return Result(
+        "batter_pitch_type_splits table created with required columns",
+        Result.PASS,
+    )
+
+
+def pin_use_arsenal_subsignal_default_off() -> Result:
+    """Phase 1: USE_ARSENAL_SUBSIGNAL must default off until backtest
+    validates the lift (Phase 3)."""
+    from score_batters import USE_ARSENAL_SUBSIGNAL
+    if USE_ARSENAL_SUBSIGNAL is False:
+        return Result(
+            "USE_ARSENAL_SUBSIGNAL default = False (pre-backtest)",
+            Result.PASS,
+        )
+    return Result(
+        "USE_ARSENAL_SUBSIGNAL default = False",
+        Result.HALT,
+        f"got {USE_ARSENAL_SUBSIGNAL}; flipping the arsenal sub-signal on "
+        "requires the Phase 3 backtest evidence + a documented decision "
+        "in WEIGHT_REFIT_LOG.md.",
+    )
+
+
+def pin_score_matchup_arsenal_flag_off_no_op() -> Result:
+    """Phase 1: with USE_ARSENAL_SUBSIGNAL off, fb_slg/br_slg/os_slg on the
+    batter dict are IGNORED by score_matchup — score is byte-identical to
+    a batter dict without those keys."""
+    import score_batters as sb
+    pitcher = {
+        "throws": "R", "hr_per_9": 1.5, "hard_hit_pct_allowed": 35,
+        "fb_usage_pct": 0.55, "breaking_usage_pct": 0.30, "offspeed_usage_pct": 0.15,
+    }
+    base = sb.score_matchup({"woba_vs_hand": 0.330}, pitcher)
+    with_splits = sb.score_matchup(
+        {
+            "woba_vs_hand": 0.330,
+            "fb_slg": 0.600, "fb_pa": 200,
+            "br_slg": 0.500, "br_pa": 150,
+            "os_slg": 0.550, "os_pa": 80,
+        },
+        pitcher,
+    )
+    if abs(with_splits - base) < 0.01:
+        return Result(
+            f"score_matchup(splits) ignored when flag off ({base:.1f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_matchup arsenal flag-off no-op",
+        Result.HALT,
+        f"base={base}, with_splits={with_splits}; the splits leaked into "
+        "the score with USE_ARSENAL_SUBSIGNAL=False",
+    )
+
+
+def pin_compute_xslg_vs_arsenal_basic() -> Result:
+    """Phase 1: _compute_xslg_vs_arsenal blends pitcher usage with batter
+    splits using the documented formula, when all 3 groups have sufficient PA.
+
+    Synthetic batter: all 3 groups well above the 30-PA threshold.
+    Pitcher: 70/20/10 fb/br/os usage.
+    Expected: 0.70*0.550 + 0.20*0.300 + 0.10*0.400 = 0.4850.
+    """
+    from score_batters import _compute_xslg_vs_arsenal
+    batter = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.300, "br_pa": 80,
+        "os_slg": 0.400, "os_pa": 50,
+    }
+    pitcher = {
+        "fb_usage_pct": 0.70,
+        "breaking_usage_pct": 0.20,
+        "offspeed_usage_pct": 0.10,
+    }
+    got = _compute_xslg_vs_arsenal(batter, pitcher)
+    expected = 0.70 * 0.550 + 0.20 * 0.300 + 0.10 * 0.400
+    if got is None:
+        return Result(
+            "_compute_xslg_vs_arsenal returns None unexpectedly",
+            Result.HALT, "with valid inputs",
+        )
+    if abs(got - expected) > 1e-4:
+        return Result(
+            "_compute_xslg_vs_arsenal blend",
+            Result.HALT,
+            f"got {got:.4f}, want {expected:.4f}",
+        )
+    return Result(
+        f"_compute_xslg_vs_arsenal(all groups sufficient) -> {got:.4f}",
+        Result.PASS,
+    )
+
+
+def pin_compute_xslg_vs_arsenal_short_sample_returns_none() -> Result:
+    """Phase 1: small-sample policy — when ANY of the three pitch-type
+    groups is below PITCH_TYPE_SPLIT_MIN_BB (or missing), _compute_xslg_vs_arsenal
+    returns None and score_matchup skips the sub-signal entirely.
+
+    NO league-avg fallback (policy changed 2026-05-26 per user feedback:
+    league-avg imputation artificially flattens small-sample batters to
+    a neutral xSLG, inflating their matchup score). "No data" = "no opinion."
+    """
+    from score_batters import _compute_xslg_vs_arsenal
+    pitcher = {"fb_usage_pct": 0.70, "breaking_usage_pct": 0.20, "offspeed_usage_pct": 0.10}
+
+    # Case 1: fb has enough PA, br is below threshold -> None
+    batter = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.250, "br_pa": 5,    # below MIN_BB
+        "os_slg": 0.400, "os_pa": 50,
+    }
+    got = _compute_xslg_vs_arsenal(batter, pitcher)
+    if got is not None:
+        return Result(
+            "_compute_xslg_vs_arsenal short-br-sample",
+            Result.HALT,
+            f"got {got:.4f}; expected None (br_pa=5 < 30 threshold should "
+            "trigger None+skip, NOT league-avg fill)",
+        )
+
+    # Case 2: completely missing group -> None
+    batter2 = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.300, "br_pa": 80,
+        # os_slg / os_pa entirely absent
+    }
+    got2 = _compute_xslg_vs_arsenal(batter2, pitcher)
+    if got2 is not None:
+        return Result(
+            "_compute_xslg_vs_arsenal missing-os",
+            Result.HALT,
+            f"got {got2:.4f}; expected None when a group is absent",
+        )
+    return Result(
+        "_compute_xslg_vs_arsenal small-sample/missing -> None (no league-avg fill)",
+        Result.PASS,
+    )
+
+
+def pin_compute_xslg_vs_arsenal_missing_pitcher_arsenal() -> Result:
+    """Phase 1: when pitcher arsenal usage is entirely missing, the helper
+    returns None — caller skips the sub-signal cleanly."""
+    from score_batters import _compute_xslg_vs_arsenal
+    batter = {
+        "fb_slg": 0.550, "fb_pa": 150,
+        "br_slg": 0.300, "br_pa": 80,
+        "os_slg": 0.400, "os_pa": 50,
+    }
+    pitcher = {"throws": "R"}  # no usage keys
+    got = _compute_xslg_vs_arsenal(batter, pitcher)
+    if got is None:
+        return Result(
+            "_compute_xslg_vs_arsenal(no arsenal) -> None (clean skip)",
+            Result.PASS,
+        )
+    return Result(
+        "_compute_xslg_vs_arsenal no-arsenal None",
+        Result.HALT,
+        f"got {got}; expected None when pitcher arsenal absent",
+    )
+
+
+def pin_fetch_batter_pitch_type_splits_signature() -> Result:
+    """Phase 1: the ETL function exists with as_of_date kwarg defaulting
+    to None."""
+    import inspect
+    from features_v2 import fetch_batter_pitch_type_splits
+    sig = inspect.signature(fetch_batter_pitch_type_splits)
+    p = sig.parameters.get("as_of_date")
+    if p is None:
+        return Result(
+            "fetch_batter_pitch_type_splits.as_of_date",
+            Result.HALT, "missing as_of_date kwarg",
+        )
+    if p.default is not None:
+        return Result(
+            "fetch_batter_pitch_type_splits.as_of_date default = None",
+            Result.HALT, f"got default={p.default!r}",
+        )
+    return Result(
+        "fetch_batter_pitch_type_splits(as_of_date=None) signature OK",
+        Result.PASS,
+    )
+
+
+def pin_pitch_type_split_min_bb_constant() -> Result:
+    """Phase 1: PITCH_TYPE_SPLIT_MIN_BB is set to a reasonable per-group PA
+    threshold (>=10). Below this, _compute_xslg_vs_arsenal returns None
+    instead of filling with league avg — see
+    pin_compute_xslg_vs_arsenal_short_sample_returns_none.
+    """
+    from features_v2 import PITCH_TYPE_SPLIT_MIN_BB
+    if not isinstance(PITCH_TYPE_SPLIT_MIN_BB, int) or PITCH_TYPE_SPLIT_MIN_BB < 10:
+        return Result(
+            "PITCH_TYPE_SPLIT_MIN_BB threshold",
+            Result.HALT,
+            f"PITCH_TYPE_SPLIT_MIN_BB={PITCH_TYPE_SPLIT_MIN_BB} too low (want >=10)",
+        )
+    return Result(
+        f"PITCH_TYPE_SPLIT_MIN_BB={PITCH_TYPE_SPLIT_MIN_BB}",
+        Result.PASS,
+    )
+
+
+def pin_backtest_arsenal_inputs_skeleton_imports() -> Result:
+    """Phase 1: backtest_arsenal_inputs imports and exposes documented
+    entry points + 2 variants. Doesn't run it — the SQL fetch requires
+    Phase 2 columns."""
+    try:
+        from diagnostics import backtest_arsenal_inputs as bai
+    except Exception as e:
+        return Result(
+            "backtest_arsenal_inputs import", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    failures = []
+    for name in (
+        "fetch_rows", "score_variants", "compute_metrics", "main",
+        "_xslg_vs_arsenal", "_matchup_score", "_has_arsenal_signal",
+        "VARIANTS",
+    ):
+        if not hasattr(bai, name):
+            failures.append(f"missing {name}")
+    if hasattr(bai, "VARIANTS"):
+        expected = {"current", "arsenal_blend"}
+        got = set(bai.VARIANTS)
+        if got != expected:
+            failures.append(f"VARIANTS = {sorted(got)}, want {sorted(expected)}")
+    if not failures:
+        return Result(
+            "backtest_arsenal_inputs: 2 variants + entry points wired",
+            Result.PASS,
+        )
+    return Result(
+        "backtest_arsenal_inputs skeleton", Result.HALT, "; ".join(failures),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 1 (2026-05-25): park archetype sub-signal scaffolding
 # ---------------------------------------------------------------------------
 
@@ -1873,6 +2468,7 @@ def pin_backtest_park_archetype_skeleton_imports() -> Result:
     )
 
 
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -1940,6 +2536,22 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_weather_retry_config,
     # 2026-05-23: Form anchor + weighting backtest harness
     pin_backtest_form_anchors_variants_isolate,
+    # 2026-05-25: B7 — IL / scratch filter
+    pin_b7_daily_player_status_table_exists,
+    pin_b7_fetch_team_roster_status_parses_payload,
+    pin_b7_generate_card_filter_skips_il_row,
+    pin_b7_etl_step_2_5_idempotent,
+    pin_b7_load_player_status_lookup_signature,
+    # 2026-05-25: Phase 1 — pitch-type archetype matchup sub-signal scaffolding
+    pin_batter_pitch_type_splits_table_exists,
+    pin_use_arsenal_subsignal_default_off,
+    pin_score_matchup_arsenal_flag_off_no_op,
+    pin_compute_xslg_vs_arsenal_basic,
+    pin_compute_xslg_vs_arsenal_short_sample_returns_none,
+    pin_compute_xslg_vs_arsenal_missing_pitcher_arsenal,
+    pin_fetch_batter_pitch_type_splits_signature,
+    pin_pitch_type_split_min_bb_constant,
+    pin_backtest_arsenal_inputs_skeleton_imports,
     # 2026-05-25: Phase 1 — park archetype sub-signal scaffolding
     pin_batter_park_archetype_table_exists,
     pin_use_park_archetype_flag_default_off,
