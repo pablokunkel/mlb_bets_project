@@ -240,6 +240,56 @@ def load_season_hr_lookup(date_str: str) -> dict[int, int]:
         return {}
 
 
+def load_player_status_lookup(date_str: str) -> dict[int, dict]:
+    """
+    B7 (2026-05-25): roster-status lookup for the IL/scratch filter.
+
+    Returns ``{player_id: {"is_likely_out": int, "status_code": str,
+    "status_description": str}}`` for *date_str*, sourced from
+    ``daily_player_status`` (populated by etl_morning Step 2.5).
+
+    Scope:
+      - Only contains players whose daily_lineup row came from a Tier 2/3
+        fallback (recent-lineup or roster-fallback). Posted lineups
+        (Tier 1) are trusted unconditionally and NEVER appear here —
+        their is_likely_out is implicitly 0 because they're not in the
+        table.
+      - is_likely_out=1 iff status_code != 'A' (covers IL + Paternity +
+        Bereavement + Suspended + Restricted with one rule).
+
+    Returns ``{}`` on any error so callers degrade gracefully (no filter
+    applied — pre-B7 behavior).
+    """
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        if not db_path.exists():
+            return {}
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            """
+            SELECT player_id, status_code, status_description, is_likely_out
+            FROM daily_player_status
+            WHERE date = ?
+            """,
+            (date_str,),
+        ).fetchall()
+        conn.close()
+        out: dict[int, dict] = {}
+        for pid, code, desc, ilo in rows:
+            if pid is None:
+                continue
+            out[int(pid)] = {
+                "status_code": code,
+                "status_description": desc,
+                "is_likely_out": int(ilo or 0),
+            }
+        return out
+    except Exception as e:
+        print(f"  [PLAYER-STATUS] Could not load daily_player_status ({e}) — IL filter inactive")
+        return {}
+
+
 def load_rookie_pitcher_ids(pitcher_id_map: dict, threshold: int = 300) -> set[int]:
     """Identify pitchers with thin/no career Statcast data.
 
@@ -1123,6 +1173,19 @@ def fetch_live_slate(
     else:
         status.fail("Live Tier Build", "Failed — falling back to hardcoded 2025 tiers")
 
+    # B7 (2026-05-25): roster-status lookup for the IL/scratch filter.
+    # Populated by etl_morning Step 2.5. Empty {} when the table is absent
+    # (filter inactive — pre-B7 behavior) or when the date had no fallback
+    # lineups to check (all Tier-1 posted).
+    player_status = load_player_status_lookup(date_str)
+    if player_status:
+        n_out = sum(1 for v in player_status.values() if v.get("is_likely_out"))
+        status.ok("IL/Scratch Filter (B7)",
+                  f"{len(player_status)} fallback players checked, {n_out} flagged is_likely_out")
+    else:
+        status.warn("IL/Scratch Filter (B7)",
+                    "No daily_player_status rows for date — filter inactive")
+
     return {
         "games": games,
         "weather": weather_data,
@@ -1133,6 +1196,7 @@ def fetch_live_slate(
         "implied_totals": implied_totals,
         "bulk_batter_xwoba": bulk_batter_xwoba,
         "bulk_recent_statcast": bulk_recent_statcast,
+        "player_status": player_status,
     }
 
 
@@ -1261,6 +1325,13 @@ def score_live_slate(
     if career_lookup:
         print(f"  [CAREER-PRIOR] Loaded {len(career_lookup)} career rows; k={_sb.CAREER_PRIOR_K}")
 
+    # B7 (2026-05-25): player roster-status lookup (IL/scratch filter).
+    # Only contains players whose lineup row came from a Tier 2/3 fallback;
+    # posted-lineup rows aren't in the table. is_likely_out=1 -> the batter
+    # stays in the scored output for big-board visibility but gets selected=0
+    # in card assembly. Empty dict means filter inactive (pre-B7 / no data).
+    player_status_lookup = slate.get("player_status") or {}
+
     # Pre-filter to batters who are actually playing today
     eligible_batters = []
     for b in tier_batters:
@@ -1313,6 +1384,16 @@ def score_live_slate(
             side = None
         if side:
             b["_lineup_source"] = lineup_source_by_side.get(gpk, {}).get(side)
+
+        # B7: stamp the IL/scratch flag from daily_player_status (Tier 2/3
+        # fallback rows only). Posted-lineup batters won't be in the lookup
+        # and so default to is_likely_out=0. The flag is read by generate_card
+        # at the top-8 cut to set selected=0; composite is not zeroed.
+        ps = player_status_lookup.get(player_id)
+        if ps:
+            b["_is_likely_out"] = int(ps.get("is_likely_out") or 0)
+            b["_status_code"] = ps.get("status_code")
+            b["_status_description"] = ps.get("status_description")
 
         eligible_batters.append((b, game, player_id, batting_order))
 
@@ -1461,6 +1542,13 @@ def score_live_slate(
         result["has_game_log"] = bool(log)
         result["hot_streak"] = log.get("hot_streak", False)
         result["has_archetype"] = bool(vp and pp)
+        # B7 (2026-05-25): IL/scratch filter flags. Propagated onto the
+        # result dict so generate_card's top-8 cut can skip is_likely_out=1
+        # rows (preserves composite, sets selected=0) and the site can
+        # render an IL badge from status_description.
+        result["is_likely_out"] = int(b.get("_is_likely_out") or 0)
+        result["status_code"] = b.get("_status_code")
+        result["status_description"] = b.get("_status_description")
 
         all_scored.append(result)
 
@@ -1512,6 +1600,8 @@ def score_untiered_starters(
     import score_batters as _sb
     career_lookup = load_career_lookup() if _sb.USE_CAREER_PRIOR else {}
     pitcher_profiles = slate.get("pitcher_profiles", {})
+    # B7 (2026-05-25): same IL/scratch lookup the tiered path uses.
+    player_status_lookup = slate.get("player_status") or {}
 
     # Build {gpk: game} once.
     game_by_gpk = {g["game_pk"]: g for g in slate["games"]}
@@ -1560,6 +1650,11 @@ def score_untiered_starters(
                 full_team = game["home_team"] if side == "home" else game["away_team"]
                 team = TEAM_FULL_TO_ABBREV.get(full_team, full_team)
 
+                # B7 (2026-05-25): IL/scratch flags also flow onto T4 stubs
+                # so untiered batters can be filtered the same way T1/T2/T3
+                # are. The flags get set on the result dict below.
+                ps = player_status_lookup.get(pid) if player_status_lookup else None
+
                 stub = {
                     "name": full_name,
                     "team": team,
@@ -1575,6 +1670,13 @@ def score_untiered_starters(
                     # correctly no-ops for rookies; for real T4 starters
                     # with HRs, the floor now fires.
                     "season_hr": season_hr_lookup.get(pid, 0),
+                    # B7 (2026-05-25): roster-status flags. Read by
+                    # generate_card's top-8 cut. Default 0/None when the
+                    # player isn't in daily_player_status (e.g., posted
+                    # lineup — Tier 1 — or empty filter table).
+                    "_is_likely_out": int((ps or {}).get("is_likely_out") or 0),
+                    "_status_code": (ps or {}).get("status_code"),
+                    "_status_description": (ps or {}).get("status_description"),
                 }
                 if season_lookup:
                     stub = enrich_with_season_batting(stub, season_lookup)
@@ -1688,6 +1790,11 @@ def score_untiered_starters(
         result["has_game_log"] = bool(log)
         result["hot_streak"] = log.get("hot_streak", False) if log else False
         result["has_archetype"] = False
+        # B7 (2026-05-25): IL/scratch flags on T4 result. Mirrors the
+        # tiered path so generate_card's selected=0 skip works uniformly.
+        result["is_likely_out"] = int(stub.get("_is_likely_out") or 0)
+        result["status_code"] = stub.get("_status_code")
+        result["status_description"] = stub.get("_status_description")
         untiered.append(result)
 
     untiered.sort(key=lambda x: x["composite"], reverse=True)
@@ -1939,6 +2046,12 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date:
     GLOBAL_MAX_PER_GAME = 2
     global_game_counts: dict[int, int] = {}
     seen_names: set[str] = set()
+    # B7 (2026-05-25): track whether any rank-9+ player got promoted into
+    # the top-8 because of an IL filter skip above them. Used for the
+    # optional `promoted_due_to='il_filter'` calibration audit lever
+    # mentioned in the spec.
+    n_il_skipped = 0
+    n_il_promotions = 0
 
     for batter in full_board:
         if len(card) >= total_picks:
@@ -1953,14 +2066,36 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date:
         bo = batter.get("batting_order")
         if not (isinstance(bo, int) and 1 <= bo <= 9):
             continue
+        # B7 (2026-05-25): IL/scratch filter. Row stays on the full_board
+        # for diagnostic visibility (composite preserved — Jeffers at
+        # Form=82.1 still appears with an IL badge) but gets selected=0
+        # in the top-8 card. Promotes ranks 9+ into the freed slot.
+        if batter.get("is_likely_out"):
+            n_il_skipped += 1
+            # When skipping an IL row, the very next eligible row that
+            # we add to the card is, by definition, a promotion that
+            # wouldn't have happened pre-B7. Tag it for calibration.
+            batter["_il_skip_caused_promotion"] = True
+            continue
         gpk = batter.get("game_pk")
         if global_game_counts.get(gpk, 0) >= GLOBAL_MAX_PER_GAME:
             continue
         batter["tier_pts"] = TIER_POINTS.get(batter.get("tier", 2), 3)
         batter["selected"] = True
+        # B7: mark this pick as promoted by the IL filter when there was
+        # at least one IL skip above it in the rank order. (Diagnostic
+        # only — the column lives in the picks JSON; load_picks_to_db
+        # threads it onto daily_picks.promoted_due_to.)
+        if n_il_skipped > 0:
+            batter["promoted_due_to"] = "il_filter"
+            n_il_promotions += 1
         card.append(batter)
         seen_names.add(name)
         global_game_counts[gpk] = global_game_counts.get(gpk, 0) + 1
+
+    if n_il_skipped:
+        print(f"  [B7] IL filter skipped {n_il_skipped} batter(s); "
+              f"{n_il_promotions} rank-9+ player(s) promoted into top-8.")
 
     # Sort card by composite descending (best pick first)
     card.sort(key=lambda x: -x["composite"])
@@ -2204,6 +2339,15 @@ def main():
                 # Raw factor inputs that fed each score; consumed by load_picks_to_db
                 # to populate pick_inputs for the per-factor decomposition charts.
                 "inputs": p.get("inputs", {}),
+                # B7 (2026-05-25): IL/scratch flags. A row only enters the
+                # card when is_likely_out=0 (top-8 cut skips out players),
+                # so this is always 0 here. status_description stays NULL
+                # for active players. promoted_due_to is set when an IL
+                # skip above this rank pushed this player into the top-8.
+                "is_likely_out": int(p.get("is_likely_out") or 0),
+                "status_code": p.get("status_code"),
+                "status_description": p.get("status_description"),
+                "promoted_due_to": p.get("promoted_due_to"),
             }
             for i, p in enumerate(card)
         ],
@@ -2230,7 +2374,13 @@ def main():
                 "game_pk": p.get("game_pk"),
                 "selected": p.get("selected", False),
                 "inputs": p.get("inputs", {}),
-                "inputs": p.get("inputs", {}),
+                # B7 (2026-05-25): IL/scratch flags on full_board. Sites
+                # consume status_description to render an "IL" badge on
+                # rows where is_likely_out=1; those rows have selected=0.
+                "is_likely_out": int(p.get("is_likely_out") or 0),
+                "status_code": p.get("status_code"),
+                "status_description": p.get("status_description"),
+                "promoted_due_to": p.get("promoted_due_to"),
             }
             for i, p in enumerate(full_board)
         ],

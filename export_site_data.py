@@ -175,7 +175,16 @@ def export_latest_picks(conn, out_dir: Path):
                 -- ships at line 297. Field already drives form_score
                 -- (see line ~665, factor_inputs["form"]) — just was not
                 -- previously surfaced to the JSON.
-                pi.recent_hr_14d AS recent_hr_14d
+                pi.recent_hr_14d AS recent_hr_14d,
+                -- B7 (2026-05-25): IL/scratch filter flags surfaced
+                -- on the Big Board row. Big board renders a small
+                -- status badge from status_description when
+                -- is_likely_out=1; top-8 card pre-filters those out
+                -- (already selected=0 at this point, so the badge
+                -- only ever appears below rank 8).
+                p.is_likely_out AS is_likely_out,
+                p.status_description AS status_description,
+                p.promoted_due_to AS promoted_due_to
             FROM daily_picks p
             LEFT JOIN pick_inputs pi
                 ON pi.date = p.date AND pi.batter_id = p.batter_id

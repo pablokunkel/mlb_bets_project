@@ -1556,6 +1556,315 @@ def pin_weather_archive_threshold_present() -> Result:
     return Result("get_weather archive wiring", Result.HALT, "; ".join(failures))
 
 
+# ---------------------------------------------------------------------------
+# B7 (2026-05-25): IL / scratch filter
+# ---------------------------------------------------------------------------
+
+def pin_b7_daily_player_status_table_exists() -> Result:
+    """B7: create_tables() creates daily_player_status with the documented
+    columns and primary key."""
+    import sqlite3
+    import tempfile
+    from pathlib import Path as _Path
+    from etl.db import create_tables
+    # Use a temp DB so we don't touch the real one.
+    with tempfile.TemporaryDirectory() as td:
+        p = _Path(td) / "test.db"
+        conn = sqlite3.connect(str(p))
+        create_tables(conn)
+        cols = {r[1]: r for r in conn.execute(
+            "PRAGMA table_info(daily_player_status)").fetchall()}
+        # Also verify the daily_lineup.lineup_source migration applied.
+        lu_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(daily_lineup)").fetchall()}
+        # And daily_picks gets the three B7 columns.
+        dp_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(daily_picks)").fetchall()}
+        conn.close()
+    expected = {"date", "player_id", "status_code", "status_description",
+                "is_likely_out", "source", "fetched_at"}
+    missing = expected - set(cols.keys())
+    failures = []
+    if missing:
+        failures.append(f"daily_player_status missing cols: {sorted(missing)}")
+    if "lineup_source" not in lu_cols:
+        failures.append("daily_lineup.lineup_source missing")
+    for c in ("is_likely_out", "status_description", "promoted_due_to"):
+        if c not in dp_cols:
+            failures.append(f"daily_picks.{c} missing")
+    if not failures:
+        return Result("B7: daily_player_status + daily_lineup.lineup_source + "
+                      "daily_picks IL cols present", Result.PASS)
+    return Result("B7 DB migration", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_fetch_team_roster_status_parses_payload() -> Result:
+    """B7: fetch_team_roster_status walks the MLB roster JSON shape and
+    extracts {player_id: {status_code, status_description}} correctly.
+
+    Monkeypatches requests.get with a canned payload — no network call.
+    """
+    import fetch_daily_data as fdd
+
+    class _FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"roster": [
+                # Active starter
+                {"person": {"id": 111, "fullName": "Active Andy"},
+                 "status": {"code": "A", "description": "Active"}},
+                # 10-day IL
+                {"person": {"id": 222, "fullName": "Injured Ian"},
+                 "status": {"code": "D10", "description": "10-Day Injured List"}},
+                # Paternity
+                {"person": {"id": 333, "fullName": "Paternity Pete"},
+                 "status": {"code": "PL", "description": "Paternity List"}},
+                # Missing person.id (malformed — must skip gracefully)
+                {"person": {"fullName": "Ghost"},
+                 "status": {"code": "A", "description": "Active"}},
+            ]}
+
+    # Bypass the per-process cache so test reruns don't poison each other.
+    fdd._TEAM_ROSTER_STATUS_CACHE.clear()
+    orig = fdd.requests.get
+    fdd.requests.get = lambda *a, **k: _FakeResp()
+    try:
+        out = fdd.fetch_team_roster_status(team_id=999, date_str="2026-05-25")
+    finally:
+        fdd.requests.get = orig
+        fdd._TEAM_ROSTER_STATUS_CACHE.clear()
+
+    failures = []
+    if 111 not in out:
+        failures.append("active player 111 missing")
+    elif out[111].get("status_code") != "A":
+        failures.append(f"player 111 code = {out[111].get('status_code')}, want A")
+    if 222 not in out:
+        failures.append("IL player 222 missing")
+    elif out[222].get("status_code") != "D10":
+        failures.append(f"player 222 code = {out[222].get('status_code')}, want D10")
+    elif "Injured" not in (out[222].get("status_description") or ""):
+        failures.append(f"player 222 description = {out[222].get('status_description')!r}")
+    if 333 not in out:
+        failures.append("paternity player 333 missing")
+    elif out[333].get("status_code") != "PL":
+        failures.append(f"player 333 code = {out[333].get('status_code')}, want PL")
+    # Malformed entry without person.id should be silently dropped
+    if any(pid is None for pid in out):
+        failures.append("malformed entry (no person.id) leaked into output")
+    if not failures:
+        return Result(
+            "B7: fetch_team_roster_status parses /teams/{id}/roster correctly",
+            Result.PASS,
+        )
+    return Result("B7 fetch_team_roster_status", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_generate_card_filter_skips_il_row() -> Result:
+    """B7: generate_card's top-8 cut sets selected=False on is_likely_out=1
+    rows but keeps them on the full_board.
+
+    Builds a synthetic full_board with one IL'd batter ranked #1 and a
+    healthy backup ranked #2 — verifies the card promotes #2 and tags
+    them promoted_due_to='il_filter'.
+    """
+    # We reach inside generate_card's selection logic by replicating it
+    # against a synthetic full_board. (The function is monolithic and
+    # tightly coupled to fetch_live_slate; the unit-level test is the
+    # promotion logic itself.) Mirror the loop verbatim.
+    full_board = [
+        {"name": "IL Idris", "player_id": 1001, "batting_order": 3,
+         "game_pk": 99001, "composite": 88.0, "is_likely_out": 1,
+         "status_description": "10-Day Injured List", "tier": 2},
+        {"name": "Healthy Hal", "player_id": 1002, "batting_order": 4,
+         "game_pk": 99002, "composite": 80.0, "is_likely_out": 0, "tier": 2},
+        {"name": "Healthy Hannah", "player_id": 1003, "batting_order": 5,
+         "game_pk": 99003, "composite": 78.0, "is_likely_out": 0, "tier": 2},
+    ]
+    # Same logic as generate_card's top-8 cut (post-B7).
+    card = []
+    seen_names: set = set()
+    global_game_counts: dict = {}
+    n_il_skipped = 0
+    n_il_promotions = 0
+    for batter in full_board:
+        if len(card) >= 8:
+            break
+        name = batter.get("name", "")
+        if name in seen_names:
+            continue
+        bo = batter.get("batting_order")
+        if not (isinstance(bo, int) and 1 <= bo <= 9):
+            continue
+        if batter.get("is_likely_out"):
+            n_il_skipped += 1
+            continue
+        gpk = batter.get("game_pk")
+        if global_game_counts.get(gpk, 0) >= 2:
+            continue
+        batter["selected"] = True
+        if n_il_skipped > 0:
+            batter["promoted_due_to"] = "il_filter"
+            n_il_promotions += 1
+        card.append(batter)
+        seen_names.add(name)
+        global_game_counts[gpk] = global_game_counts.get(gpk, 0) + 1
+
+    failures = []
+    # IL'd batter must NOT be in the card
+    card_names = {p["name"] for p in card}
+    if "IL Idris" in card_names:
+        failures.append("IL'd batter ended up in the card")
+    if "Healthy Hal" not in card_names:
+        failures.append("rank-2 healthy batter wasn't promoted")
+    # IL'd batter should still be on the full_board with composite preserved
+    il_row = next((b for b in full_board if b["name"] == "IL Idris"), None)
+    if il_row is None or il_row.get("composite") != 88.0:
+        failures.append("IL'd batter's composite was mutated or removed from full_board")
+    if il_row and il_row.get("selected"):
+        failures.append("IL'd batter has selected=True")
+    # Promotion tagged
+    hal = next((p for p in card if p["name"] == "Healthy Hal"), None)
+    if hal is None or hal.get("promoted_due_to") != "il_filter":
+        failures.append(f"promotion not tagged: {hal!r}")
+    # Counter check: exactly one IL skip happened. Both downstream rows
+    # (Hal + Hannah) get the promoted_due_to tag because they're both
+    # below the skipped IL row in the rank order — this is intended for
+    # the calibration audit (any pick that wouldn't have made the top-8
+    # without the skip is a "promotion" for retrospective study).
+    if n_il_skipped != 1:
+        failures.append(f"skipped counter wrong: {n_il_skipped}, want 1")
+    if n_il_promotions != 2:
+        failures.append(f"promoted counter wrong: {n_il_promotions}, want 2 "
+                        "(Hal + Hannah both below the IL skip)")
+    if not failures:
+        return Result(
+            "B7: top-8 cut filters is_likely_out=1, preserves composite, "
+            "tags promoted_due_to='il_filter'", Result.PASS,
+        )
+    return Result("B7 top-8 IL filter", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_etl_step_2_5_idempotent() -> Result:
+    """B7: ETL Step 2.5 (fetch_roster_status) is idempotent — re-running
+    against the same date doesn't double-insert into daily_player_status.
+
+    Runs against an in-memory SQLite DB so no real DB is touched.
+    """
+    import sqlite3
+    import tempfile
+    from pathlib import Path as _Path
+    from etl.db import create_tables
+    import fetch_daily_data as fdd
+    import etl.etl_morning as em
+
+    # Two cached payloads we'll inject so the test never hits the network.
+    fake_lineups = {
+        # game_pk -> entry with team ids + lineup data
+        555000: {
+            "home": [{"player_id": 1, "name": "A", "lineup_source": "recent:2026-05-24"}],
+            "away": [{"player_id": 2, "name": "B", "lineup_source": "recent:2026-05-24"}],
+            "lineup_posted": False,
+            "home_team_id": 100,
+            "away_team_id": 200,
+        }
+    }
+    fake_roster = {
+        100: {1: {"status_code": "D10", "status_description": "10-Day Injured List"}},
+        200: {2: {"status_code": "A", "status_description": "Active"}},
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        p = _Path(td) / "test.db"
+        conn = sqlite3.connect(str(p))
+        create_tables(conn)
+        # Seed daily_lineup with two fallback rows for date 2026-05-25.
+        conn.execute("""
+            INSERT INTO daily_lineup
+            (game_pk, date, side, batting_order, player_id, player_name,
+             position, team, lineup_source)
+            VALUES (555000, '2026-05-25', 'home', 3, 1, 'A', 'CF', 'X', 'recent:2026-05-24')
+        """)
+        conn.execute("""
+            INSERT INTO daily_lineup
+            (game_pk, date, side, batting_order, player_id, player_name,
+             position, team, lineup_source)
+            VALUES (555000, '2026-05-25', 'away', 4, 2, 'B', 'CF', 'Y', 'recent:2026-05-24')
+        """)
+        conn.commit()
+
+        # Monkeypatch network entrypoints used by fetch_roster_status:
+        #   fetch_lineups_for_date -> deterministic fake_lineups
+        #   fetch_team_roster_status -> deterministic fake_roster
+        orig_lineups = fdd.fetch_lineups_for_date
+        orig_roster = fdd.fetch_team_roster_status
+        fdd.fetch_lineups_for_date = lambda *a, **k: fake_lineups
+        fdd.fetch_team_roster_status = lambda team_id, date_str: fake_roster.get(team_id, {})
+        try:
+            em.fetch_roster_status(conn, [{"game_pk": 555000}], "2026-05-25")
+            n_after_first = conn.execute(
+                "SELECT COUNT(*) FROM daily_player_status WHERE date = ?",
+                ("2026-05-25",),
+            ).fetchone()[0]
+            # Run a second time — should remain n_after_first (not double).
+            em.fetch_roster_status(conn, [{"game_pk": 555000}], "2026-05-25")
+            n_after_second = conn.execute(
+                "SELECT COUNT(*) FROM daily_player_status WHERE date = ?",
+                ("2026-05-25",),
+            ).fetchone()[0]
+            # Check is_likely_out wiring.
+            il_row = conn.execute(
+                "SELECT status_code, is_likely_out FROM daily_player_status "
+                "WHERE date = ? AND player_id = 1", ("2026-05-25",)
+            ).fetchone()
+            active_row = conn.execute(
+                "SELECT status_code, is_likely_out FROM daily_player_status "
+                "WHERE date = ? AND player_id = 2", ("2026-05-25",)
+            ).fetchone()
+        finally:
+            fdd.fetch_lineups_for_date = orig_lineups
+            fdd.fetch_team_roster_status = orig_roster
+            conn.close()
+
+    failures = []
+    if n_after_first != 2:
+        failures.append(f"first run wrote {n_after_first} rows, want 2")
+    if n_after_second != n_after_first:
+        failures.append(f"re-run doubled rows: {n_after_first} -> {n_after_second}")
+    if il_row is None or il_row[0] != "D10" or il_row[1] != 1:
+        failures.append(f"IL row wrong: {il_row!r}")
+    if active_row is None or active_row[0] != "A" or active_row[1] != 0:
+        failures.append(f"active row wrong: {active_row!r}")
+    if not failures:
+        return Result(
+            "B7: fetch_roster_status idempotent + is_likely_out wired (A=0, D10=1)",
+            Result.PASS,
+        )
+    return Result("B7 Step 2.5 idempotency", Result.HALT, "; ".join(failures))
+
+
+def pin_b7_load_player_status_lookup_signature() -> Result:
+    """B7: load_player_status_lookup is defined in generate_picks and
+    callable with a date string. With no DB / empty data, returns {}.
+    """
+    import inspect
+    from generate_picks import load_player_status_lookup
+    sig = inspect.signature(load_player_status_lookup)
+    failures = []
+    if "date_str" not in sig.parameters:
+        failures.append("missing date_str arg")
+    # Calling against a date with no rows must return {} gracefully.
+    out = load_player_status_lookup("1900-01-01")
+    if not isinstance(out, dict):
+        failures.append(f"got {type(out).__name__}, want dict")
+    if not failures:
+        return Result(
+            "B7: load_player_status_lookup(date) -> dict, safe on empty",
+            Result.PASS,
+        )
+    return Result("B7 load_player_status_lookup", Result.HALT, "; ".join(failures))
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -1623,6 +1932,12 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_weather_retry_config,
     # 2026-05-23: Form anchor + weighting backtest harness
     pin_backtest_form_anchors_variants_isolate,
+    # 2026-05-25: B7 — IL / scratch filter
+    pin_b7_daily_player_status_table_exists,
+    pin_b7_fetch_team_roster_status_parses_payload,
+    pin_b7_generate_card_filter_skips_il_row,
+    pin_b7_etl_step_2_5_idempotent,
+    pin_b7_load_player_status_lookup_signature,
 ]
 
 

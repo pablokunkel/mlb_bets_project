@@ -413,6 +413,75 @@ def fetch_recent_lineup_for_team(
     return result
 
 
+# ---------------------------------------------------------------------------
+# B7 (2026-05-25): Team roster status — IL / Paternity / Bereavement / etc.
+# ---------------------------------------------------------------------------
+
+# Per-process cache: (team_id, date_str) -> {player_id: {status_code, status_description}}
+_TEAM_ROSTER_STATUS_CACHE: dict[tuple[int, str], dict[int, dict] | None] = {}
+
+
+def fetch_team_roster_status(team_id: int, date_str: str) -> dict[int, dict]:
+    """Fetch a team's full-roster status snapshot for *date_str*.
+
+    Returns ``{player_id: {"status_code": str, "status_description": str}}``
+    derived from ``/teams/{team_id}/roster?rosterType=fullRoster&date=DATE``.
+
+    The status_code follows MLB's roster convention (the single source we
+    care about):
+      - "A"   — Active
+      - "D10" — 10-Day Injured List
+      - "D60" — 60-Day Injured List
+      - "D7"  — 7-Day Injured List (legacy/minor leagues)
+      - "PL"  — Paternity List
+      - "BRV" — Bereavement List
+      - "SU"  — Suspended
+      - "RM"  — Restricted List
+      - (others surface via status.code/description in the payload)
+
+    The rule for the IL filter (B7) is **status_code != "A"** — a single
+    threshold that catches IL + Paternity + Bereavement + Suspended +
+    Restricted without enumerating every code.
+
+    Caches per (team_id, date_str) for the lifetime of the process. ETL
+    Step 2.5 calls this ~30 times per slate (one per team). Returns ``{}``
+    on any fetch failure so callers can fall through to "no override" —
+    we'd rather skip the filter than crash the morning pipeline.
+    """
+    key = (team_id, date_str)
+    if key in _TEAM_ROSTER_STATUS_CACHE:
+        return _TEAM_ROSTER_STATUS_CACHE[key] or {}
+
+    url = f"{MLB_STATS_API}/teams/{team_id}/roster"
+    params = {"rosterType": "fullRoster", "date": date_str}
+    out: dict[int, dict] = {}
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"  [ROSTER-STATUS] team_id={team_id} date={date_str}: {e}")
+        _TEAM_ROSTER_STATUS_CACHE[key] = None
+        return out
+
+    for entry in data.get("roster", []) or []:
+        person = entry.get("person") or {}
+        pid = person.get("id")
+        if not pid:
+            continue
+        status = entry.get("status") or {}
+        # MLB's payload sometimes nests status.code; sometimes it's flat.
+        code = status.get("code") or status.get("abbreviation")
+        description = status.get("description") or ""
+        out[pid] = {
+            "status_code": code,
+            "status_description": description,
+        }
+
+    _TEAM_ROSTER_STATUS_CACHE[key] = out
+    return out
+
+
 def _bdfed_roster_fallback(game_pk: int) -> dict:
     """Last-resort fallback: pull the bdfed/matchup roster.
 

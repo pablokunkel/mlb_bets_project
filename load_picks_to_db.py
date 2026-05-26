@@ -97,6 +97,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     conn.execute("DELETE FROM daily_picks WHERE date = ?", (date_str,))
     conn.commit()
 
+    # B7 (2026-05-25): is_likely_out + status_description + promoted_due_to
+    # are NULL-safe additive columns. Older pick JSONs (pre-B7) will set
+    # them to 0 / NULL / NULL.
     pick_sql = """
         INSERT INTO daily_picks (
             date, batter_id, batter_name, team, tier, tier_label,
@@ -104,8 +107,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             composite, power_score, matchup_score, matchup_version,
             park_score, form_score, weather_score, lineup_score,
             batting_order, weight_config, selected, rank_in_board,
-            mode
-        ) VALUES (?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?)
+            mode,
+            is_likely_out, status_description, promoted_due_to
+        ) VALUES (?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?)
     """
 
     # pick_inputs row insertion — captures the raw signals fed into each
@@ -192,6 +196,11 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             sel,
             i,
             mode,
+            # B7 (2026-05-25): IL/scratch flags. Default to 0 / NULL on
+            # rows from older pick JSONs that pre-date the field.
+            int(row.get("is_likely_out") or field("is_likely_out") or 0),
+            row.get("status_description") or field("status_description"),
+            row.get("promoted_due_to") or field("promoted_due_to"),
         ))
         n_inserted += 1
 

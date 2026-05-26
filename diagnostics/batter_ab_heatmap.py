@@ -276,6 +276,16 @@ def build_dataset(db_path: Path) -> dict:
                 cell["tl"] = pc.get("tier_label")
                 cell["mv"] = pc.get("matchup_version")
                 cell["opp"] = pc.get("opp_pitcher")
+                # B7 (2026-05-25): IL/scratch badge on the heatmap row.
+                # Same flag the big board reads; no behavior change to
+                # the heat cells themselves (we still color by composite,
+                # rank, etc.) — just hangs a small badge off the batter
+                # name in the row header below.
+                if pc.get("is_likely_out"):
+                    cell["il"] = 1
+                    sd = pc.get("status_description")
+                    if sd:
+                        cell["ild"] = sd
                 cell["f"] = drop_nulls({
                     "pw": rnd(pc.get("power_score")),
                     "mu": rnd(pc.get("matchup_score")),
@@ -505,6 +515,14 @@ PAGE = r"""<!DOCTYPE html>
   .nm .hrn { margin-left:auto; color:var(--gold); font-weight:700; font-size:13px;
              flex:none; }
   .nm .hrn small { color:var(--dim); font-weight:400; }
+  /* B7 (2026-05-25): IL/scratch badge in batter row header.
+     Flagged when daily_picks.is_likely_out=1 — diagnostic only;
+     heatmap cells render unchanged. */
+  .ilbadge { display:inline-block; margin-left:6px; padding:1px 5px;
+             border-radius:3px; font-size:9px; font-weight:700;
+             letter-spacing:.4px; vertical-align:1px;
+             background:rgba(255,91,77,.18); color:#ff8b80;
+             border:1px solid rgba(255,91,77,.35); }
 
   td.cell { width:30px; height:30px; text-align:center; vertical-align:middle;
             border-right:1px solid #1a1f27; border-bottom:1px solid #1a1f27;
@@ -871,12 +889,33 @@ function groupBatters(bs, visList, visSet){
 
 /* ---- one batter row ---- */
 function rowHTML(b, idx, visList){
+  // B7 (2026-05-25): IL/scratch badge. We look across the row's cells
+  // for any that flag is_likely_out=1 and pick the most-recent (last
+  // visible date). The badge is for diagnostic visibility only — the
+  // heat cells themselves are unchanged. status_description (ild)
+  // provides the tooltip.
+  const row=C[String(b.id)]||{};
+  let ilBadge='';
+  for(let k=visList.length-1; k>=0; k--){
+    const c=row[visList[k]];
+    if(c && c.il){
+      const desc=c.ild||'Out';
+      const lower=String(desc).toLowerCase();
+      let tag='OUT';
+      if(lower.includes('injured')||/\bil\b/.test(lower)) tag='IL';
+      else if(lower.includes('paternity')) tag='PAT';
+      else if(lower.includes('bereavement')) tag='BRV';
+      else if(lower.includes('suspend')) tag='SUS';
+      else if(lower.includes('restrict')) tag='RST';
+      ilBadge=` <span class="ilbadge" title="${esc(desc)} on ${visList[k]}">${tag}</span>`;
+      break;
+    }
+  }
   let s=`<tr><th class="name" data-b="${b.id}">`+
     `<div class="nm"><span class="rk">${idx}</span>`+
-    `<span class="who">${esc(b.name)}</span>`+
+    `<span class="who">${esc(b.name)}${ilBadge}</span>`+
     `<span class="tm">${esc(b.team||'')}</span>`+
     `<span class="hrn">${b.hr}<small> hr</small></span></div></th>`;
-  const row=C[String(b.id)]||{};
   visList.forEach(d=>{
     const cell=row[d];
     if(!cell){ s+='<td class="dnp"></td>'; return; }
