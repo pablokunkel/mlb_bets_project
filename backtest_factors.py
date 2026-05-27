@@ -247,10 +247,35 @@ def rescore_row(row: pd.Series) -> dict:
         float(spv_raw) if spv_raw is not None and not pd.isna(spv_raw) else None
     )
 
+    # B16 follow-up (2026-05-27): rebuild a minimal slate_ctx so
+    # score_matchup picks up the Vegas team_total_pct signal (the third
+    # equal-weighted matchup term). vegas_team_total_pct is persisted in
+    # pick_inputs since 2026-05-03 and batter_team comes off daily_picks.
+    # Without this, score_matchup silently averages only [pitcher_pct,
+    # woba] in the rescore path while production averaged
+    # [pitcher_pct, woba, team_total_pct] — a -0.83 forward-parity gap on
+    # the matchup factor and -0.24 on the composite. Pre-2026-05-03 rows
+    # (vegas NULL) or rows missing batter_team fall through to slate_ctx
+    # = None, matching the legacy rescore behavior on those rows.
+    team_total_raw = row.get("vegas_team_total_pct")
+    batter_team = row.get("batter_team")
+    synthetic_slate_ctx = None
+    if (
+        team_total_raw is not None
+        and not pd.isna(team_total_raw)
+        and batter_team
+    ):
+        synthetic_slate_ctx = {
+            "active": True,
+            "team_total_pct": {batter_team: float(team_total_raw)},
+        }
+
     return {
         "power": score_power(batter),
         "matchup": score_matchup(
             batter, pitcher,
+            slate_ctx=synthetic_slate_ctx,
+            batter_team=batter_team,
             slate_pitcher_vulnerability_pct=slate_pitcher_vulnerability_pct,
         ),
         "park": score_park(batter, venue, pf_df, slate_park_pct=slate_park_pct),
