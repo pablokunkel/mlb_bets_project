@@ -1,6 +1,6 @@
 # Backlog
 
-Project queue for MLB HR Bets. Each item is scoped enough that a future session (or future-you on a cold context) can pick it up without re-reading prior conversations. Last updated 2026-05-20.
+Project queue for MLB HR Bets. Each item is scoped enough that a future session (or future-you on a cold context) can pick it up without re-reading prior conversations. Last updated 2026-05-27.
 
 > **For the model behavior, see `How_The_HR_Model_Works.md`. For the deploy / release process, see `DEPLOY.md`. For component map and DB tables, see `ARCHITECTURE.md`. For monthly weight-refit decisions, see `WEIGHT_REFIT_LOG.md`.**
 
@@ -239,6 +239,192 @@ Annotated screenshot pass on `mobile_edits.pdf` (user-supplied 2026-05-23). Mobi
 
 ---
 
+## Audit-derived (2026-05-26 deeper pass)
+
+> Items from `docs/audit_findings_inputs_2026-05-26.md` (PR #100) + PM
+> session spot-check on `refit_weights.py`. These take precedence over the
+> items in the Model factor review section below — most notably, **A1 is
+> BLOCKED by B16** until the refit/backtest scoring formulas match
+> production. Lane sequencing:
+>
+> 1. **B16** — unblocks every weight decision
+> 2. **B17** — anchor recal (parallel-ok with B16)
+> 3. **B18, B19** — small fixes that pair with B16
+> 4. **B20** — pull_fb_pct decision (independent)
+> 5. **B21, B22, B23** — investigations + doc drift (low urgency)
+
+### B16. Fix refit/backtest scoring formula divergence (BLOCKS A1)
+
+**Status.** HIGH — blocks every weight refit decision. From audit section B2 + PM session spot-check confirming `refit_weights.py` shares the same defect as `backtest_factors.rescore_row`.
+
+**Why it matters.** Both `backtest_factors.rescore_row` (line 218, `pf_df = pd.DataFrame()`) AND `refit_weights.py` (lines ~220-226, same `pd.DataFrame()` + missing `slate_ctx`) re-score with formulas that differ from production for **3 of 6 factors**:
+- `score_park` returns 50.0 for every row (empty park factors)
+- `score_weather` uses fixed-anchor blend, not slate-percentile
+- `score_matchup` takes v1 fallback (hr9 + hh_pct + woba + bonuses) vs. production v2 (slate-percentile pitcher_pct + woba + team_total_pct)
+
+Every A1 candidate (FREE / PINNED / `--custom`) from PR #82 is fit to scores that don't match what production composites. The +2.75 pp top-decile lift the audit measured is from a fit-to-fallback regression, not a fit-to-production one.
+
+**Spec.** Per PM design decision 2026-05-27:
+- ALTER `pick_inputs` to add three columns: `slate_park_pct`, `slate_weather_pct`, `slate_pitcher_vulnerability_pct` (idempotent migration in `etl/db.py`).
+- In `generate_picks.py`, after `compute_slate_context` runs, persist the per-row slate percentile rank onto each batter dict.
+- In `load_picks_to_db.py`, write the three new columns at INSERT time.
+- Add optional kwargs to `score_park`, `score_weather`, `score_matchup` (`slate_park_pct`, `slate_weather_pct`, `slate_pitcher_vulnerability_pct`). When provided, bypass the slate-relative recompute. When None (live production path), behavior is unchanged.
+- Update both `backtest_factors.rescore_row` and `refit_weights.py` rescore to read the new columns and pass them through as kwargs.
+- One-shot `diagnostics/backfill_slate_pct.py`: groups existing `pick_inputs` rows by date, computes percentile ranks from already-persisted raw columns (`hr_park_factor`, weather inputs, pitcher inputs), UPDATEs the three new columns. Backfill unblocks A1 re-eval against full 188-date 2025 sample.
+- Bundle B19 (`bats` column to backtest load_history SELECT) into this PR since both files are being touched.
+
+**Verification.** On a sample date, rescored composite must match the persisted `daily_picks.composite` within ±0.1. Smoke pin the kwargs as None-safe.
+
+**Risks.**
+- Percentile ranking method must match `compute_slate_context`'s (likely `rank(pct=True)` — check before persisting). Mismatch silently re-scales every historical comparison.
+- Pre-migration backfill rows will have NULL slate_pct columns until the backfill script runs. Rescore must None-safe-fallback in that window so old comparisons stay stable.
+
+**Files.** `etl/db.py`, `generate_picks.py`, `load_picks_to_db.py`, `score_batters.py`, `backtest_factors.py`, `refit_weights.py`, `diagnostics/backfill_slate_pct.py` (new), smoke pins.
+
+**Done when.**
+- Three new columns populated on all post-migration `pick_inputs` rows.
+- Backfill script UPDATEs historical rows; non-NULL coverage > 99% on the 2025 backfill range.
+- Rescored composite for a sample row matches production composite within tolerance.
+- A1 re-eval against post-fix harness produces meaningfully different FREE/PINNED numbers (specifically `matchup` should drop now that it's not absorbing the v1-fallback shape).
+- `python -m tests.smoke` passes including new pins.
+
+**Source.** Audit PR #100 section B2 + PM spot-check 2026-05-27.
+
+### B17. Power input anchor recalibration bundle
+
+**Status.** HIGH — five Power-side anchors empirically clamp 25-75% of real distribution to score=0. From audit section A.
+
+**Why it matters.** Empirical evidence from 55,068 2025-backfill rows plus 7,549 live 2026 rows:
+- `xwoba_contact` anchor (0.330, 0.450) → **60.8%** of live rows clamped to score=0; p50 = 0.316 (below the floor)
+- `barrel_pct` anchor (5, 15) → **28.1%** clamped at 0 on live; p50_score = 16
+- `iso` anchor (0.130, 0.300) → **25.3%** clamped at 0 on live; p50_score = 19-22
+- `hr_fb_pct` anchor (8, 20) → **75.1%** clamped at 0; p50_score = 0 (known per handoff doc; bundles here)
+- `recent_xwoba_contact_14d` anchor (0.330, 0.450) on the B6a backfill path → 58.9% clamped at 0; p50_score = 0
+
+Net effect: Power's mean of these inputs is structurally bottom-heavy. Only the top 1.8-21% of the input distribution scores above neutral. `woba_vs_hand` is the only Power/Matchup input with a balanced distribution (52.8% above 50 on live).
+
+**Spec.**
+- Pull empirical p10/p25/p50/p75/p90 from `pick_inputs` for each affected input (script saved at `_review/audit_inputs_run.py` from PR #100).
+- Re-anchor each so empirical p25 → score=0 and empirical p75 → score=100 (or another rule documented per-input — e.g., p10/p90 if we want a wider middle band). Document the choice in `WEIGHT_REFIT_LOG.md`.
+- Suggested rough targets (subject to verification against fresh quartile pulls):
+  - `xwoba_contact`: (0.270, 0.420)
+  - `barrel_pct`: (3, 11)
+  - `iso`: (0.105, 0.260)
+  - `hr_fb_pct`: (6, 16) or (8, 16) per handoff doc
+  - `recent_xwoba_contact_14d`: same as live xwoba_contact
+- Single PR touching `score_batters.py`. Smoke pin updates for each anchor's expected score-at-median.
+
+**Should land BEFORE A1 re-eval after B16** so the refit fits weights against well-calibrated curves.
+
+**Files.** `score_batters.py::score_power`, smoke pins, `WEIGHT_REFIT_LOG.md`.
+
+**Done when.** Empirical p50 of each input scores between 40-60. Less than 15% of live rows clamp to 0 on any single anchor.
+
+**Source.** Audit PR #100 section A.
+
+### B18. `byDateRange` look-ahead fix in `build_live_tiers`
+
+**Status.** HIGH — backfill data leak; small per-row but biases A1 training data on tier-qualification boundary cases.
+
+**Why it matters.** `_fetch_season_batting_splits(start, date_str)` (fetch_daily_data.py:601-614) uses `endDate=date_str` inclusive in the MLB Stats API. For backfill of date D, the aggregate includes games played on D — look-ahead. `build_live_tiers(date_str, ...)` does NOT accept an `as_of_date` arg, so the leak flows through tier qualification → `barrel_pct`, `exit_velo`, `hr_fb_pct`, `iso` all derived synthetically from the leaky aggregate. For batters hitting their first HR on date D, this can flip tier qualification.
+
+Live noon is currently safe (no games started at 12 PM ET) but the pattern is fragile.
+
+**Spec.** Thread `as_of_date` through `build_live_tiers` and the internal `_fetch_season_batting_splits` call. Pass `endDate = (date_str - 1 day)` in backfill mode (or always — at noon production no games have started, so strict-less-than is free).
+
+**Files.** `fetch_daily_data.py` (signature change to `build_live_tiers` + the `_fetch_season_batting_splits` call), `etl/backfill_2025.py` (pass as_of_date), `generate_picks.py` (caller).
+
+**Done when.** Backfill aggregates for date D do not include date-D games. Verify by re-running one date and confirming season HR counts match `outcomes` cumulative-through-(D-1).
+
+**Source.** Audit PR #100 section D1.
+
+### B19. Add `bats` column to backtest load_history SELECT
+
+**Status.** MEDIUM — bundled into B16 PR (both touch `backtest_factors.py`).
+
+**Why it matters.** `pick_inputs.bats` has been persisted since 2026-05-03, but `backtest_factors.load_history`'s SQL doesn't SELECT it and `rescore_row` hardcodes `"bats": "R"` with a stale comment claiming the column isn't stored. Affects `score_park`'s L/R adjustment + `score_matchup` v1 platoon bonus in backtest. Bundle: also pull `pi.throws` for symmetric pitcher handedness.
+
+**Spec.** Add `pi.bats, pi.throws` to load_history's SELECT. Replace the hardcoded "R" with `row.get("bats", "R")`. Same for pitcher throws.
+
+**Files.** `backtest_factors.py` (lines 90-107 SELECT + 156, 207).
+
+**Done when.** Rescore handedness matches what was actually persisted.
+
+**Source.** Audit PR #100 sections B3 + E1.
+
+### B20. `pull_fb_pct` decision: drop or wire (folds into B1)
+
+**Status.** HIGH — 100% NULL across all 69,911 `pick_inputs` rows. From audit B1.
+
+**Why it matters.** `score_power` documents 6 inputs; in practice it's 5. The producer at `generate_picks.py:1627-1628` reads `adv.get("pull_fb_pct")` but `adv` (built at line 1520) only carries `xwoba_contact` — the `pull_fb_pct` branch is dead code. T4 path has the same dead branch (lines 1869-1872). Documentation (`How_The_HR_Model_Works.md` Factor 1 table) lists pull-FB% as one of 6 Power inputs with anchor (8, 22). Reality: 5-input score.
+
+**Recommendation:** drop. The Savant bulk endpoint doesn't expose it; the per-player Statcast path was retired after the 2026-04-29 noon incident (per-player hangs). Reviving for one input isn't worth it.
+
+**Spec (drop variant).**
+- Remove `pull_fb_pct` from `score_power`'s input list.
+- Remove the dead-branch writers in `generate_picks.py` (live tiered + T4 untiered).
+- Update `compute_composite.inputs_snapshot` to drop the key.
+- Optionally drop the column from `pick_inputs` schema (or leave NULL for historical replay).
+- Update `How_The_HR_Model_Works.md` Factor 1 table to "5 inputs."
+- `backtest_factors.rescore_row` already reads None-safe; no change needed there.
+
+**Spec (wire variant).** ~2-4 hr. Requires a Savant bulk pull-FB% endpoint OR per-player Statcast with batching + caching. The model gets a marginal Power signal at the cost of an extra ETL step. **Not recommended unless empirical analysis shows pull-FB% is a strong unique HR signal not captured by the other 5 inputs.**
+
+**Files (drop variant).** `score_batters.py`, `generate_picks.py` (×2 sites), `How_The_HR_Model_Works.md`, smoke pin updates.
+
+**Done when.** No code path reads or writes `pull_fb_pct`. Docs match reality.
+
+**Source.** Audit PR #100 section B1 + B4.
+
+### B21. Investigate outcomes-without-daily_lineup gap (8,521 rows, 891 HRs)
+
+**Status.** MEDIUM — diagnostic first; not a code change.
+
+**Why it matters.** 8,521 outcomes rows from 2026+ have batters with no matching `daily_lineup` row; 891 of those rows are HRs. Most are normal pinch-hitters / late subs (~3000-4000 expected baseline), but ~4000-5000 are unexplained. Concrete example: Yordan Alvarez (regular Astros DH, id 670541) hit a HR on 2026-05-25 with 3 ABs in game 822899, but is missing from that day's Astros `daily_lineup`. The model couldn't have picked him.
+
+**Spec.** Investigate:
+- How many of the ~4000-5000 unexplained rows are regular starters who slipped through ingest vs. legitimate late add-ins?
+- Are these clustered around specific times (post-noon-fetch lineup updates), specific teams (parser misses on certain formats), or specific game contexts (DH-only games, position-player on the mound)?
+- Cross-reference: how many HR picks have we missed because of this?
+
+**Deliverable.** Markdown findings doc at `docs/outcomes_lineup_gap_<date>.md` with categorization of the gap + recommended fix path (lineup-fetch retry, post-game roster reconciliation, etc.). NOT a code change.
+
+**Files.** Diagnostic queries against `outcomes`, `daily_lineup`, `daily_picks`, possibly `daily_slate`.
+
+**Done when.** Diagnostic doc exists; fix path identified for follow-up B-series item.
+
+**Source.** Audit PR #100 section C1.
+
+### B22. Position-player arsenals filter
+
+**Status.** MEDIUM — small data hygiene.
+
+**Why it matters.** 67 rows in `pitcher_arsenals` with `avg_fb_velo < 80` mph (lowest 57.9 mph), all `pitcher_name=NULL`, `source='statcast'`. Position players who pitched in blowouts. They can't match the live lookup (name=NULL) but could pollute distribution stats or any join on `pitcher_id`.
+
+**Spec.** Either filter at fetch time in `etl/etl_nightly.py` (reject rows where `pitcher_name IS NULL AND avg_fb_velo < 80`), or add a `WHERE avg_fb_velo >= 80` clamp at consumer queries. Fetch-time filter is cleaner — keeps the table clean of non-real arsenals.
+
+**Files.** `etl/etl_nightly.py` (Savant arsenal sync step).
+
+**Done when.** New rows with `pitcher_name IS NULL` don't enter `pitcher_arsenals`. Existing 67 rows either backfill-cleaned or left as harmless residue.
+
+**Source.** Audit PR #100 section C2.
+
+### B23. Doc drift — `woba_vs_hand` anchors
+
+**Status.** LOW — 5-min doc fix.
+
+**Why it matters.** `How_The_HR_Model_Works.md` Factor 1 anchor table references (0.330, 0.450) for woba_vs_hand; the Factor 2 narrative says (0.280, 0.420); the code uses (0.290, 0.395). Three different numbers across one doc + the implementation. Code is correct; docs are stale.
+
+**Spec.** Update `How_The_HR_Model_Works.md` to reflect the actual `score_batters.py:870` anchor of (0.290, 0.395). Note the calibration history if relevant.
+
+**Files.** `How_The_HR_Model_Works.md`.
+
+**Done when.** Doc and code agree on the anchor.
+
+**Source.** Audit PR #100 section A (LOW).
+
+---
+
 ## Model factor review & heatmap (2026-05-19/20 sessions)
 
 A factor-by-factor audit of the 6-factor composite, plus tooling/data carry-forwards. **Form** and **Matchup** are done — PRs **#56** (`form-factor-rebuild`) and **#57** (`matchup-vulnerability-fix`). The 2026-05-20 scoring audit (`docs/scoring_audit_2026-05-20.md`) added B8/B9/B10 — see those entries for the audit findings they wrap.
@@ -256,6 +442,8 @@ Background context: `CLAUDE.md` ("Current work" section), the #56/#57 PR descrip
 > Method note for the factor reviews (B1–B3): same approach that worked for Form and Matchup — decompose every input the factor uses, trace where each value actually comes from, check for proxies / hard caps / mislabels / paths that disagree, verify it recalculates and matches the DB, then write findings + a fix PR.
 
 ### A1. Refit composite weights after the Form + Matchup changes
+
+**Status (2026-05-27 deeper audit).** BLOCKED by B16. The 2026-05-26 deeper audit (`docs/audit_findings_inputs_2026-05-26.md`, PR #100) + PM session spot-check confirmed that `refit_weights.py` shares `backtest_factors.rescore_row`'s scoring formula divergence: `pf_df = pd.DataFrame()` makes park always score 50; missing `slate_ctx` makes weather + matchup take v1 fallback formulas. FREE, PINNED, and `--custom` candidates from PR #82 are all fit to scores that don't match what production composites for 3 of 6 factors. **Do not ship until B16 lands and the harness re-runs.** After B16, also re-anchor under B17 (Power input anchor recalibration) so the refit fits weights against well-calibrated curves.
 
 **Status (2026-05-26).** Harness rebuild SHIPPED (PR #82) — `refit_weights.py` now reads `pick_inputs` directly with chronological 70/30 OOS holdout. FREE candidate `power 0.271 / matchup 0.572 / park 0 / form 0.038 / weather 0.119 / lineup 0` evaluated on 188-date backfill, passes +1.0pp top-decile threshold but with dramatic swings (form 0.279→0.038, lineup zeroed). **Not yet flipped into `WEIGHT_CONFIGS["default"]`** — user reviewing. `--custom` flag (PR #90) supports evaluating arbitrary blends; user's locked candidate `power=0.271,matchup=0.4576,park=0,form=0.1524,weather=0.119,lineup=0` (Form kept alive at ~55% of current per user intuition; lineup zeroed pending B15). User needs to run `python refit_weights.py --custom "..."` against current pick_inputs to verify before flipping. Caveat: `score_lineup_position` is anti-correlated with HR (Pearson r = -0.020) — see B15.
 
@@ -311,7 +499,9 @@ Background context: `CLAUDE.md` ("Current work" section), the #56/#57 PR descrip
 
 ### B1. Power factor review
 
-**Status.** Ready to start — independent.
+**Status (2026-05-27 deeper audit).** Materially superseded by audit PR #100. The specific actionable items split into B17 (anchor recalibration), B20 (pull_fb_pct decision), and B6 (recent quality-contact blend — still queued). B1 itself closes once those three land.
+
+**Status (original).** Ready to start — independent.
 
 **Why it matters.** Next factor in the sweep (weight 0.250). Strong prior suspicion: `barrel_pct` / `exit_velo` from `season_batting` are *synthetic estimates* (`barrel ≈ hr_per_pa×200`, `ev ≈ 82 + slg×15`) — `barrel_pct_source` is only ever `synthetic_hr_per_pa` / `season_batting_fallback` / None, never `statcast`. So Power may run on synthetic contact-quality data exactly as Form did. `pull_fb_pct` is known-NULL on the daily path. The season-HR floor (5→50, 8→60, 12→70, 18→78, 25→85) keys off `season_batting.hr`, which the heatmap showed undercounts vs `outcomes` (Buxton 11 stored vs 13 actual) → mis-tiers hitters.
 
@@ -757,6 +947,11 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-05-27 — PM session bootstrap + deeper audit
+
+- **PR #99 — `CLAUDE.md`** at repo root. PM-session pattern + hard rules for sub-sessions (one PR per change, base off main, no parallel agents within a lane, do not assume, verify on Py 3.14 + PowerShell, do not "fix" the false-alarms list). Auto-loaded into every fresh session in this repo.
+- **PR #100 — Deeper inputs/anchors/paths audit.** 7 net-new HIGH findings vs. PR #97's 2. Empirical citations for every HIGH from 69,911-row `pick_inputs` sample. Surfaced (a) anchor recalibration cluster B17, (b) `pull_fb_pct` 100% NULL B20, (c) backtest formula divergence B16 — confirmed by PM spot-check to extend to `refit_weights.py` → blocks A1. Findings doc at `docs/audit_findings_inputs_2026-05-26.md` + reproducibility script at `_review/audit_inputs_run.py`.
 
 ### 2026-05-26 — High-throughput session (19 PRs, mixed quality)
 
