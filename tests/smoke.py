@@ -2586,6 +2586,244 @@ def pin_use_park_archetype_flag_default_off() -> Result:
     )
 
 
+def pin_score_park_kwarg_none_safe() -> Result:
+    """B16: omitting slate_park_pct and passing slate_park_pct=None produce
+    byte-identical results. Production-path safety pin — the kwarg is a
+    rescore-path-only knob; live scoring (kwarg defaults to None) must not
+    change."""
+    import pandas as pd
+    from score_batters import score_park
+
+    pf = pd.DataFrame([
+        {"venue": "Yankee Stadium",
+         "hr_pf_overall": 115, "hr_pf_lhb": 128, "hr_pf_rhb": 105},
+    ])
+    batter = {"bats": "L"}
+    omitted = score_park(batter, "Yankee Stadium", pf)
+    none_kwarg = score_park(batter, "Yankee Stadium", pf, slate_park_pct=None)
+    if abs(omitted - none_kwarg) < 0.001:
+        return Result(
+            f"score_park(slate_park_pct=None) byte-identical to omitting "
+            f"({omitted:.4f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_park kwarg-None safety",
+        Result.HALT,
+        f"omitted={omitted}, none_kwarg={none_kwarg}; B16 kwarg leaked into "
+        "the default scoring path",
+    )
+
+
+def pin_score_weather_kwarg_none_safe() -> Result:
+    """B16: omitting slate_weather_pct and passing slate_weather_pct=None
+    produce byte-identical results. Production-path safety pin."""
+    from score_batters import score_weather
+
+    weather = {
+        "temperature_f": 75, "wind_mph": 8, "wind_direction_deg": 120,
+        "humidity_pct": 55, "dome": False,
+    }
+    omitted = score_weather(weather, venue="Yankee Stadium", batter_hand="R")
+    none_kwarg = score_weather(
+        weather, venue="Yankee Stadium", batter_hand="R",
+        slate_weather_pct=None,
+    )
+    if abs(omitted - none_kwarg) < 0.001:
+        return Result(
+            f"score_weather(slate_weather_pct=None) byte-identical to "
+            f"omitting ({omitted:.4f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_weather kwarg-None safety",
+        Result.HALT,
+        f"omitted={omitted}, none_kwarg={none_kwarg}; B16 kwarg leaked "
+        "into the default scoring path",
+    )
+
+
+def pin_score_matchup_kwarg_none_safe() -> Result:
+    """B16: omitting slate_pitcher_vulnerability_pct and passing
+    slate_pitcher_vulnerability_pct=None produce byte-identical results.
+    Production-path safety pin."""
+    from score_batters import score_matchup
+
+    batter = {"woba_vs_hand": 0.345, "bats": "L"}
+    pitcher = {"hr_per_9": 1.6, "hard_hit_pct_allowed": 38, "throws": "R"}
+    omitted = score_matchup(batter, pitcher)
+    none_kwarg = score_matchup(
+        batter, pitcher, slate_pitcher_vulnerability_pct=None,
+    )
+    if abs(omitted - none_kwarg) < 0.001:
+        return Result(
+            f"score_matchup(slate_pitcher_vulnerability_pct=None) "
+            f"byte-identical to omitting ({omitted:.4f})",
+            Result.PASS,
+        )
+    return Result(
+        "score_matchup kwarg-None safety",
+        Result.HALT,
+        f"omitted={omitted}, none_kwarg={none_kwarg}; B16 kwarg leaked "
+        "into the default scoring path",
+    )
+
+
+def pin_slate_pct_columns_exist() -> Result:
+    """B16: after the migration, pick_inputs has slate_park_pct,
+    slate_weather_pct, slate_pitcher_vulnerability_pct columns. NULL-safe
+    additive; pre-B16 rows stay NULL until backfilled."""
+    import tempfile
+    import gc
+    tmp_dir = tempfile.mkdtemp(prefix="pin_b16_cols_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    try:
+        from etl.db import create_tables
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(pick_inputs)"
+            ).fetchall()}
+        finally:
+            conn.close()
+    finally:
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass
+
+    expected = ("slate_park_pct", "slate_weather_pct",
+                "slate_pitcher_vulnerability_pct")
+    missing = [c for c in expected if c not in cols]
+    if missing:
+        return Result(
+            "pick_inputs slate_*_pct columns (B16)", Result.HALT,
+            f"missing: {missing}",
+        )
+    return Result(
+        "pick_inputs.slate_park_pct + slate_weather_pct + "
+        "slate_pitcher_vulnerability_pct columns present",
+        Result.PASS,
+    )
+
+
+def pin_backfill_slate_pct_idempotent() -> Result:
+    """B16: running diagnostics/backfill_slate_pct.py twice on the same row
+    produces identical values (idempotent UPDATE). Builds a tiny synthetic
+    DB and runs the per-date backfill helper twice."""
+    import tempfile
+    import gc
+    tmp_dir = tempfile.mkdtemp(prefix="pin_b16_backfill_")
+    tmp_path = str(Path(tmp_dir) / "test.db")
+    try:
+        from etl.db import create_tables
+        from diagnostics.backfill_slate_pct import (
+            _backfill_one_date,
+            _seed_park_lookup,
+            _seed_park_by_overall,
+        )
+        conn = sqlite3.connect(tmp_path)
+        try:
+            create_tables(conn)
+            date_str = "2025-04-15"
+            # Two batters / two games / two pitchers / two venues with
+            # different HR park factors so the rank dict has variation.
+            rows = [
+                (date_str, 100, 115.0, "L",   # venue 1, LHB
+                 78, 10, 60, 0,
+                 1.5, 4.0, 38, 8.0, 38, None, None, None, None,
+                 "L", "R"),
+                (date_str, 101, 90.0, "R",    # venue 2, RHB
+                 72, 5, 55, 0,
+                 0.9, 3.2, 32, 9.5, 33, None, None, None, None,
+                 "R", "R"),
+            ]
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO pick_inputs ("
+                    "date, batter_id, hr_park_factor, bats, "
+                    "temperature_f, wind_mph, humidity_pct, is_dome, "
+                    "pitcher_hr_per_9, pitcher_era, pitcher_hh_pct, "
+                    "pitcher_k_per_9, pitcher_fb_pct_allowed, "
+                    "pitcher_recent_hr9_21d, pitcher_recent_starts_21d, "
+                    "pitcher_recent_era_21d, pitcher_recent_k9_21d, "
+                    "bats, throws"
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    r,
+                )
+            # Daily picks rows for the JOIN
+            conn.execute(
+                "INSERT INTO daily_picks "
+                "(date, batter_id, batter_name, game_pk, opp_pitcher, "
+                " composite, mode, rank_in_board, selected) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (date_str, 100, "B1", 5001, "Pitch One", 50, "live", 1, 1),
+            )
+            conn.execute(
+                "INSERT INTO daily_picks "
+                "(date, batter_id, batter_name, game_pk, opp_pitcher, "
+                " composite, mode, rank_in_board, selected) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (date_str, 101, "B2", 5002, "Pitch Two", 50, "live", 2, 1),
+            )
+            conn.commit()
+
+            park_seed = _seed_park_lookup()
+            park_seed_by_overall = _seed_park_by_overall()
+            _backfill_one_date(
+                conn, date_str, park_seed, park_seed_by_overall, dry_run=False
+            )
+            first = conn.execute(
+                "SELECT batter_id, slate_park_pct, slate_weather_pct, "
+                "slate_pitcher_vulnerability_pct FROM pick_inputs "
+                "WHERE date = ? ORDER BY batter_id",
+                (date_str,),
+            ).fetchall()
+            # Run a second time
+            _backfill_one_date(
+                conn, date_str, park_seed, park_seed_by_overall, dry_run=False
+            )
+            second = conn.execute(
+                "SELECT batter_id, slate_park_pct, slate_weather_pct, "
+                "slate_pitcher_vulnerability_pct FROM pick_inputs "
+                "WHERE date = ? ORDER BY batter_id",
+                (date_str,),
+            ).fetchall()
+        finally:
+            conn.close()
+    finally:
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+        except OSError:
+            pass
+
+    if first != second:
+        return Result(
+            "backfill_slate_pct idempotent (B16)", Result.HALT,
+            f"first={first}, second={second}; re-running mutated values",
+        )
+    # Also sanity-check at least one of them got populated
+    non_null = sum(
+        1 for row in first
+        if any(v is not None for v in row[1:])
+    )
+    if non_null == 0:
+        return Result(
+            "backfill_slate_pct populated at least one slate_pct", Result.HALT,
+            f"all NULL after backfill: {first}",
+        )
+    return Result(
+        "backfill_slate_pct re-runnable, values stable across two passes "
+        f"(populated {non_null}/2 rows)",
+        Result.PASS,
+    )
+
+
 def pin_score_park_archetype_flag_off_no_op() -> Result:
     """Phase 1: with USE_PARK_ARCHETYPE off, park_archetype_centroid on the
     batter dict is IGNORED by score_park - score is byte-identical to a
@@ -4099,6 +4337,12 @@ PIN_TESTS: list[Callable[[], Result]] = [
     # 2026-05-25: Phase 1 — park archetype sub-signal scaffolding
     pin_batter_park_archetype_table_exists,
     pin_use_park_archetype_flag_default_off,
+    # 2026-05-27: B16 — slate-pct kwargs + columns + backfill
+    pin_score_park_kwarg_none_safe,
+    pin_score_weather_kwarg_none_safe,
+    pin_score_matchup_kwarg_none_safe,
+    pin_slate_pct_columns_exist,
+    pin_backfill_slate_pct_idempotent,
     pin_score_park_archetype_flag_off_no_op,
     pin_compute_park_archetype_match_none_passes_through,
     pin_compute_park_archetype_match_basic,

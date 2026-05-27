@@ -81,6 +81,12 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
     """
     Pull every pick_inputs row JOINed with daily_picks (for team, game_pk),
     daily_slate (for venue), and outcomes (for hit_hr) since the given date.
+
+    B16 (2026-05-27): also reads pi.bats / pi.throws (no longer hardcoded
+    "R" in rescore_row, B19 fold-in) and the three slate_*_pct columns so
+    rescore_row can pass them as kwargs to score_park / score_weather /
+    score_matchup — making historical rescoring byte-identical to
+    production for rows from 2026-05-27+.
     """
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found at {db_path}")
@@ -105,6 +111,9 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
             pi.humidity_pct, pi.is_dome,
             pi.batting_order,
             pi.season_hr,
+            pi.bats, pi.throws,
+            pi.slate_park_pct, pi.slate_weather_pct,
+            pi.slate_pitcher_vulnerability_pct,
             dp.batter_name, dp.team AS batter_team, dp.game_pk,
             ds.venue AS game_venue,
             CASE WHEN o.hr_count > 0 THEN 1 ELSE 0 END AS hit_hr
@@ -133,6 +142,13 @@ def rescore_row(row: pd.Series) -> dict:
     re-compute each factor score with the CURRENT score_* functions.
     Returns {power, matchup, park, form, weather, lineup}.
     """
+    # B16 (2026-05-27, bundles B19): pi.bats and pi.throws have been stored
+    # since 2026-05-03; use them when present, fall back to "R" only when
+    # the column is NULL (pre-2026-05-03 rows). Park's L/R adjustment and
+    # the v1 matchup platoon bonus now reflect actual handedness on every
+    # row written since the column was added.
+    bats = row.get("bats") or "R"
+    throws = row.get("throws") or "R"
     batter = {
         "barrel_pct": row.get("barrel_pct"),
         "exit_velo": row.get("exit_velo"),
@@ -153,7 +169,9 @@ def rescore_row(row: pd.Series) -> dict:
         "recent_xwoba_contact_14d": row.get("recent_xwoba_contact_14d"),
         "recent_iso_14d": row.get("recent_iso_14d"),
         "woba_vs_hand": row.get("woba_vs_hand"),
-        "bats": "R",  # not stored; platoon advantage flag captures the diff
+        # B19 (2026-05-27): bats is now persisted; row.get("bats", "R") used
+        # to be a stale hardcoded "R" before this PR.
+        "bats": bats,
         # B8 (2026-05-20): outcomes-cumulative season HR drives the
         # SEASON_HR_FLOOR_TIERS lookup in score_power. Pre-B8, pick_inputs
         # had no hr/season_hr column so this re-score path silently never
@@ -179,15 +197,6 @@ def rescore_row(row: pd.Series) -> dict:
     # None correctly). Pre-fix, a re-score against an old pick_inputs
     # row with NULL pitcher fields silently substituted league mean,
     # producing a different score than the live path would have today.
-    #
-    # Handedness note: bats / throws are still hardcoded R/R because
-    # pick_inputs doesn't store batter `bats` or pitcher `throws`
-    # columns. The platoon_advantage flag captures the live-run sign
-    # but doesn't let us reconstruct the absolute handedness pair —
-    # so park's handedness-aware lookup and the platoon bonus in v1
-    # matchup can't be perfectly re-scored. Future: add `bats` and
-    # `pitcher_throws` columns to pick_inputs so this rescore can be
-    # accurate on handedness too.
     pitcher = {
         "hr_per_9": row.get("pitcher_hr_per_9"),
         "era": row.get("pitcher_era"),
@@ -204,7 +213,8 @@ def rescore_row(row: pd.Series) -> dict:
         "recent_starts_21d": row.get("pitcher_recent_starts_21d"),
         "recent_era_21d": row.get("pitcher_recent_era_21d"),
         "recent_k9_21d": row.get("pitcher_recent_k9_21d"),
-        "throws": "R",   # see comment above
+        # B19 (2026-05-27): throws now persisted in pick_inputs.
+        "throws": throws,
     }
     weather = {
         "temperature_f": row.get("temperature_f", 68),
@@ -223,12 +233,57 @@ def rescore_row(row: pd.Series) -> dict:
     except (ValueError, TypeError):
         bo = None
 
+    # B16 (2026-05-27): pull the persisted slate percentiles. When non-NULL,
+    # the score_* functions use these directly as kwargs, byte-matching
+    # the production-day composite. NULL on pre-B16 rows -> kwargs default
+    # to None and score_* falls back to the legacy anchored path (matches
+    # pre-B16 backtest behavior, so old rows stay comparable).
+    spp_raw = row.get("slate_park_pct")
+    swp_raw = row.get("slate_weather_pct")
+    spv_raw = row.get("slate_pitcher_vulnerability_pct")
+    slate_park_pct = float(spp_raw) if spp_raw is not None and not pd.isna(spp_raw) else None
+    slate_weather_pct = float(swp_raw) if swp_raw is not None and not pd.isna(swp_raw) else None
+    slate_pitcher_vulnerability_pct = (
+        float(spv_raw) if spv_raw is not None and not pd.isna(spv_raw) else None
+    )
+
+    # B16 follow-up (2026-05-27): rebuild a minimal slate_ctx so
+    # score_matchup picks up the Vegas team_total_pct signal (the third
+    # equal-weighted matchup term). vegas_team_total_pct is persisted in
+    # pick_inputs since 2026-05-03 and batter_team comes off daily_picks.
+    # Without this, score_matchup silently averages only [pitcher_pct,
+    # woba] in the rescore path while production averaged
+    # [pitcher_pct, woba, team_total_pct] — a -0.83 forward-parity gap on
+    # the matchup factor and -0.24 on the composite. Pre-2026-05-03 rows
+    # (vegas NULL) or rows missing batter_team fall through to slate_ctx
+    # = None, matching the legacy rescore behavior on those rows.
+    team_total_raw = row.get("vegas_team_total_pct")
+    batter_team = row.get("batter_team")
+    synthetic_slate_ctx = None
+    if (
+        team_total_raw is not None
+        and not pd.isna(team_total_raw)
+        and batter_team
+    ):
+        synthetic_slate_ctx = {
+            "active": True,
+            "team_total_pct": {batter_team: float(team_total_raw)},
+        }
+
     return {
         "power": score_power(batter),
-        "matchup": score_matchup(batter, pitcher),
-        "park": score_park(batter, venue, pf_df),
+        "matchup": score_matchup(
+            batter, pitcher,
+            slate_ctx=synthetic_slate_ctx,
+            batter_team=batter_team,
+            slate_pitcher_vulnerability_pct=slate_pitcher_vulnerability_pct,
+        ),
+        "park": score_park(batter, venue, pf_df, slate_park_pct=slate_park_pct),
         "form": score_form(batter),
-        "weather": score_weather(weather, venue=venue, batter_hand="R"),
+        "weather": score_weather(
+            weather, venue=venue, batter_hand=bats,
+            slate_weather_pct=slate_weather_pct,
+        ),
         "lineup": score_lineup_position(bo),
     }
 

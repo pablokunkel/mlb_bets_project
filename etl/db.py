@@ -1023,6 +1023,37 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
+    # B16 (2026-05-27): slate-percentile snapshot columns on pick_inputs.
+    # Production scoring runs park/weather/pitcher-vulnerability through
+    # compute_slate_context, producing within-slate percentile ranks that
+    # then feed score_park / score_weather / score_matchup. Backtest and
+    # refit code paths previously fed an empty park_factors DataFrame and
+    # slate_ctx=None, taking the v1 fallback formulas for 3 of 6 factors —
+    # which means every weight refit since 2026-05-13 trained on scores
+    # that didn't match production composites. Persisting the slate
+    # percentile at INSERT time lets rescore_row pass it through to the
+    # score_* functions as a kwarg, making backtest/refit byte-identical
+    # to production. All three columns are NULL-safe additive; pre-B16
+    # rows stay NULL and the rescore code falls through to the legacy
+    # path (matching pre-B16 backtest behavior, so old rows remain
+    # comparable). See BACKLOG.md B16 for design.
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)").fetchall()
+    }
+    for col, ddl in [
+        ("slate_park_pct",
+         "ALTER TABLE pick_inputs ADD COLUMN slate_park_pct REAL"),
+        ("slate_weather_pct",
+         "ALTER TABLE pick_inputs ADD COLUMN slate_weather_pct REAL"),
+        ("slate_pitcher_vulnerability_pct",
+         "ALTER TABLE pick_inputs ADD COLUMN slate_pitcher_vulnerability_pct REAL"),
+    ]:
+        if col not in existing_cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+
     conn.commit()
 
 
