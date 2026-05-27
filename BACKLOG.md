@@ -257,6 +257,8 @@ Background context: `CLAUDE.md` ("Current work" section), the #56/#57 PR descrip
 
 ### A1. Refit composite weights after the Form + Matchup changes
 
+**Status (2026-05-26).** Harness rebuild SHIPPED (PR #82) — `refit_weights.py` now reads `pick_inputs` directly with chronological 70/30 OOS holdout. FREE candidate `power 0.271 / matchup 0.572 / park 0 / form 0.038 / weather 0.119 / lineup 0` evaluated on 188-date backfill, passes +1.0pp top-decile threshold but with dramatic swings (form 0.279→0.038, lineup zeroed). **Not yet flipped into `WEIGHT_CONFIGS["default"]`** — user reviewing. `--custom` flag (PR #90) supports evaluating arbitrary blends; user's locked candidate `power=0.271,matchup=0.4576,park=0,form=0.1524,weather=0.119,lineup=0` (Form kept alive at ~55% of current per user intuition; lineup zeroed pending B15). User needs to run `python refit_weights.py --custom "..."` against current pick_inputs to verify before flipping. Caveat: `score_lineup_position` is anti-correlated with HR (Pearson r = -0.020) — see B15.
+
 **Status (2026-05-25).** Partially unblocked. B6 + B8 + B9 have shipped on the `claude/backfill-2025` branch. The 2025-season backfill (replacing the "raw_data.csv extension" original gate) provides training data directly from `pick_inputs`. Two backtest harnesses (`backtest_power_inputs.py` + `backtest_form_anchors.py`) have produced preliminary verdicts on a 90-date partial sample — see WEIGHT_REFIT_LOG.md 2026-05-25. Remaining gates: (1) finish the in-progress backfill re-run + re-confirm both verdicts on the full 188-date sample, (2) the wider-real-Statcast variant (21d/28d) — tracked as B12 — before declaring on `USE_RECENT_STATCAST_BLEND`, (3) update `refit_weights.py` to read from `pick_inputs` directly and refresh its stale `current_default` baseline.
 
 **Prior status (2026-05-20).** Gated — blocked until **B6 + B8 + B9 land** AND ~1–2 weeks of pipeline runs accrue on the new code. Previously gated on #56 + #57 only; widened 2026-05-20 after the scoring audit (`docs/scoring_audit_2026-05-20.md`) revealed that `backtest_factors.rescore_row` has never been able to apply the season-HR floor (no `hr` column in `pick_inputs` — finding #3). That means every refit since 2026-05-03 (when the floor went on) was calibrated against backtest data that scored *without* the floor while production *has* it. Refitting now would inherit the same divergence.
@@ -394,9 +396,11 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** Bohm-class slow-starter-now-hot hitters get Power > 30 when their recent Statcast supports it. Burger's 8 HR floors cleanly to ~58 (log) without a cliff. Schwarber sits near current 78 (log calibration preserved). Backtest deltas documented; flag flipped on after WEIGHT_REFIT_LOG decision.
 
-### B7. IL / scratch filter — replace lineup-fallback rows with roster-status data
+### ~~B7. IL / scratch filter — replace lineup-fallback rows with roster-status data~~ — SHIPPED PR #81 (2026-05-26)
 
-**Status.** Ready to start — scoped in detail during 2026-05-20 session. 2–3 hour build estimate.
+**Status.** Shipped 2026-05-26 — see "Recently shipped" 2026-05-26 entry. Original spec below for reference.
+
+**Status (original 2026-05-20).** Ready to start — scoped in detail during 2026-05-20 session. 2–3 hour build estimate.
 
 **Why it matters.** Surfaced 2026-05-20: Ryan Jeffers ranked #2 by Form on 5/20 despite being placed on the IL before 5/19's game. Daily lineup fell back to "recent:2026-05-19" (when he was active) and the model had no way to know he wouldn't play. The posted-lineup feed catches every absence once posted, but ~60% of the 5/20 slate (229 of 392 batters) was on fallback lineups before posting — the residual window where IL'd / suspended players slip through.
 
@@ -521,7 +525,11 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** TBD pitcher games visibly flagged and not scored against synthetic. Weather scoring skips on partial data. Smaller items resolved and documented.
 
-### B11. Drop `recent_avg_30g` from `score_form` (Form A1 pre-commit)
+### ~~B11. Drop `recent_avg_30g` from `score_form`~~ — SHIPPED PR #78 (2026-05-26)
+
+**Status.** Shipped. +0.018 AUC confirmed across 90/148/188 dates. `recent_avg_30g` column kept on pick_inputs for pre-B11 backtest replay. Mechanism: AVG anti-correlates with HR-active power hitters (Bader-class), ISO covers power dimension. See WEIGHT_REFIT_LOG B11 entry.
+
+### B11-original. Drop `recent_avg_30g` from `score_form` (Form A1 pre-commit)
 
 **Status.** Gated on full-backfill re-confirmation. Standalone, small PR.
 
@@ -533,7 +541,11 @@ A naive fix — "require 2026 games > 0" — would lock out true rookies and IL-
 
 **Done when.** Form harness re-run on full 188-date sample re-confirms `no_avg` win, PR lands, WEIGHT_REFIT_LOG entry written.
 
-### B12. Wider real-Statcast window — 21d / 28d B6 variant
+### ~~B12. Wider real-Statcast window — 21d / 28d B6 variant~~ — SHIPPED PR #79 (2026-05-26) — NEGATIVE FINDING
+
+**Status.** Shipped 2026-05-26 with negative finding: wider real-Statcast windows (21d/28d) did NOT beat the 14d baseline across AUC, top-decile lift, or quintile monotonicity. Combined with B6 finding, the verdict is closed end-to-end: `USE_RECENT_STATCAST_BLEND` stays `False` permanently. Infrastructure kept (10-variant harness, 21d/28d columns on pick_inputs, backfill script) for future probes. See WEIGHT_REFIT_LOG B12 entry.
+
+### B12-original. Wider real-Statcast window — 21d / 28d B6 variant
 
 **Status.** Required before final A1 call on `USE_RECENT_STATCAST_BLEND`. Independent.
 
@@ -647,7 +659,9 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 
 ### C4. Park archetype sub-signal — populate the table, run the backtest
 
-**Status.** Phases 1 + 2 shipped (2026-05-25). Phase 1 = design + foundation (`docs/park_archetype_design.md`). Phase 2 = 2025 backfill + harness wiring + variant sweep (this PR). Phases 3-4 ready to start in order.
+**Status (2026-05-26).** Phase 1 + Phase 2 code SHIPPED (PR #85, #87, #94) but **Phase 2 BACKFILL IS BROKEN**. Backfill wrote 114,495 rows with ALL NULL `feature_centroid_json`. Root cause: `features_v2.compute_batter_park_archetype` JOINs `batter_hr_events` against `daily_slate` for venue lookup, but `daily_slate` is live-only — only 289 of 12,610 HR events (2.3%) have a matching `daily_slate.game_pk`. Phase 3 blocked until backfill produces real centroids. Fix path: build `game_pk → venue` lookup via MLB Stats API OR enrich `batter_hr_events` with `home_team` at Statcast ETL time. See `docs/handoff_2026-05-26.md` for details.
+
+**Status (2026-05-25 prior — now stale).** Phases 1 + 2 shipped (2026-05-25). Phase 1 = design + foundation (`docs/park_archetype_design.md`). Phase 2 = 2025 backfill + harness wiring + variant sweep (this PR). Phases 3-4 ready to start in order.
 
 **Why it matters.** Today's `score_park` is a handedness-weighted lookup of three numbers per venue. It says nothing about whether *this specific batter* has historically gone deep in parks that look like today's park. Foundation now in place behind `USE_PARK_ARCHETYPE=False` — strictly additive when flipped on. Notably, `score_park` is currently weighted 0.000 in `WEIGHT_CONFIGS["default"]`; the archetype signal is a candidate for bringing park back at the next A1 refit.
 
@@ -665,7 +679,9 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 
 ### C5. Form archetype — Phases 2-4 (per-batter pre-HR state-of-play sub-signal)
 
-**Status.** Phase 1 shipped (this PR — `claude/form-archetype-foundation` cherry-picked via #86 carry-forward). Phases 2-4 queued. Independent of A1; will fold into the next A1 refit per Phase 4.
+**Status (2026-05-26).** Phase 1 SHIPPED (PR #84 + #86 carry-forward). Phase 2 code SHIPPED (PR #88, #92 bulk-pull rewrite, #93 NA fix v1) but **builder has a remaining NA-boolean bug**. After the bulk Statcast pull completes (~25 min, cached), every (date, window) iteration crashes with `TypeError: boolean value of NA is ambiguous`. PR #93 caught one NA path but not all. Cached parquet bulk pull still on disk — next run skips the download. Fix path: instrument `etl/backfill_form_archetype.py:491` `except Exception` block with `traceback.print_exc()` to find the remaining unsafe boolean comparison. See `docs/handoff_2026-05-26.md` for details. Phase 3 blocked until builder runs cleanly.
+
+**Status (prior).** Phase 1 shipped (this PR — `claude/form-archetype-foundation` cherry-picked via #86 carry-forward). Phases 2-4 queued. Independent of A1; will fold into the next A1 refit per Phase 4.
 
 **Why it matters.** Today's `score_form` reads "is the batter producing recently" (recent_hr_10g + recent_iso_30g + ev_trend). It does NOT capture **whether today's state-of-play looks like the state the batter was in the last few times he went deep.** A feast-or-famine power hitter (Gallo-type) has a distinctly different pre-HR pattern from a contact-hitter slugger (Freeman-type), and today's Form score blurs the two when they happen to land at the same value. Per-batter centroid of past pre-HR state-of-play + L2 distance to today's state would add a complementary signal.
 
@@ -741,6 +757,41 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-05-26 — High-throughput session (19 PRs, mixed quality)
+
+> **Session note.** This session shipped a lot of PRs fast, including
+> three production-broken backfills (park archetype, form archetype, pitch
+> type — all separately fixed after the first run failed). The Form Phase 1
+> + Phase 2 still has a latent NA-boolean bug; Park Phase 2 wrote 114,495
+> rows with ALL NULL centroids. **Read `docs/handoff_2026-05-26.md` before
+> trusting any item below as "done."** Many "SHIPPED" markers below are
+> for code that landed but doesn't yet produce usable data.
+
+**B-series scoring changes (clean shipping):**
+- **PR #78 — B11** dropped `recent_avg_30g` from `score_form` (+0.018 AUC across 90/148/188 dates). Mechanism: AVG anti-correlates with HR-active power hitters; ISO already covers the power dimension.
+- **PR #79 — B12** wider Statcast 21d/28d window infrastructure + 10-variant harness. **Negative finding**: wider windows didn't beat 14d. Infra kept for future probes; `USE_RECENT_STATCAST_BLEND` stays False.
+- **PR #81 — B7** IL / scratch filter. Tier 2/3 fallback batters with non-Active MLB roster status get colored badge + excluded from top-8 card. Optional `daily_picks.promoted_due_to='il_filter'` tag for retrospective calibration. **Ryan Jeffers 2026-05-20 case resolved.**
+
+**A1 weight refit (decision pending):**
+- **PR #82 — A1 refit harness rebuild** read pick_inputs ⨝ outcomes directly, 70/30 OOS holdout, FREE + PINNED candidate evaluation. FREE candidate (`power 0.271 / matchup 0.572 / park 0 / form 0.038 / weather 0.119 / lineup 0`) passes +1.0pp top-decile lift threshold but with large swings. **NOT MERGED INTO `WEIGHT_CONFIGS["default"]`** — user reviewing.
+- **PR #90 — `refit_weights.py --custom` flag** lets user evaluate arbitrary weight vectors on the same OOS holdout. User's locked candidate awaiting evaluation: `power=0.271,matchup=0.4576,park=0,form=0.1524,weather=0.119,lineup=0` (Form kept alive at ~55% of current; lineup zeroed pending B15 score_lineup_position rebuild).
+- **Backlog B15 added** to rebuild `score_lineup_position` against empirical HR-per-PA by slot (current table anti-correlates with HR rate — Pearson r = -0.020).
+
+**Archetype Phase 1 + Phase 2 — partially landed, partially broken:**
+- **Pitch-type archetype (PR #80, #83, #89, #95, #96):** Phase 1 schema/scoring scaffolding shipped behind `USE_ARSENAL_SUBSIGNAL=False`. Phase 2 builder with bulk Statcast pull + 6-variant harness shipped (#89). Backfill script fixed twice — argparse % escape (#95), UNION daily_picks for historical dates (#96). **Phase 2 ready to run cleanly after #96**; user hadn't re-run yet at session close.
+- **Park-archetype (PR #85, #87, #94):** Phase 1 design + scoring hook + 6-variant harness. Phase 2 backfill orchestrator + `pick_inputs` columns. **PHASE 2 IS BROKEN**: `batter_park_archetype` has 114,495 rows with ALL NULL `feature_centroid_json`. Root cause: `daily_slate` JOIN for venue resolution is live-only (~371 rows covering 2026-04-29 onward), so only 289 of 12,610 HR events get a venue. Fix path documented in handoff doc.
+- **Form-archetype (PR #84, #86, #88, #92, #93):** Phase 1 design + scoring hook + 9-variant 3×3 harness. Phase 2 backfill with builder rewrite (#92) replacing per-batter API spam (12,000 calls/iter → 1 bulk pull). NA-tolerance fix v1 (#93) caught one path but not all — runs still crash with `TypeError: boolean value of NA is ambiguous` after bulk pull completes. **Phase 2 NOT yet usable.**
+
+**Infrastructure + tooling fixes:**
+- **PR #91 — `r2_sync.py` loads `.env` directly** so direct `python infra/r2_sync.py pull` calls work without going through `run_backfill_local.py` wrapper. Same `.env`-wins convention.
+- **PR #95 — argparse `%` escape** (Python 3.14 strict mode rejected the bare `%` in pitch-type backfill help string).
+- **PR #96 — Pitch-type backfill UNION `daily_picks`** for historical-date batter lookup (`daily_lineup` is live-only and skipped all 188 dates).
+
+**Audit + docs:**
+- **PR #97 (open) — Codebase audit findings.** 6 HIGH / 11 MEDIUM / 8 LOW. **Read with skepticism**: most findings restate known issues. Only the `hr_fb_pct` anchor `min_max_scale(hr_fb_pct, 8, 20)` (compresses ~75% of empirical distribution into score=0) and the Savant `pitcher_fb_pct_allowed > 100` clamp are genuinely net-new actionable items.
+- **`docs/audit_brief_2026-05-26.md`** — 11-section audit framework for future passes.
+- **`docs/handoff_2026-05-26.md`** — session handoff with broken-but-looks-done warnings.
 
 ### 2026-05-23
 
