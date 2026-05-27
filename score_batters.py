@@ -815,6 +815,7 @@ def score_matchup(
     pitcher: dict,
     slate_ctx: dict | None = None,
     batter_team: str | None = None,
+    slate_pitcher_vulnerability_pct: float | None = None,
 ) -> float:
     """
     Factor 2: Matchup quality.
@@ -827,11 +828,22 @@ def score_matchup(
     If slate_ctx contains a non-empty team_total_pct map and *batter_team*
     is provided, the Vegas implied team total percentile is added as a
     third equal-weighted signal (game environment).
+
+    B16 (2026-05-27): *slate_pitcher_vulnerability_pct* — backtest/refit
+    rescore path. When provided (non-None), this value is used directly
+    as the pitcher vulnerability term, bypassing the slate_ctx lookup
+    AND the v1 fallback. Set by backtest_factors.rescore_row /
+    refit_weights.rescore_row from the persisted pick_inputs column so
+    historical rescoring matches what production computed on the day.
+    None (default) preserves the legacy live-production path byte-for-byte.
     """
     scores = []
 
     pname = pitcher.get("name", "")
-    if slate_ctx and slate_ctx.get("active") and pname in slate_ctx.get("pitcher_pct", {}):
+    if slate_pitcher_vulnerability_pct is not None:
+        # B16: rescore path — use the persisted slate percentile directly.
+        scores.append(float(slate_pitcher_vulnerability_pct))
+    elif slate_ctx and slate_ctx.get("active") and pname in slate_ctx.get("pitcher_pct", {}):
         scores.append(slate_ctx["pitcher_pct"][pname])
     else:
         # v1 fallback. 2026-05-02 fix (audit HIGH #3 + MED): was using
@@ -956,6 +968,7 @@ def score_park(
     venue: str,
     park_factors: pd.DataFrame,
     slate_ctx: dict | None = None,
+    slate_park_pct: float | None = None,
 ) -> float:
     """
     Factor 3: Park Factor for HRs.
@@ -976,14 +989,27 @@ def score_park(
     None propagation means a missing batter centroid (small sample) or
     missing today-park features skip cleanly. See
     docs/park_archetype_design.md.
+
+    B16 (2026-05-27): *slate_park_pct* — backtest/refit rescore path.
+    When provided (non-None), this value is used directly as the
+    handedness-adjusted base park score, bypassing the slate_ctx lookup
+    AND the v1 fixed-anchor fallback. Set by backtest_factors.rescore_row
+    / refit_weights.rescore_row from the persisted pick_inputs column,
+    which captured the same post-handedness value production computed on
+    the day. None (default) preserves the legacy live-production path
+    byte-for-byte.
     """
     if not venue:
         return 50.0
 
     # Base score: existing handedness-weighted park-factor logic.
     base_score: float
+    # B16: rescore path — use the persisted handedness-adjusted percentile
+    # directly. Skips both the slate_ctx lookup and the v1 fallback.
+    if slate_park_pct is not None:
+        base_score = float(slate_park_pct)
     # Slate-relative path
-    if slate_ctx and slate_ctx.get("active") and venue in slate_ctx.get("park_pct", {}):
+    elif slate_ctx and slate_ctx.get("active") and venue in slate_ctx.get("park_pct", {}):
         base_pct = slate_ctx["park_pct"][venue]
         if park_factors is not None and not park_factors.empty:
             match = park_factors[park_factors["venue"] == venue]
@@ -1348,6 +1374,7 @@ def score_weather(
     batter_hand: str = "R",
     slate_ctx: dict | None = None,
     game_pk: int | None = None,
+    slate_weather_pct: float | None = None,
 ) -> float:
     """
     Factor 5: Weather conditions (temperature + wind + humidity).
@@ -1358,6 +1385,14 @@ def score_weather(
       - 40% per-batter wind-alignment score (handedness-specific)
 
     Without slate_ctx, falls back to fixed-anchor blend.
+
+    B16 (2026-05-27): *slate_weather_pct* — backtest/refit rescore path.
+    When provided (non-None), this value replaces the slate_ctx lookup
+    and the function blends it 60/40 with wind_score (computed at score
+    time from the raw weather dict, same as the live path). The v1
+    fixed-anchor fallback is bypassed when the kwarg is set, even if
+    slate_ctx is None. Domes still short-circuit to 50.0. None (default)
+    preserves the legacy live-production path byte-for-byte.
     """
     if weather.get("dome", False):
         return 50.0
@@ -1365,6 +1400,12 @@ def score_weather(
     wind_mph = weather.get("wind_mph", 5) or 0
     wind_dir = weather.get("wind_direction_deg", None)
     wind_score = score_wind(wind_mph, wind_dir, venue, batter_hand)
+
+    # B16: rescore path — use the persisted slate percentile directly.
+    # The 60/40 blend with wind_score matches production's slate_ctx path
+    # at score_batters.py:1376.
+    if slate_weather_pct is not None:
+        return float(slate_weather_pct) * 0.60 + wind_score * 0.40
 
     if (
         slate_ctx
@@ -1546,6 +1587,66 @@ def compute_composite(
         vegas_total_pct = slate_ctx.get("team_total_pct", {}).get(batter_team)
         vegas_total_raw = slate_ctx.get("team_total_raw", {}).get(batter_team)
 
+    # B16 (2026-05-27): persist the slate percentile values that fed
+    # park / weather / matchup. Without these, backtest_factors.rescore_row
+    # and refit_weights.rescore_row had to recompute slate-relative
+    # percentiles from a non-existent today's-slate context, fell back to
+    # the v1 anchored formulas, and trained refit weights on scores that
+    # didn't match what production composited. Persisting at INSERT time
+    # lets the rescore path pass these as kwargs to the score_* functions
+    # so historical rescoring is byte-identical to production. NULL when
+    # the slate context didn't cover this row (e.g., dome game has no
+    # weather_pct, offline simulation has no slate_ctx) — rescore falls
+    # through to the legacy path in that case.
+    slate_park_pct_snap: float | None = None
+    slate_weather_pct_snap: float | None = None
+    slate_pitcher_vulnerability_pct_snap: float | None = None
+    if slate_ctx and slate_ctx.get("active"):
+        # Park: compute the post-handedness-adjusted value (matches
+        # score_park's slate-relative path). Persisting the
+        # already-adjusted value means score_park can use it directly
+        # as base_score on the rescore path without needing to look up
+        # park_factors again — the handedness adjustment is encoded.
+        park_pct_map = slate_ctx.get("park_pct", {})
+        if venue and venue in park_pct_map:
+            base_pct = park_pct_map[venue]
+            if park_factors is not None and not park_factors.empty:
+                pf_row_match = park_factors[park_factors["venue"] == venue]
+                if not pf_row_match.empty:
+                    pf_row = pf_row_match.iloc[0]
+                    if "hr_pf_lhb" in pf_row.index and "hr_pf_rhb" in pf_row.index:
+                        bats = batter.get("bats", "R") or "R"
+                        lhb = float(pf_row["hr_pf_lhb"])
+                        rhb = float(pf_row["hr_pf_rhb"])
+                        overall = float(pf_row.get("hr_pf_overall", (lhb + rhb) / 2.0))
+                        if overall > 0:
+                            if bats == "L":
+                                adj = (lhb - overall) / overall
+                            elif bats == "R":
+                                adj = (rhb - overall) / overall
+                            else:
+                                adj = 0.0
+                            base_pct = max(0, min(100, base_pct + adj * 50))
+            slate_park_pct_snap = float(base_pct)
+
+        # Weather: the game-level base percentile (compute_slate_context
+        # only enters games with non-None temp/wind/humidity, so domes /
+        # missing-data games stay NULL here; score_weather's dome
+        # short-circuit and v1 fallback handle those at rescore time).
+        weather_pct_map = slate_ctx.get("weather_pct", {})
+        if game_pk is not None and game_pk in weather_pct_map:
+            slate_weather_pct_snap = float(weather_pct_map[game_pk])
+
+        # Pitcher vulnerability: the within-slate composite that
+        # score_matchup / score_pitcher_vulnerability use. Pitchers with
+        # <2 measured signals are skipped from pitcher_pct by
+        # compute_slate_context (which is correct — they take the v1
+        # fallback in score_matchup), so the snapshot stays NULL for them.
+        pitcher_pct_map = slate_ctx.get("pitcher_pct", {})
+        pname_snap = pitcher.get("name", "")
+        if pname_snap and pname_snap in pitcher_pct_map:
+            slate_pitcher_vulnerability_pct_snap = float(pitcher_pct_map[pname_snap])
+
     inputs_snapshot = {
         # Power
         "barrel_pct":              batter.get("barrel_pct"),
@@ -1647,6 +1748,16 @@ def compute_composite(
         "form_archetype_centroid_json": batter.get("form_archetype_centroid_json"),
         "form_archetype_window":        batter.get("form_archetype_window"),
         "form_archetype_n_hrs":         batter.get("form_archetype_n_hrs"),
+        # B16 (2026-05-27): slate-relative percentile snapshots that fed
+        # score_park / score_weather / score_matchup. Computed above from
+        # slate_ctx; NULL when the slate-relative path wasn't active for
+        # this row (offline sim, dome game weather, pitcher with <2
+        # signals, etc.). backtest_factors / refit_weights rescore_row
+        # pass these as kwargs to make historical rescoring byte-identical
+        # to production. See BACKLOG.md B16.
+        "slate_park_pct":                  slate_park_pct_snap,
+        "slate_weather_pct":               slate_weather_pct_snap,
+        "slate_pitcher_vulnerability_pct": slate_pitcher_vulnerability_pct_snap,
     }
 
     return {

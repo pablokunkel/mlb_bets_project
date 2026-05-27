@@ -123,6 +123,14 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     # entering the date, used by score_power's HR-floor lookup and by
     # backtest_factors.rescore_row so backtests can apply the same floor
     # that production does.
+    # B16 (2026-05-27): + slate_park_pct, slate_weather_pct,
+    # slate_pitcher_vulnerability_pct -- the within-slate percentile values
+    # that fed score_park / score_weather / score_matchup. Persisting them
+    # lets backtest_factors.rescore_row and refit_weights.rescore_row
+    # replay production scoring byte-for-byte instead of falling through to
+    # the v1 anchored fallbacks (which mis-scored 3 of 6 factors). NULL on
+    # rows where the slate path wasn't active (offline sim, domes, pitchers
+    # with <2 signals); rescore code handles those via the legacy path.
     pick_inputs_sql = """
         INSERT OR REPLACE INTO pick_inputs (
             date, batter_id,
@@ -143,8 +151,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             season_hr,
             fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa,
             form_archetype_centroid_json, form_archetype_window, form_archetype_n_hrs,
-            park_archetype_centroid_json, park_archetype_n_hrs
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            park_archetype_centroid_json, park_archetype_n_hrs,
+            slate_park_pct, slate_weather_pct, slate_pitcher_vulnerability_pct
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -337,6 +346,15 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     # below-threshold (None+skip).
                     inputs.get("park_archetype_centroid_json"),
                     inputs.get("park_archetype_n_hrs"),
+                    # B16 (2026-05-27): slate-relative percentiles that fed
+                    # score_park / score_weather / score_matchup at scoring
+                    # time. NULL when the slate-relative path wasn't active
+                    # for this row (offline sim, dome weather, pitcher with
+                    # <2 signals). Pre-B16 picks JSONs don't carry these
+                    # keys -- .get() returns None and the column stays NULL.
+                    inputs.get("slate_park_pct"),
+                    inputs.get("slate_weather_pct"),
+                    inputs.get("slate_pitcher_vulnerability_pct"),
 
                 ))
                 n_inputs += 1

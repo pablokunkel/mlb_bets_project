@@ -108,6 +108,12 @@ def load_from_db(
         params.append(end)
     where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
+    # B16 (2026-05-27, bundles B19): pi.throws now read alongside pi.bats so
+    # rescore_row gets actual handedness on both sides; the three slate_*_pct
+    # columns let the rescore pass production-day slate percentiles to the
+    # score_* kwargs, making rescored composite byte-identical to what
+    # production composited on rows from 2026-05-27+ (NULL on older rows ->
+    # rescore falls through to the legacy anchored path).
     sql = f"""
         SELECT
             pi.date,
@@ -127,7 +133,9 @@ def load_from_db(
             pi.humidity_pct, pi.is_dome,
             pi.batting_order,
             pi.season_hr,
-            pi.bats,
+            pi.bats, pi.throws,
+            pi.slate_park_pct, pi.slate_weather_pct,
+            pi.slate_pitcher_vulnerability_pct,
             dp.game_pk, dp.team AS batter_team,
             dp.power_score    AS persisted_power,
             dp.matchup_score  AS persisted_matchup,
@@ -164,11 +172,18 @@ def rescore_row(row: pd.Series) -> dict:
     re-compute each factor with the CURRENT score_* functions. Post-B11
     score_form drops recent_avg_30g automatically.
 
-    Handedness caveat (same as backtest_factors.rescore_row): pick_inputs
-    stores `bats` directly. `throws` is not stored — defaults to "R" which
-    drops a small amount of platoon precision. Documented limitation; not
-    a blocker for the bucket-weight regression.
+    B16/B19 (2026-05-27): both `bats` and `throws` are now stored and read
+    from pick_inputs — backtest no longer hardcodes "R" / "R" — so park's
+    L/R adjustment and v1 matchup platoon bonus reflect actual handedness.
+    The three slate_*_pct columns capture the within-slate percentile
+    values that fed score_park / score_weather / score_matchup at
+    production time; when non-NULL they're passed as kwargs to bypass the
+    v1 fallback path and reproduce production composites byte-for-byte.
+    NULL on pre-B16 rows -> rescore falls through to the legacy anchored
+    path (matching pre-B16 backtest behavior; old rows stay comparable).
     """
+    bats = row.get("bats") or "R"
+    throws = row.get("throws") or "R"
     batter = {
         "barrel_pct": row.get("barrel_pct"),
         "exit_velo": row.get("exit_velo"),
@@ -187,7 +202,7 @@ def rescore_row(row: pd.Series) -> dict:
         "recent_xwoba_contact_14d": row.get("recent_xwoba_contact_14d"),
         "recent_iso_14d": row.get("recent_iso_14d"),
         "woba_vs_hand": row.get("woba_vs_hand"),
-        "bats": row.get("bats") or "R",
+        "bats": bats,
         "season_hr": row.get("season_hr"),
     }
     pitcher = {
@@ -200,7 +215,7 @@ def rescore_row(row: pd.Series) -> dict:
         "recent_starts_21d": row.get("pitcher_recent_starts_21d"),
         "recent_era_21d": row.get("pitcher_recent_era_21d"),
         "recent_k9_21d": row.get("pitcher_recent_k9_21d"),
-        "throws": "R",   # not stored in pick_inputs; documented limitation
+        "throws": throws,  # B19: now stored in pick_inputs
     }
     weather = {
         "temperature_f": row.get("temperature_f", 68),
@@ -210,7 +225,7 @@ def rescore_row(row: pd.Series) -> dict:
         "dome": bool(row.get("is_dome", 0)),
     }
     venue = row.get("game_venue", "") or ""
-    pf_df = pd.DataFrame()  # slate-relative path off; falls back to anchored
+    pf_df = pd.DataFrame()  # slate-relative path off; kwargs below handle it
 
     bo_raw = row.get("batting_order")
     try:
@@ -218,12 +233,30 @@ def rescore_row(row: pd.Series) -> dict:
     except (ValueError, TypeError):
         bo = None
 
+    # B16: persisted slate percentiles. When non-NULL, kwargs short-circuit
+    # the slate_ctx lookup AND the v1 anchored fallback inside the score_*
+    # functions, giving byte-identical results to production scoring.
+    spp_raw = row.get("slate_park_pct")
+    swp_raw = row.get("slate_weather_pct")
+    spv_raw = row.get("slate_pitcher_vulnerability_pct")
+    slate_park_pct = float(spp_raw) if spp_raw is not None and not pd.isna(spp_raw) else None
+    slate_weather_pct = float(swp_raw) if swp_raw is not None and not pd.isna(swp_raw) else None
+    slate_pitcher_vulnerability_pct = (
+        float(spv_raw) if spv_raw is not None and not pd.isna(spv_raw) else None
+    )
+
     return {
         "power": score_power(batter),
-        "matchup": score_matchup(batter, pitcher),
-        "park": score_park(batter, venue, pf_df),
+        "matchup": score_matchup(
+            batter, pitcher,
+            slate_pitcher_vulnerability_pct=slate_pitcher_vulnerability_pct,
+        ),
+        "park": score_park(batter, venue, pf_df, slate_park_pct=slate_park_pct),
         "form": score_form(batter),
-        "weather": score_weather(weather, venue=venue, batter_hand=batter["bats"]),
+        "weather": score_weather(
+            weather, venue=venue, batter_hand=bats,
+            slate_weather_pct=slate_weather_pct,
+        ),
         "lineup": score_lineup_position(bo),
     }
 
