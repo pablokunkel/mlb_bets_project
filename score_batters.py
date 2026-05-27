@@ -653,24 +653,30 @@ def score_power(batter: dict) -> float:
     the upside (barrel 0-25, EV 80-100, HR/FB 0-30) so even MLB-leading
     Statcast values capped at 50-70%. Real elite cutoffs land much
     tighter — Aaron Judge's 17% barrel was scoring 68 instead of ~100.
-    Anchors now reflect actual MLB distributions (league avg → 0,
-    elite → 100):
-      barrel%      5-15  (5% league avg, 13%+ elite)
-      exit velo    85-95  (88 avg, 92+ elite)
-      HR/FB%       8-20   (12 avg, 18+ elite)
-      ISO          0.130-0.300  (.150 avg, .250+ elite)
-      xwOBA contact 0.330-0.450  (.380 avg, .420+ elite)
-      pull FB%     8-22   (12 avg, 20+ elite)
-    Mid-tier scores tighten slightly (~3-5 pts lower); elite scores
-    widen significantly (~15-20 pts higher); under-replacement scores
-    bottom out near 0 (was ~20). Result: more rank discrimination at
-    both tails of the distribution.
+
+    2026-05-27 anchor recal (B17): the 2026-05-03 anchors were set against
+    a presumed "MLB regular" population (league avg → 0, elite → 100).
+    Empirical pick_inputs is a broader board (T1-T4 + bench), so the
+    distribution sits much lower. Five anchors recalibrated per the rule
+    `empirical p10 → 0, empirical p90 → 100` on the 2025 backfill sample
+    (~55k rows) — xwoba_contact uses 2026 live (n=7,711) because backfill
+    skips Savant bulk to avoid look-ahead. recent_xwoba_contact_14d uses
+    its own (wider) 2025 BF empirical distribution rather than matching
+    the live xwoba_contact anchor (the 14d window has heavier tails).
+    See WEIGHT_REFIT_LOG.md 2026-05-27 for raw p10/p50/p90.
+      barrel%      3-11   (was 5-15)
+      exit velo    85-95  (unchanged — within bounds at current anchor)
+      HR/FB%       3-10   (was 8-20; was clamping 75% to score=0)
+      ISO          0.100-0.250  (was 0.130-0.300)
+      xwOBA contact 0.260-0.390  (was 0.330-0.450)
+      pull FB%     8-22   (unchanged — 100% NULL upstream, see B20)
+      recent_xwoba_contact_14d  0.225-0.410  (was 0.330-0.450)
     """
     scores = []
 
     barrel = batter.get("barrel_pct")
     if barrel is not None and barrel > 0:
-        scores.append(min_max_scale(barrel, 5, 15))
+        scores.append(min_max_scale(barrel, 3, 11))
 
     ev = batter.get("exit_velo")
     if ev is not None and ev > 0:
@@ -680,17 +686,15 @@ def score_power(batter: dict) -> float:
     if hr_fb is not None and hr_fb > 0:
         if hr_fb < 1:
             hr_fb *= 100
-        scores.append(min_max_scale(hr_fb, 8, 20))
+        scores.append(min_max_scale(hr_fb, 3, 10))
 
     iso = batter.get("iso")
     if iso is not None and iso > 0:
-        scores.append(min_max_scale(iso, 0.130, 0.300))
+        scores.append(min_max_scale(iso, 0.100, 0.250))
 
-    # xwOBA on contact — most HR-predictive Statcast metric. League avg
-    # is ~.380; .420+ marks elite contact quality.
     xwoba_contact = batter.get("xwoba_contact")
     if xwoba_contact is not None and xwoba_contact > 0:
-        scores.append(min_max_scale(xwoba_contact, 0.330, 0.450))
+        scores.append(min_max_scale(xwoba_contact, 0.260, 0.390))
 
     # Pull-FB%: percentage of contact that is pulled fly balls. HRs come
     # almost exclusively from pulled fly balls. League avg ~12%, elite ~22%.
@@ -707,11 +711,14 @@ def score_power(batter: dict) -> float:
     # they join the season inputs in the same mean with skip-on-missing.
     #
     # Anchors:
-    #   recent_barrel_real_14d   8-18   (vs season 5-15 — tighter for a
-    #                                    higher-variance shorter window;
-    #                                    league avg ~10%, elite ~18%+)
-    #   recent_xwoba_contact_14d 0.330-0.450  (same as season)
-    #   recent_iso_14d           0.100-0.300  (mirrors Form's recent_iso_30g)
+    #   recent_barrel_real_14d   8-18   (out of B17 scope; see B-series)
+    #   recent_xwoba_contact_14d 0.225-0.410  (B17 2026-05-27 recal: 14d
+    #                                          empirical p10/p90 on 2025
+    #                                          BF n=47,373 is wider than
+    #                                          live xwoba_contact, so this
+    #                                          anchor deviates from live)
+    #   recent_iso_14d           0.100-0.300  (out of B17 scope; mirrors
+    #                                          Form's recent_iso_30g)
     if USE_RECENT_STATCAST_BLEND:
         rb = batter.get("recent_barrel_real_14d")
         if rb is not None and rb > 0:
@@ -719,7 +726,7 @@ def score_power(batter: dict) -> float:
 
         rx = batter.get("recent_xwoba_contact_14d")
         if rx is not None and rx > 0:
-            scores.append(min_max_scale(rx, 0.330, 0.450))
+            scores.append(min_max_scale(rx, 0.225, 0.410))
 
         ri = batter.get("recent_iso_14d")
         if ri is not None and ri > 0:

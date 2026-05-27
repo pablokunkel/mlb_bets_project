@@ -140,6 +140,166 @@ def pin_score_power_elite() -> Result:
     )
 
 
+def _check_anchor_score(input_key: str, value: float, lo: float, hi: float, expected: float, tol: float = 0.5) -> str | None:
+    """Helper: score a single power input via score_power and check against expected.
+
+    Returns failure string or None on pass.
+    """
+    from score_batters import score_power
+    got = score_power({input_key: value})
+    # Per score_power's mean-of-populated-inputs formula, with one input we
+    # expect: score = min_max_scale(value, lo, hi).
+    want = max(0.0, min(100.0, (value - lo) / (hi - lo) * 100))
+    if abs(got - want) > tol:
+        return f"{input_key}={value} expected ~{want:.1f} (anchor {lo}-{hi}), got {got:.1f}"
+    if abs(got - expected) > tol:
+        return f"{input_key}={value} expected ~{expected:.1f}, got {got:.1f}"
+    return None
+
+
+def pin_score_power_barrel_anchors() -> Result:
+    """B17 (2026-05-27): score_power barrel_pct anchor is (3, 11), p10/p90 of 2025 BF."""
+    from score_batters import score_power
+    # Anchor low: 3 → score 0.  Anchor high: 11 → score 100.  Empirical p50 6.6 → ~45.
+    cases = [
+        ("barrel_pct", 3.0,  0.0),    # anchor low
+        ("barrel_pct", 11.0, 100.0),  # anchor high
+        ("barrel_pct", 6.6,  45.0),   # 2025 BF empirical p50 → ~mid-band
+        ("barrel_pct", 2.0,  0.0),    # below low → clamp
+        ("barrel_pct", 13.0, 100.0),  # above high → clamp
+    ]
+    failures = []
+    for k, v, exp in cases:
+        err = _check_anchor_score(k, v, 3.0, 11.0, exp)
+        if err:
+            failures.append(err)
+    if failures:
+        return Result(
+            "score_power(barrel_pct) anchor (3, 11)",
+            Result.HALT,
+            "; ".join(failures),
+        )
+    return Result(
+        "score_power(barrel_pct) anchor (3, 11) — B17 recal",
+        Result.PASS,
+    )
+
+
+def pin_score_power_hr_fb_anchors() -> Result:
+    """B17 (2026-05-27): score_power hr_fb_pct anchor is (3, 10), p10/p90 of 2025 BF."""
+    cases = [
+        ("hr_fb_pct", 3.0,  0.0),
+        ("hr_fb_pct", 10.0, 100.0),
+        ("hr_fb_pct", 6.0,  42.857),  # 2025 BF empirical p50 → (6-3)/(10-3)*100 ≈ 42.86
+        ("hr_fb_pct", 2.0,  0.0),
+        ("hr_fb_pct", 12.0, 100.0),
+    ]
+    failures = []
+    for k, v, exp in cases:
+        err = _check_anchor_score(k, v, 3.0, 10.0, exp)
+        if err:
+            failures.append(err)
+    if failures:
+        return Result(
+            "score_power(hr_fb_pct) anchor (3, 10)",
+            Result.HALT,
+            "; ".join(failures),
+        )
+    return Result(
+        "score_power(hr_fb_pct) anchor (3, 10) — B17 recal",
+        Result.PASS,
+    )
+
+
+def pin_score_power_iso_anchors() -> Result:
+    """B17 (2026-05-27): score_power iso anchor is (0.100, 0.250), p10/p90 of 2025 BF."""
+    cases = [
+        ("iso", 0.100, 0.0),
+        ("iso", 0.250, 100.0),
+        ("iso", 0.167, 44.667),  # 2025 BF empirical p50 → (0.167-0.100)/(0.150)*100 ≈ 44.67
+        ("iso", 0.075, 0.0),
+        ("iso", 0.300, 100.0),
+    ]
+    failures = []
+    for k, v, exp in cases:
+        err = _check_anchor_score(k, v, 0.100, 0.250, exp)
+        if err:
+            failures.append(err)
+    if failures:
+        return Result(
+            "score_power(iso) anchor (0.100, 0.250)",
+            Result.HALT,
+            "; ".join(failures),
+        )
+    return Result(
+        "score_power(iso) anchor (0.100, 0.250) — B17 recal",
+        Result.PASS,
+    )
+
+
+def pin_score_power_xwoba_anchors() -> Result:
+    """B17 (2026-05-27): score_power xwoba_contact anchor is (0.260, 0.390), p10/p90 of 2026 live."""
+    cases = [
+        ("xwoba_contact", 0.260, 0.0),
+        ("xwoba_contact", 0.390, 100.0),
+        ("xwoba_contact", 0.316, 43.077),  # 2026 live empirical p50 → ~43
+        ("xwoba_contact", 0.200, 0.0),
+        ("xwoba_contact", 0.420, 100.0),
+    ]
+    failures = []
+    for k, v, exp in cases:
+        err = _check_anchor_score(k, v, 0.260, 0.390, exp)
+        if err:
+            failures.append(err)
+    if failures:
+        return Result(
+            "score_power(xwoba_contact) anchor (0.260, 0.390)",
+            Result.HALT,
+            "; ".join(failures),
+        )
+    return Result(
+        "score_power(xwoba_contact) anchor (0.260, 0.390) — B17 recal",
+        Result.PASS,
+    )
+
+
+def pin_score_power_recent_xwoba_anchors() -> Result:
+    """B17 (2026-05-27): score_power recent_xwoba_contact_14d anchor is (0.225, 0.410)
+    on the B6a-gated path. 14d window is wider than season live xwoba_contact, so this
+    anchor deviates from live xwoba_contact's (0.260, 0.390).
+    """
+    import score_batters as sb
+    prev = sb.USE_RECENT_STATCAST_BLEND
+    sb.USE_RECENT_STATCAST_BLEND = True
+    try:
+        # Anchor low: 0.225 → score 0.  Anchor high: 0.410 → score 100.
+        # Empirical p50 0.314 → (0.314-0.225)/(0.185)*100 ≈ 48.1.
+        cases = [
+            ("recent_xwoba_contact_14d", 0.225, 0.0),
+            ("recent_xwoba_contact_14d", 0.410, 100.0),
+            ("recent_xwoba_contact_14d", 0.314, 48.108),
+            ("recent_xwoba_contact_14d", 0.150, 0.0),
+            ("recent_xwoba_contact_14d", 0.450, 100.0),
+        ]
+        failures = []
+        for k, v, exp in cases:
+            err = _check_anchor_score(k, v, 0.225, 0.410, exp)
+            if err:
+                failures.append(err)
+    finally:
+        sb.USE_RECENT_STATCAST_BLEND = prev
+    if failures:
+        return Result(
+            "score_power(recent_xwoba_contact_14d) anchor (0.225, 0.410)",
+            Result.HALT,
+            "; ".join(failures),
+        )
+    return Result(
+        "score_power(recent_xwoba_contact_14d) anchor (0.225, 0.410) — B17 recal",
+        Result.PASS,
+    )
+
+
 def pin_score_lineup_position_table() -> Result:
     """Lineup-position scores honor the documented table."""
     from score_batters import score_lineup_position
@@ -4255,6 +4415,12 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
     pin_score_power_elite,
+    # 2026-05-27: B17 anchor recalibration pins
+    pin_score_power_barrel_anchors,
+    pin_score_power_hr_fb_anchors,
+    pin_score_power_iso_anchors,
+    pin_score_power_xwoba_anchors,
+    pin_score_power_recent_xwoba_anchors,
     pin_score_lineup_position_table,
     pin_score_matchup_no_data,
     pin_platoon_dampener_table,

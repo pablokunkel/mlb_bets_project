@@ -6,6 +6,69 @@ Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr
 
 ---
 
+## 2026-05-27 — B17 power input anchor recalibration
+
+**Status: shipped.** Five `score_power` anchors retuned against empirical `pick_inputs` distribution. No weight refit; this is an input-curve change ahead of the next A1 cycle so the refit fits weights against well-calibrated factor scores (per the audit recommendation in PR #100 section A and BACKLOG B17).
+
+### Sample
+
+- **2025 backfill** — `daily_picks.mode='backfill_2025'`. Used for setting anchors on 4 of 5 inputs (n=55,527 for `barrel_pct` / `iso` / `hr_fb_pct`; n=47,373 for `recent_xwoba_contact_14d`).
+- **2026 live** — `pick_inputs.date >= '2026-05-03'`. Used for setting `xwoba_contact` only — the 2025 backfill is NULL for this column by design (Savant bulk endpoint returns season-final aggregates → would be look-ahead; backfill substitutes `recent_xwoba_contact_14d` via `USE_RECENT_STATCAST_BLEND=True`). n=7,711 for `xwoba_contact`. Cross-reference numbers reported for the other inputs (n=7,549–7,939).
+
+### Method
+
+Calibration rule: **empirical p10 → score 0, empirical p90 → score 100**. Anchors rounded to one decimal of precision toward cleaner numbers (e.g., p10=3.1 rounds to 3.0; p90=10.2 rounds to 10.0). Acceptance bounds per the brief: post-recal `p50_score` must land in `[40, 60]`, and fewer than 15% of populated rows clamp to score=0 or score=100.
+
+Verification script: [`_review/b17_anchor_verification.py`](_review/b17_anchor_verification.py) (kept for reproducibility; embeds OLD anchors and prints summary table).
+
+### Per-input results
+
+Anchor-setting sample (2025 backfill where populated; 2026 live for `xwoba_contact`):
+
+| Input | OLD anchor | NEW anchor | sample n | p10 | p50 | p90 | p50_score (NEW) | %@0 (NEW) | %@100 (NEW) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `xwoba_contact` | (0.330, 0.450) | **(0.260, 0.390)** | 7,711 (live) | 0.2570 | 0.3160 | 0.3880 | 43.1 | 11.2% | 9.5% |
+| `barrel_pct` | (5, 15) | **(3.0, 11.0)** | 55,527 | 3.10 | 6.60 | 11.30 | 45.0 | 9.3% | 11.3% |
+| `iso` | (0.130, 0.300) | **(0.100, 0.250)** | 55,527 | 0.1020 | 0.1670 | 0.2500 | 44.7 | 9.7% | 10.3% |
+| `hr_fb_pct` | (8, 20) | **(3.0, 10.0)** | 55,527 | 2.80 | 6.00 | 10.20 | 42.9 | 11.0% | 11.0% |
+| `recent_xwoba_contact_14d` | (0.330, 0.450) | **(0.225, 0.410)** | 47,373 | 0.2250 | 0.3140 | 0.4090 | 48.1 | 10.1% | 9.8% |
+
+All five inputs pass the acceptance bounds on the anchor-setting sample. Live-sample cross-check (where populated) also passes for all four inputs that have both samples — `barrel_pct` 9.2% / 13.3%; `iso` 11.9% / 12.1%; `hr_fb_pct` 11.3% / 12.9%; `recent_xwoba_contact_14d` 10.4% / 8.9%.
+
+OLD anchor effect for context (2025 backfill clamp at 0): `barrel_pct` 23.7%, `iso` 21.7%, `hr_fb_pct` **75.8%**, `recent_xwoba_contact_14d` 58.9%. Live xwoba_contact at OLD anchor: **60.8%** at 0. The hr_fb_pct case was the most severe — p50_score was literally 0 under (8, 20).
+
+### Notable deviation from brief: `recent_xwoba_contact_14d`
+
+Brief suggested anchor for the B6a-gated `recent_xwoba_contact_14d` input as "same as live xwoba_contact." Empirical p10/p90 on the 2025 backfill rows for this column are 0.2250 / 0.4090 — wider than the 2026 live `xwoba_contact` distribution (0.2570 / 0.3880). Forcing the live anchor onto the 14d distribution failed the verification (21.8% clamped at 0). Per the brief's iteration instruction ("If any input fails either bound, adjust that input's anchors and re-verify. Document the iteration."), the 14d anchor was set against the 14d empirical distribution: `(0.225, 0.410)`. Resulting acceptance: %@0=10.1%, %@100=9.8%, p50_score=48.1. Documented in `score_power`'s anchor comment.
+
+### Smoke pins
+
+Added 5 anchor-literal pins to `tests/smoke.py` (per the brief):
+
+- `pin_score_power_barrel_anchors`
+- `pin_score_power_hr_fb_anchors`
+- `pin_score_power_iso_anchors`
+- `pin_score_power_xwoba_anchors`
+- `pin_score_power_recent_xwoba_anchors`
+
+Each pin scores anchor-low, anchor-high, empirical p50, and out-of-range values, confirming the curve matches the documented anchor. All five pass. The existing `pin_score_power_elite` (Buxton-class profile) still passes — elite score rises from ~88 to 94.0 under the new (tighter) anchors; existing floor pins unchanged (the floor mechanism is independent of the anchor curve).
+
+### What this change does NOT do
+
+- Does NOT change `score_power`'s other inputs (`exit_velo` anchor stays (85, 95) — already well-calibrated per audit section A; `pull_fb_pct` left at (8, 22) pending B20 drop/wire decision).
+- Does NOT touch the season-HR floor curve, the `USE_*` flags, or any other scoring factor.
+- Does NOT modify weights — this is curve calibration, not weight refit. Next A1 refit will fit against the new curves.
+- Does NOT modify `score_form` anchors, `score_matchup` v1/v2 paths, `score_park`, `score_weather`, `score_lineup_position` — those have their own backlog items (B15 lineup table, etc.).
+
+### Files touched
+
+- `score_batters.py::score_power` — five anchor constants + comment block update.
+- `tests/smoke.py` — five new pins + helper `_check_anchor_score`.
+- `WEIGHT_REFIT_LOG.md` — this entry.
+- `_review/b17_anchor_verification.py` — verification script (kept; embeds OLD anchors and prints summary table).
+
+---
+
 ## 2026-05-26 — A1 refit on the 188-date 2025 backfill (post-B11 score_form)
 
 **Status: candidate weights presented; user to flip the switch in a follow-up.** First true post-v2 / post-B11 refit. The 2025-season backfill (PR #69) and B11 (PR #78, score_form drops recent_avg_30g) jointly unblocked A1. `refit_weights.py` was rebuilt this cycle (see "Refit tool changes" below).
