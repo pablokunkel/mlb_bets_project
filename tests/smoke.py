@@ -1626,9 +1626,10 @@ def pin_form_fetch_as_of_date_threaded() -> Result:
     """PR 4 fix (2026-05-22): the batter Form fetch path is as-of-date-aware.
 
     get_recent_game_log + fetch_form_data_batch must accept as_of_date
-    (default None). Without it the 2025 backfill's Form factor — the
-    joint-heaviest at weight 0.279 — silently uses end-of-season games
-    for a mid-season reconstruction (look-ahead bias).
+    (default None). Without it the 2025 backfill's Form factor — a
+    materially weighted composite input (0.12 after the A1 refit) —
+    silently uses end-of-season games for a mid-season reconstruction
+    (look-ahead bias).
     """
     import inspect
     from fetch_daily_data import get_recent_game_log

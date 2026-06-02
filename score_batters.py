@@ -25,16 +25,20 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 WEIGHT_CONFIGS = {
-    # Default — learned via logistic regression on enriched 20-day backfill
-    # (2026-03-27 -> 2026-04-15, 5,196 batter-game rows, hit_hr as target,
-    # 7 features: 5 original + xwoba_contact + fb_pct_allowed).
-    # Standardized coefficients: form 0.496, matchup 0.468, power 0.346,
-    # weather 0.102, xwoba 0.097, fb_pct_allowed -0.013, park -0.011 (drop).
+    # Default — A1 refit, shipped 2026-06-02 (closes the A1 cycle).
+    # Power-led weights fit against the 2025-season backfill
+    # (pick_inputs ⨝ outcomes); see WEIGHT_REFIT_LOG.md 2026-06-02 for the
+    # FREE/PINNED OOS analysis and the judgment-call rationale for this
+    # blend (chosen over the raw FREE candidate's form≈0 / lineup-0
+    # concentration). Park returns as a 0.04 WEIGHTED factor, replacing the
+    # 2026-05-03 `+0.05*park` additive bonus (removed in the same PR —
+    # within-slate park signal now lives inside the weighted mean).
     # Power bucket includes xwoba_contact + pull_fb_pct sub-scores.
     # Matchup bucket includes fb_pct_allowed + Vegas implied_total when avail.
-    # Backtested top-8 hit rate progression: 36.04% (legacy) -> 38.75% (v1
-    # learned + percentile rerank) -> 40.00% (this config, v2 enriched).
-    "default":       {"power": 0.250, "matchup": 0.264, "park": 0.000, "form": 0.279, "weather": 0.057, "lineup": 0.150},
+    # Prior-default top-8 progression (history): 36.04% (legacy) -> 38.75%
+    # (v1 learned + percentile rerank) -> 40.00% (v2 enriched); A1 re-weights
+    # against the 2025 backfill (metrics in the log).
+    "default":       {"power": 0.48, "matchup": 0.28, "park": 0.04, "form": 0.12, "weather": 0.08, "lineup": 0.00},
     # v1 weights — kept for ablation comparison.
     "v1_learned":    {"power": 0.217, "matchup": 0.270, "park": 0.000, "form": 0.304, "weather": 0.060, "lineup": 0.150},
     # Legacy fixed-anchor default (kept for ablation comparison).
@@ -1525,21 +1529,12 @@ def compute_composite(
         + weights.get("lineup", 0) * lineup
     )
 
-    # 2026-05-03 park bonus: WEIGHT_CONFIGS["default"] zeroed out park
-    # because the v2 logistic-regression refit found park-as-fixed-anchor
-    # contributed near-zero on a 20-day training window (batters play
-    # their home park ~50% of games — signal washes). But park-as-
-    # within-slate-percentile IS a real edge: Yankee Stadium today (PF
-    # 115, top of the slate) vs Petco (PF 92) is a 25-point park_score
-    # spread that we were throwing away. Rather than restealing weight
-    # from another factor (and re-fitting all weights), add park as a
-    # PURELY ADDITIVE bonus on top of the existing weighted average.
-    # This shifts every composite up a few points (+2.5 avg, +4 for top
-    # parks, +1 for bottom parks) but the relative ranking is what
-    # matters and it brings hot-park batters up the board where they
-    # belong. Weight 0.05 chosen so the bonus is meaningful (3-4 pt
-    # spread between best/worst park) without dominating.
-    composite += 0.05 * park
+    # 2026-06-02 (A1): the 2026-05-03 `composite += 0.05 * park` additive
+    # bonus was REMOVED here. Park returned as a 0.04 weighted factor in
+    # WEIGHT_CONFIGS["default"] (see the weighted sum above), so within-slate
+    # park signal now lives inside the weighted mean — no separate additive.
+    # Do not re-add: park-counted-twice (weight + additive) was exactly the
+    # redundancy A1 closed. See WEIGHT_REFIT_LOG.md 2026-06-02.
 
     # 2026-05-04 platoon dampener: multiplicative haircut for batters
     # who don't start every game. The model otherwise treats Cortes
