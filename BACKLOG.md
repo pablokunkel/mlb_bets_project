@@ -427,13 +427,13 @@ Live noon is currently safe (no games started at 12 PM ET) but the pattern is fr
 
 Shipped — see "Recently shipped" 2026-06-02. Anchored the DB *write* path (`HR_BETS_DB` env var + fail-loud `get_db`, `backfill_slate_pct.py` → `etl.db.DB_PATH`, stray worktree DB deleted). Re-scoped 2026-06-01 from the original "permanent ETL step" framing once recon found path-divergence was the real issue. Unblocks A1's backfill landing on canonical.
 
-### B25. `docs/r2_sync_gotchas.md` — folded into B26.
+### ~~B25. `docs/r2_sync_gotchas.md`~~ — SHIPPED PR #110 (2026-06-02)
 
-The worktree path-divergence + R2 pull/push gotchas doc is now a B26 deliverable.
+Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` documents the worktree path-divergence, the `HR_BETS_DB` / run-from-main rule, the three-copies incident, and the R2 pull/push exit-code lesson.
 
-### B26. Path-resolution hardening sweep + stray cleanup + guard + docs (absorbs B25)
+### ~~B26. Path-resolution hardening sweep + stray cleanup + guard + docs~~ — SHIPPED PR #109 (2026-06-02)
 
-**Status.** Queued — sequenced AFTER A1 closes (touches refit/backtest readers; don't disturb mid-A1). B24 anchored the *write* path; B26 anchors everything else.
+**Status.** Shipped — 18 files anchored to shared `etl.db` paths (`DATA_DIR/CACHE_DIR/RESULTS_DIR` env-var-aware; `SITE_DATA_DIR` intentionally repo-relative for the committed/deployed exports). In-repo stray deleted → exactly one `hr_bets.db` on disk. Smoke guard added (proven to HALT on a planted stray). Done-when grep returns only `etl/db.py:39`. **Two follow-ups → B30:** (1) making the DB probes run surfaced the documented `batting_order > 9` HALT (false-alarm #2), so `python -m tests.smoke` now exits non-zero on known-good residue — recalibrate the probe; (2) `diagnostics/simulate_power_anchors.py` slipped the sweep (hardcoded OneDrive DB path + stale `0.250` weight — not `.parent`-count math, so the grep didn't catch it). Original spec below.
 
 **Why it matters.** Recon (2026-06-01) found DB / data / cache / results paths resolved by inconsistent relative `.parent`-count math — `etl/db.py` (3), root scripts like `generate_picks.py` / `refit_weights.py` (2), diagnostics ranging 2/3/5/6, plus `autopsy_game.py`'s hardcoded `OneDrive\Documents` absolute path. Silent `mkdir(parents=True)` *creates* wrong-location dirs instead of erroring. This spawned three diverging `hr_bets.db` copies (B24 deleted the worktree one; the in-repo `MLB HR Bets\data\hr_bets.db` remains). Prevention beats a recurring janitor agent.
 
@@ -489,6 +489,23 @@ The worktree path-divergence + R2 pull/push gotchas doc is now a B26 deliverable
 **Done when.** New `daily_picks` rows carry a non-NULL `lineup_score`.
 
 **Source.** A1 flip session (#106) observation, 2026-06-02.
+
+### B30. Smoke probe recalibration (false-alarm #2) + `simulate_power_anchors` cleanup
+
+**Status.** Queued — small, fast. Two B26 follow-ups bundled (same smoke / diagnostics-hygiene lane). Recommended **before B27** so the form rebuild verifies against a clean smoke gate.
+
+**Why it matters.** (a) B26 made the smoke DB probes actually run, which surfaces the `db_lineup_batting_order_capped` **HALT** on the 428 `batting_order > 9` rows — CLAUDE.md **false-alarm #2** (intentional roster-fallback residue, "do not fix"). The probe and that residue have always been inconsistent; B26 just made the probe run everywhere. Net: `python -m tests.smoke` now exits non-zero on known-good data, which erodes smoke as a gate (alarm fatigue; a real HALT could hide behind the known one). (b) `diagnostics/simulate_power_anchors.py` carries a hardcoded `OneDrive\Documents` DB path (a stale 4th location) + a stale `0.250` power literal — it slipped B26's sweep because the done-when grep matches `.parent`-count math, not hardcoded absolutes.
+
+**Spec.**
+- **Probe:** recalibrate `tests/smoke.py::db_lineup_batting_order_capped` to respect false-alarm #2 — catch *new* `batting_order > 9` but allow the documented residue (scope to rows after the roster-fix date, exclude the known set, or downgrade to INFO-with-count). Goal: a clean `python -m tests.smoke` exit-0 that still catches a genuine regression.
+- **Diagnostic:** in `simulate_power_anchors.py`, anchor the DB to `etl.db.DB_PATH` (drop the OneDrive literal) and read the power weight from `WEIGHT_CONFIGS["default"]["power"]` (drop the stale `0.250`).
+- **Done-when gap note:** future path sweeps should also grep for hardcoded absolutes (`Path(r"`, `OneDrive`, drive-letter literals), not just `.parent`-count math.
+
+**Files.** `tests/smoke.py`, `diagnostics/simulate_power_anchors.py`.
+
+**Done when.** `python -m tests.smoke` exits 0 on the canonical DB (no false HALT) while still HALTing on a genuine `batting_order > 9` regression; `simulate_power_anchors.py` resolves canonical + reads the live weight; one fewer hardcoded-absolute DB path in the repo.
+
+**Source.** B26 (#109) follow-ups, surfaced 2026-06-02 (PM review).
 
 ---
 
@@ -1019,6 +1036,8 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 
 ### 2026-06-02 — A1 weight refit closed + repo path hygiene
 
+- **PR #109 — B26** path-resolution hardening: 18 files anchored to shared `etl.db` paths (`DATA_DIR/CACHE_DIR/RESULTS_DIR` env-aware, `SITE_DATA_DIR` repo-relative); in-repo stray deleted (one `hr_bets.db` on disk); smoke guard added; DB probes now actually run. Follow-ups → **B30** (probe HALT on false-alarm #2; `simulate_power_anchors` missed).
+- **PR #110 — B25** `docs/r2_sync_gotchas.md` — worktree path-divergence + R2 pull/push gotchas reference.
 - **PR #106 — A1** flipped `WEIGHT_CONFIGS["default"]` to candidate A (`power .48 / matchup .28 / park .04 / form .12 / weather .08 / lineup 0`) and removed the `+0.05*park` additive — a judgment call below the formal gate (ties FREE on top-8, far less power concentration, form kept at .12). Honest re-eval: matchup's inflated coef was a NULL-`slate_pct` artifact, power is the true lead. See WEIGHT_REFIT_LOG.md 2026-06-02. (Paired **#105** — BACKLOG sync: B16/B17/B19 marked shipped, B26 filed.)
 - **PR #104 — B24** canonical DB anchor + fail-loud `get_db`. `etl/db.py` resolves `DB_PATH` from the `HR_BETS_DB` env var first (relative fallback kept for GH Actions + the main checkout); `get_db()` raises `FileNotFoundError` on a missing default-path DB instead of silently creating a stray; `backfill_slate_pct.py` anchored to `etl.db.DB_PATH`; B24 smoke pin; stray `…\worktrees\data\hr_bets.db` deleted. Root-causes the three-diverging-DB-copies hygiene issue and unblocks A1's backfill landing on canonical. Verified: post-merge `Outcomes + accuracy refresh` GH Actions run committed clean (`0263dc9`). Full reader/cache sweep + docs = B26 (after A1).
 
