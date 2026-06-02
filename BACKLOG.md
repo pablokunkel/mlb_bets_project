@@ -253,9 +253,9 @@ Annotated screenshot pass on `mobile_edits.pdf` (user-supplied 2026-05-23). Mobi
 > 4. **B20** — pull_fb_pct decision (independent)
 > 5. **B21, B22, B23** — investigations + doc drift (low urgency)
 
-### B16. Fix refit/backtest scoring formula divergence (BLOCKS A1)
+### ~~B16. Fix refit/backtest scoring formula divergence (BLOCKS A1)~~ — SHIPPED PR #102 (2026-05-27)
 
-**Status.** HIGH — blocks every weight refit decision. From audit section B2 + PM session spot-check confirming `refit_weights.py` shares the same defect as `backtest_factors.rescore_row`.
+**Status.** Shipped 2026-05-27 (bundled B19). Added `slate_park_pct` / `slate_weather_pct` / `slate_pitcher_vulnerability_pct` to `pick_inputs`; `score_park/weather/matchup`, `backtest_factors.rescore_row`, and `refit_weights.py` thread the slate-percentile through so backtest/refit match production; `diagnostics/backfill_slate_pct.py` one-shot added. **Caveat (2026-06-01):** the one-shot backfill never landed on the canonical DB (worktree path-divergence, fixed by B24/#104), so A1's first re-eval ran on ~99.5%-NULL slate_pct — A1 still needs the backfill re-run against canonical. Original spec below.
 
 **Why it matters.** Both `backtest_factors.rescore_row` (line 218, `pf_df = pd.DataFrame()`) AND `refit_weights.py` (lines ~220-226, same `pd.DataFrame()` + missing `slate_ctx`) re-score with formulas that differ from production for **3 of 6 factors**:
 - `score_park` returns 50.0 for every row (empty park factors)
@@ -290,9 +290,9 @@ Every A1 candidate (FREE / PINNED / `--custom`) from PR #82 is fit to scores tha
 
 **Source.** Audit PR #100 section B2 + PM spot-check 2026-05-27.
 
-### B17. Power input anchor recalibration bundle
+### ~~B17. Power input anchor recalibration bundle~~ — SHIPPED PR #103 (2026-05-27)
 
-**Status.** HIGH — five Power-side anchors empirically clamp 25-75% of real distribution to score=0. From audit section A.
+**Status.** Shipped 2026-05-27 — five `score_power` anchors retuned to empirical p10→0 / p90→100 (xwoba 0.260–0.390, barrel 3–11, iso 0.100–0.250, hr_fb 3–10, recent_xwoba 0.225–0.410); 5 smoke pins. See WEIGHT_REFIT_LOG.md 2026-05-27. Original spec below.
 
 **Why it matters.** Empirical evidence from 55,068 2025-backfill rows plus 7,549 live 2026 rows:
 - `xwoba_contact` anchor (0.330, 0.450) → **60.8%** of live rows clamped to score=0; p50 = 0.316 (below the floor)
@@ -338,9 +338,9 @@ Live noon is currently safe (no games started at 12 PM ET) but the pattern is fr
 
 **Source.** Audit PR #100 section D1.
 
-### B19. Add `bats` column to backtest load_history SELECT
+### ~~B19. Add `bats` column to backtest load_history SELECT~~ — SHIPPED PR #102 (2026-05-27, bundled with B16)
 
-**Status.** MEDIUM — bundled into B16 PR (both touch `backtest_factors.py`).
+**Status.** Shipped 2026-05-27 in the B16 PR. Original spec below.
 
 **Why it matters.** `pick_inputs.bats` has been persisted since 2026-05-03, but `backtest_factors.load_history`'s SQL doesn't SELECT it and `rescore_row` hardcodes `"bats": "R"` with a stale comment claiming the column isn't stored. Affects `score_park`'s L/R adjustment + `score_matchup` v1 platoon bonus in backtest. Bundle: also pull `pi.throws` for symmetric pitcher handedness.
 
@@ -423,6 +423,31 @@ Live noon is currently safe (no games started at 12 PM ET) but the pattern is fr
 
 **Source.** Audit PR #100 section A (LOW).
 
+### ~~B24. Canonical DB anchor + fail-loud `get_db`~~ — SHIPPED PR #104 (2026-06-02)
+
+Shipped — see "Recently shipped" 2026-06-02. Anchored the DB *write* path (`HR_BETS_DB` env var + fail-loud `get_db`, `backfill_slate_pct.py` → `etl.db.DB_PATH`, stray worktree DB deleted). Re-scoped 2026-06-01 from the original "permanent ETL step" framing once recon found path-divergence was the real issue. Unblocks A1's backfill landing on canonical.
+
+### B25. `docs/r2_sync_gotchas.md` — folded into B26.
+
+The worktree path-divergence + R2 pull/push gotchas doc is now a B26 deliverable.
+
+### B26. Path-resolution hardening sweep + stray cleanup + guard + docs (absorbs B25)
+
+**Status.** Queued — sequenced AFTER A1 closes (touches refit/backtest readers; don't disturb mid-A1). B24 anchored the *write* path; B26 anchors everything else.
+
+**Why it matters.** Recon (2026-06-01) found DB / data / cache / results paths resolved by inconsistent relative `.parent`-count math — `etl/db.py` (3), root scripts like `generate_picks.py` / `refit_weights.py` (2), diagnostics ranging 2/3/5/6, plus `autopsy_game.py`'s hardcoded `OneDrive\Documents` absolute path. Silent `mkdir(parents=True)` *creates* wrong-location dirs instead of erroring. This spawned three diverging `hr_bets.db` copies (B24 deleted the worktree one; the in-repo `MLB HR Bets\data\hr_bets.db` remains). Prevention beats a recurring janitor agent.
+
+**Spec.**
+- Replace ad-hoc DB path math with `etl.db.DB_PATH` (or a shared `paths.py`) at: `diagnostics/check_woba_today.py:10`, `diagnostics/backtest_pitcher_recency.py:67`, `diagnostics/counterfactual_recency_2026_05_12.py:43`, `diagnostics/autopsy_game.py:21` (drop the OneDrive path), `generate_picks.py` (162/223/267/310/363/401), `refit_weights.py:77`, `backtest_factors.py:56`, `pitcher_profile.py:1000`; simplify `diagnostics/batter_ab_heatmap.py:62-83` auto-locate to the anchor + `--db`.
+- Anchor cache/results dirs too: `features_v2.py:63`, `pitcher_profile.py:39`, `fetch_daily_data.py:129` & `:953`, `export_site_data.py:141` & `:2001`, `etl/etl_outcomes.py:83` & `:321`, `etl/backfill_2025.py:133`, `generate_picks.py:2502`, `load_picks_to_db.py:42`.
+- Delete the in-repo stray `MLB HR Bets\data\hr_bets.db` (safe once readers anchor to canonical).
+- Smoke guard: assert `DB_PATH` resolves to canonical + exists; assert no `data/hr_bets.db` under the repo root or `.claude/worktrees/`.
+- Create `docs/r2_sync_gotchas.md` (B25): worktree path-divergence, env-var / run-from-main rule, the three-copies incident, the R2 pull/push exit-code lesson.
+
+**Done when.** Grep for `parent.parent.*(data|hr_bets)` returns only the single anchor; every script resolves canonical (or fails loud) from any cwd; exactly one `hr_bets.db` on disk; smoke guard passes; `docs/r2_sync_gotchas.md` exists. Mark B25 + B26 shipped.
+
+**Source.** Recon 2026-06-01 (PM session); extends the B16 / B24 path-hygiene lineage.
+
 ---
 
 ## Model factor review & heatmap (2026-05-19/20 sessions)
@@ -442,6 +467,8 @@ Background context: `CLAUDE.md` ("Current work" section), the #56/#57 PR descrip
 > Method note for the factor reviews (B1–B3): same approach that worked for Form and Matchup — decompose every input the factor uses, trace where each value actually comes from, check for proxies / hard caps / mislabels / paths that disagree, verify it recalculates and matches the DB, then write findings + a fix PR.
 
 ### A1. Refit composite weights after the Form + Matchup changes
+
+**Status (2026-06-02).** UNBLOCKED, pending an honest re-run. B16 (#102) + B17 (#103) shipped 2026-05-27. The first A1 re-eval returned HOLD on all variants (FREE +0.12 / PINNED +0.37 / CUSTOM −0.31 pp OOS top-decile lift vs the +1.0 threshold) — but that verdict is an artifact: `pick_inputs.slate_*_pct` are ~99.5% NULL on the canonical DB, so the rescore fell back to v1 fallback formulas for park/weather/matchup, compressing every variant's deltas. Root cause (2026-06-01): `diagnostics/backfill_slate_pct.py`'s one-shot never completed against canonical (worktree path-divergence, fixed by B24/#104). **Close-out: from the main checkout (or with `HR_BETS_DB` set) — `r2_sync.py pull` → `backfill_slate_pct.py` → verify `slate_*_pct` >95% coverage → `refit_weights.py` + `--custom` → ship FREE if it clears +1.0 pp / −0.005 AUC, else accept HOLD.** Candidates: FREE `power .271 / matchup .572 / park 0 / form .038 / weather .119 / lineup 0`; user custom `power=0.271,matchup=0.4576,park=0,form=0.1524,weather=0.119,lineup=0`.
 
 **Status (2026-05-27 deeper audit).** BLOCKED by B16. The 2026-05-26 deeper audit (`docs/audit_findings_inputs_2026-05-26.md`, PR #100) + PM session spot-check confirmed that `refit_weights.py` shares `backtest_factors.rescore_row`'s scoring formula divergence: `pf_df = pd.DataFrame()` makes park always score 50; missing `slate_ctx` makes weather + matchup take v1 fallback formulas. FREE, PINNED, and `--custom` candidates from PR #82 are all fit to scores that don't match what production composites for 3 of 6 factors. **Do not ship until B16 lands and the harness re-runs.** After B16, also re-anchor under B17 (Power input anchor recalibration) so the refit fits weights against well-calibrated curves.
 
@@ -948,10 +975,16 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 
 (Newest first. Trim entries past ~6 weeks.)
 
+### 2026-06-02 — Repo path hygiene (B24)
+
+- **PR #104 — B24** canonical DB anchor + fail-loud `get_db`. `etl/db.py` resolves `DB_PATH` from the `HR_BETS_DB` env var first (relative fallback kept for GH Actions + the main checkout); `get_db()` raises `FileNotFoundError` on a missing default-path DB instead of silently creating a stray; `backfill_slate_pct.py` anchored to `etl.db.DB_PATH`; B24 smoke pin; stray `…\worktrees\data\hr_bets.db` deleted. Root-causes the three-diverging-DB-copies hygiene issue and unblocks A1's backfill landing on canonical. Verified: post-merge `Outcomes + accuracy refresh` GH Actions run committed clean (`0263dc9`). Full reader/cache sweep + docs = B26 (after A1).
+
 ### 2026-05-27 — PM session bootstrap + deeper audit
 
 - **PR #99 — `CLAUDE.md`** at repo root. PM-session pattern + hard rules for sub-sessions (one PR per change, base off main, no parallel agents within a lane, do not assume, verify on Py 3.14 + PowerShell, do not "fix" the false-alarms list). Auto-loaded into every fresh session in this repo.
 - **PR #100 — Deeper inputs/anchors/paths audit.** 7 net-new HIGH findings vs. PR #97's 2. Empirical citations for every HIGH from 69,911-row `pick_inputs` sample. Surfaced (a) anchor recalibration cluster B17, (b) `pull_fb_pct` 100% NULL B20, (c) backtest formula divergence B16 — confirmed by PM spot-check to extend to `refit_weights.py` → blocks A1. Findings doc at `docs/audit_findings_inputs_2026-05-26.md` + reproducibility script at `_review/audit_inputs_run.py`.
+- **PR #102 — B16** refit/backtest scoring-formula divergence fix (bundles B19). `pick_inputs` gains the three `slate_*_pct` columns; `score_park/weather/matchup`, `rescore_row`, `refit_weights.py` thread them through; `diagnostics/backfill_slate_pct.py` added. **Caveat:** the one-shot never landed on canonical (worktree path bug → B24/#104); A1 still needs it re-run.
+- **PR #103 — B17** Power input anchor recalibration — five `score_power` anchors retuned to empirical p10→0 / p90→100; 5 smoke pins. See WEIGHT_REFIT_LOG.md.
 
 ### 2026-05-26 — High-throughput session (19 PRs, mixed quality)
 
