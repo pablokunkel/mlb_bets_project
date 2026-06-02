@@ -19,20 +19,54 @@ Usage:
     create_tables(db)
 """
 
+import os
 import sqlite3
 from pathlib import Path
 
-# Default database location
-DB_DIR = Path(__file__).parent.parent.parent / "data"
-DB_PATH = DB_DIR / "hr_bets.db"
+# Default database location.
+#
+# Resolve the canonical DB from the HR_BETS_DB environment variable first
+# (cwd / worktree-independent), and fall back to the repo-relative
+# sibling-of-project path only when the env var is unset. The relative
+# fallback stays correct on GitHub Actions and the local *main* checkout
+# (<project_parent>/data/hr_bets.db). The env var is what fixes local
+# *worktree* runs: from a worktree, __file__'s .parent.parent.parent lands
+# in `.claude\worktrees\data\`, a stray copy that silently diverged from
+# canonical — the root cause of B16's slate_pct backfill never landing on
+# the real DB (B24). One-time dev setup (PowerShell, run once per machine):
+#   setx HR_BETS_DB "C:\dev\Claude\Projects\data\hr_bets.db"
+DB_PATH = (Path(os.environ["HR_BETS_DB"]) if os.environ.get("HR_BETS_DB")
+           else Path(__file__).parent.parent.parent / "data" / "hr_bets.db")
+DB_DIR = DB_PATH.parent  # retained for back-compat with importers of DB_DIR
 
 
 def get_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     """
     Get a SQLite connection with WAL mode enabled.
     WAL allows concurrent reads while the ETL writes.
+
+    Path resolution:
+      - db_path given (explicit): use it, creating parent dirs + an empty
+        DB file if absent. This is the bootstrap / backfill path — callers
+        that pass --db to target a throwaway or alternate DB rely on
+        create-on-demand, so it is preserved.
+      - db_path is None (the default): use the canonical DB_PATH and FAIL
+        LOUD with FileNotFoundError if it doesn't exist, rather than
+        silently mkdir+creating a stray empty DB. A missing canonical DB
+        means the caller is in a worktree without HR_BETS_DB set, or hasn't
+        pulled from R2 — both are operator errors we want surfaced, not
+        papered over with an empty DB the pipeline then writes picks into
+        (B24).
     """
-    path = Path(db_path) if db_path else DB_PATH
+    if db_path is None:
+        path = DB_PATH
+        if not path.exists():
+            raise FileNotFoundError(
+                f"canonical DB not found at {DB_PATH}; set HR_BETS_DB or run "
+                f"from the main checkout"
+            )
+    else:
+        path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(path))

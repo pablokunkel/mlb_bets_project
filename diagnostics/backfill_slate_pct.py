@@ -66,14 +66,17 @@ sys.path.insert(0, str(_THIS.parent.parent))
 
 from score_batters import percentile_rank_dict
 from pitcher_profile import effective_hr9, effective_era, effective_k9
+from etl.db import DB_PATH
 
-# Default DB path. Mirrors etl/db.py's convention
-# (project_root.parent / "data") so the script works the same way from the
-# main repo / production. When running from a git worktree the path math
-# diverges (`.parent.parent.parent` lands in `.claude/worktrees/data/`,
-# a stale snapshot) — pass `--db <path>` to override. CLAUDE.md documents
-# this gotcha for backfill scripts running outside the production cwd.
-DEFAULT_DB = _THIS.parent.parent.parent / "data" / "hr_bets.db"
+# Default DB path. Resolve via etl.db.DB_PATH (HR_BETS_DB env var first,
+# else the repo-relative sibling-of-project path) so this backfill targets
+# the same canonical DB the pipeline writes to — including from a git
+# worktree, as long as HR_BETS_DB is set. The old bespoke
+# `_THIS.parent.parent.parent` default silently diverged in a worktree
+# (landing in `.claude/worktrees/data/`, a stale snapshot); that divergence
+# is the B24 bug that kept B16's backfill off canonical. Pass `--db <path>`
+# to override.
+DEFAULT_DB = DB_PATH
 
 
 def _seed_park_lookup() -> dict[str, tuple[float, float, float]]:
