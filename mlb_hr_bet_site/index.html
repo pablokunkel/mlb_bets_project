@@ -3195,8 +3195,14 @@
       // construction and would otherwise just re-rank by the same axis).
       // Result: a proven-power short list re-sorted by matchup/park/form/
       // weather/lineup tilts.
-      // Power weight is 0.25 in WEIGHT_CONFIGS["default"]; subtract that
-      // contribution to get the "non-power composite."
+      // Subtract the power contribution to get the "non-power composite."
+      // The live power weight is surfaced into picks_latest.json by
+      // export_site_data.py (data.power_weight ← WEIGHT_CONFIGS["default"]
+      // ["power"]), so this stays correct across weight refits without a
+      // code edit here. Fallback 0.48 only applies to older deploys whose
+      // picks_latest.json predates the field; it matches the A1-shipped
+      // weight (update only if the default changes before that JSON does).
+      const POWER_W = (typeof data.power_weight === 'number') ? data.power_weight : 0.48;
       const top10HR = [...board]
         .filter(p => (p.season_stats?.hr ?? 0) >= 1)
         .sort((a, b) => (b.season_stats?.hr ?? 0) - (a.season_stats?.hr ?? 0))
@@ -3204,7 +3210,7 @@
       const v0 = top10HR
         .map(p => ({
           ...p,
-          _lab_score: (p.composite || 0) - 0.25 * (p.power_score || 0),
+          _lab_score: (p.composite || 0) - POWER_W * (p.power_score || 0),
         }))
         .sort((a, b) => b._lab_score - a._lab_score)
         .slice(0, 3);

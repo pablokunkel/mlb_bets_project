@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from etl.db import get_db, create_tables
+from score_batters import WEIGHT_CONFIGS
 
 
 def atomic_write_json(path: Path, data, indent: int = 2) -> None:
@@ -384,6 +385,12 @@ def export_latest_picks(conn, out_dir: Path):
         "full_board":   board,
         "board_size":   len(board),
         "slate_games":  slate_games,
+        # Live composite power weight, surfaced so the Lab "Homerun Leaders"
+        # view can subtract the power contribution ("non-power composite")
+        # using the actual weight instead of a hardcoded literal. Read by
+        # renderLab() in index.html; kept in lock-step with
+        # compute_lab_accuracy.py, which reads the same WEIGHT_CONFIGS value.
+        "power_weight": WEIGHT_CONFIGS["default"]["power"],
     }
 
     atomic_write_json(out_dir / "picks_latest.json", data)

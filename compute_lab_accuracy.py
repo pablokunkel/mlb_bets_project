@@ -13,7 +13,7 @@ Game Stacks is intentionally excluded — its success metric is stack-level
 (P(>=1 of N homers)), not a per-batter hit rate.
 
 View logic mirrors renderLab() exactly:
-  homerun_leaders  top10 by season_hr>=1; then top3 by composite-0.25*power
+  homerun_leaders  top10 by season_hr>=1; then top3 by composite-POWER_W*power
   power_matchup    top5 by power_score*matchup_score/100
   hot_streak       top10 by recent_hr_7d>=1; sorted by matchup*park*weather
   park_pitcher     season_hr>=5 & park>=65 & matchup>=70; top5 by park+matchup
@@ -52,6 +52,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from etl.db import get_db
+from score_batters import WEIGHT_CONFIGS
+
+# Live power weight from the shipped config. The Homerun-Leaders "non-power
+# composite" subtracts POWER_W * power_score to strip the power axis (power is
+# highly correlated with season_hr by construction, so without this the view
+# would just re-rank by the same axis). Reading it from WEIGHT_CONFIGS rather
+# than a literal keeps this in lock-step with score_batters across weight
+# refits — renderLab() reads the same value via picks_latest.json's
+# power_weight field (surfaced by export_site_data.py), so export + renderer
+# can't drift.
+POWER_W = WEIGHT_CONFIGS["default"]["power"]
 
 # View key -> human label. Order matches the Lab tab top-to-bottom.
 VIEW_LABELS = {
@@ -144,7 +155,7 @@ def views_for_board(board):
     top10_hr = sorted((b for b in board if b["season_hr"] >= 1),
                       key=lambda x: -x["season_hr"])[:10]
     homerun_leaders = sorted(
-        top10_hr, key=lambda x: -(x["composite"] - 0.25 * x["power_score"]))[:3]
+        top10_hr, key=lambda x: -(x["composite"] - POWER_W * x["power_score"]))[:3]
 
     power_matchup = sorted(
         board, key=lambda x: -(x["power_score"] * x["matchup_score"] / 100))[:5]
