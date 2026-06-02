@@ -52,8 +52,8 @@ from score_batters import (
     score_weather,
     score_lineup_position,
 )
+from etl.db import DB_PATH  # single anchor (B26)
 
-DB_PATH = Path(__file__).parent.parent / "data" / "hr_bets.db"
 JSON_OUT = Path(__file__).parent / "mlb_hr_bet_site" / "data" / "factor_accuracy.json"
 
 

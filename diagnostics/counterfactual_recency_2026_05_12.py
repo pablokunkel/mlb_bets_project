@@ -37,10 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fetch_daily_data import get_recent_pitcher_game_log
 from pitcher_profile import effective_hr9
 from score_batters import WEIGHT_CONFIGS, percentile_rank_dict
+from etl.db import SITE_DATA_DIR, get_db  # single anchor (B26)
 
 
-PICKS_JSON = Path(__file__).resolve().parent.parent / "mlb_hr_bet_site" / "data" / "picks_latest.json"
-DB_PATH    = Path(__file__).resolve().parent.parent.parent.parent.parent.parent / "data" / "hr_bets.db"
+PICKS_JSON = SITE_DATA_DIR / "picks_latest.json"
 TARGET_DATE = "2026-05-12"
 
 
@@ -92,8 +92,7 @@ def vuln_raw_components(p: dict, hr9_eff: float | None) -> list[float]:
 
 
 def main():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = get_db()  # canonical DB; fail-loud if absent (B26)
 
     selected, board = load_board()
     # Map opp_pitcher (display name) → batter rows

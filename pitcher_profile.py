@@ -32,11 +32,11 @@ from pathlib import Path
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Cache setup
-# ---------------------------------------------------------------------------
+from etl.db import CACHE_DIR, DB_PATH  # single anchor (B26)
 
-CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
+# ---------------------------------------------------------------------------
+# Cache setup — CACHE_DIR / DB_PATH imported from etl.db (single anchor).
+# ---------------------------------------------------------------------------
 
 # TTLs in seconds
 #
@@ -997,7 +997,7 @@ def score_matchup_v2(
 # daily picks job. Per-batter Statcast roundtrips here used to dominate
 # the noon runtime (~30s/batter × ~150 batters → 45-min timeout, 2026-05-20).
 
-_DB_PATH = Path(__file__).parent.parent / "data" / "hr_bets.db"
+_DB_PATH = DB_PATH
 
 
 def _load_victim_profiles_from_db(season: int) -> dict[int, dict]:

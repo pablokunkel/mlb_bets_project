@@ -60,7 +60,8 @@ _load_dotenv()
 # Cache helpers (mirror pitcher_profile.py style)
 # ---------------------------------------------------------------------------
 
-CACHE_DIR = Path(__file__).parent.parent / "data" / "cache" / "features_v2"
+from etl.db import CACHE_DIR as _DATA_CACHE  # single anchor (B26)
+CACHE_DIR = _DATA_CACHE / "features_v2"
 TTL_BATTER_ADV = 86400
 TTL_PITCHER_BB = 86400
 TTL_VEGAS = 3600

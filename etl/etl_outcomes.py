@@ -32,7 +32,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from etl.db import (
-    get_db, create_tables,
+    get_db, create_tables, RESULTS_DIR,
     log_etl_start, log_etl_complete, log_etl_fail,
 )
 
@@ -80,7 +80,7 @@ def fetch_outcomes_for_date(conn, date_str: str) -> int:
 
     # Also check JSON results directory for backward compatibility
     picked_ids = {r["batter_id"] for r in picks}
-    results_dir = Path(__file__).parent.parent.parent / "results"
+    results_dir = RESULTS_DIR
     json_file = results_dir / f"picks_{date_str}.json"
     if json_file.exists() and not picked_ids:
         try:
@@ -318,7 +318,7 @@ def backfill_hr_events(conn):
 
 def backfill_outcomes(conn):
     """Find all dates with picks but no outcomes and fetch them."""
-    results_dir = Path(__file__).parent.parent.parent / "results"
+    results_dir = RESULTS_DIR
     if not results_dir.exists():
         print("  No results directory found.")
         return

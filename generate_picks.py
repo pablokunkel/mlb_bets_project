@@ -35,6 +35,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from etl.db import DB_PATH, RESULTS_DIR  # single anchor (B26)
+
 from score_batters import (
     WEIGHT_CONFIGS,
     LEAGUE_AVG_PITCHER,
@@ -159,7 +161,7 @@ def load_season_batting_lookup(season: int) -> dict:
     """
     try:
         import sqlite3
-        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        db_path = DB_PATH
         if not db_path.exists():
             return {}
         conn = sqlite3.connect(str(db_path))
@@ -220,7 +222,7 @@ def load_season_hr_lookup(date_str: str) -> dict[int, int]:
     """
     try:
         import sqlite3
-        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        db_path = DB_PATH
         if not db_path.exists():
             return {}
         season = int(date_str[:4])
@@ -264,7 +266,7 @@ def load_player_status_lookup(date_str: str) -> dict[int, dict]:
     """
     try:
         import sqlite3
-        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        db_path = DB_PATH
         if not db_path.exists():
             return {}
         conn = sqlite3.connect(str(db_path))
@@ -307,7 +309,7 @@ def load_pitch_type_splits_lookup(date_str: str) -> dict[int, dict]:
     """
     try:
         import sqlite3
-        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        db_path = DB_PATH
         if not db_path.exists():
             return {}
         conn = sqlite3.connect(str(db_path))
@@ -360,7 +362,7 @@ def load_rookie_pitcher_ids(pitcher_id_map: dict, threshold: int = 300) -> set[i
         return set()
     try:
         import sqlite3
-        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        db_path = DB_PATH
         if not db_path.exists():
             return set()
         conn = sqlite3.connect(str(db_path))
@@ -398,7 +400,7 @@ def load_career_lookup() -> dict:
     """
     try:
         import sqlite3
-        db_path = Path(__file__).parent.parent / "data" / "hr_bets.db"
+        db_path = DB_PATH
         if not db_path.exists():
             return {}
         conn = sqlite3.connect(str(db_path))
@@ -2499,7 +2501,7 @@ def main():
     if args.output:
         out_path = args.output
     else:
-        results_dir = Path(__file__).parent.parent / "results"
+        results_dir = RESULTS_DIR
         results_dir.mkdir(parents=True, exist_ok=True)
         out_path = str(results_dir / f"picks_{date_str}.json")
 

@@ -4519,6 +4519,77 @@ def pin_get_db_resolution_and_fail_loud() -> Result:
     )
 
 
+def pin_no_stray_db_and_canonical_anchor() -> Result:
+    """B26 (2026-06-02): path-resolution hardening guard.
+
+    Companion to the B24 pin. Asserts the invariants the path-anchor sweep
+    established so a regression can't silently re-spawn the stray-DB
+    divergence (three copies of hr_bets.db) that B24/B26 cleaned up:
+
+      1. DB_PATH (the single anchor) is named hr_bets.db and resolves
+         OUTSIDE the repo working tree — the canonical DB is the repo's
+         SIBLING, never an in-repo copy.
+      2. No stray hr_bets.db exists under the repo root (`<repo>/data/`) or
+         under any `.claude/worktrees/<wt>/data/`. A file there is exactly
+         the in-repo divergence B26 deleted.
+
+    Run as documented (HR_BETS_DB set, or main checkout after an R2 pull) the
+    canonical DB is present and this PASSes. With no env var and no DB it
+    still runs: it INFO-skips the existence half but ALWAYS HALTs on a stray.
+
+    HALT severity: a regression re-introduces the stray-DB divergence.
+
+    NB: from inside a worktree, repo_root IS that worktree, so the
+    `.claude/worktrees/` glob is empty there — this guard is most
+    authoritative from the main checkout. The `<repo>/data/` check fires
+    from either vantage.
+    """
+    import etl.db as _etldb
+
+    halts: list[str] = []
+    repo_root = Path(__file__).resolve().parent.parent
+    db_path = Path(_etldb.DB_PATH)
+
+    # 1. The anchor must be hr_bets.db resolving OUTSIDE the repo tree. Both
+    #    known strays (in-repo data/, .claude/worktrees/data/) live INSIDE it;
+    #    canonical is the repo's sibling.
+    if db_path.name != "hr_bets.db":
+        halts.append(f"DB_PATH {db_path} is not named hr_bets.db")
+    try:
+        db_path.resolve().relative_to(repo_root)
+        halts.append(
+            f"DB_PATH {db_path} resolves INSIDE the repo tree ({repo_root}); "
+            f"the canonical DB must be the repo's sibling, not an in-repo copy"
+        )
+    except ValueError:
+        pass  # good — canonical DB is outside the checkout
+
+    # 2. No stray hr_bets.db in the repo root or any sibling worktree's data/.
+    strays: list[str] = []
+    if (repo_root / "data" / "hr_bets.db").exists():
+        strays.append(str(repo_root / "data" / "hr_bets.db"))
+    wt_root = repo_root / ".claude" / "worktrees"
+    if wt_root.exists():
+        strays.extend(str(p) for p in wt_root.glob("*/data/hr_bets.db"))
+    if strays:
+        halts.append("stray in-repo hr_bets.db present (must be exactly one "
+                     "canonical DB): " + ", ".join(strays))
+
+    if halts:
+        return Result("no stray DB + canonical anchor (B26)", Result.HALT,
+                      "; ".join(halts))
+    if not db_path.exists():
+        return Result(
+            "no stray DB + canonical anchor (B26)", Result.INFO,
+            f"anchor OK, no strays; canonical DB absent at {db_path} "
+            f"(set HR_BETS_DB or pull from R2 to run DB probes)",
+        )
+    return Result(
+        "no stray DB + canonical anchor (B26)", Result.PASS,
+        f"DB_PATH={db_path} present; no in-repo / worktree strays",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -4658,6 +4729,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_backtest_park_archetype_runs_against_populated_db,
     # 2026-06-01: B24 — canonical DB anchor + fail-loud on the default path
     pin_get_db_resolution_and_fail_loud,
+    # 2026-06-02: B26 — no stray DB + canonical anchor (path-hardening guard)
+    pin_no_stray_db_and_canonical_anchor,
 ]
 
 
@@ -4666,7 +4739,11 @@ PIN_TESTS: list[Callable[[], Result]] = [
 # ---------------------------------------------------------------------------
 
 def _db_path() -> Optional[Path]:
-    p = Path(__file__).resolve().parent.parent.parent / "data" / "hr_bets.db"
+    # B26: honor the single canonical anchor (HR_BETS_DB-aware) instead of
+    # ad-hoc .parent math, so these probes actually run under worktrees + CI
+    # (with HR_BETS_DB set) instead of silently skipping on a stray path.
+    import etl.db as _etldb
+    p = Path(_etldb.DB_PATH)
     return p if p.exists() else None
 
 

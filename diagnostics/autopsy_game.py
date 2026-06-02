@@ -14,11 +14,11 @@ Usage (from project root):
 Reads only. Safe to run any time, including during nightly ETL.
 """
 
-import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(r"C:\Users\pablo\OneDrive\Documents\Claude\Projects\data\hr_bets.db")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.db import get_db
 
 
 def fmt(val, width=6, prec=1):
@@ -38,8 +38,7 @@ def main():
     team1 = sys.argv[2] if len(sys.argv) > 2 else None
     team2 = sys.argv[3] if len(sys.argv) > 3 else None
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_db()  # canonical DB; fail-loud if absent (B26)
 
     # ------------------------------------------------------------------
     # Resolve which game_pks to autopsy

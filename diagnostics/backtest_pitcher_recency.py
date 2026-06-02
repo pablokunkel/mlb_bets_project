@@ -61,10 +61,10 @@ from pitcher_profile import (
     RECENT_HR9_BLEND_WEIGHT, RECENT_HR9_MIN_STARTS,
 )
 from score_batters import WEIGHT_CONFIGS, percentile_rank_dict
+from etl.db import DB_PATH, CACHE_DIR  # single anchor (B26)
 import requests
 
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent.parent.parent / "data" / "hr_bets.db"
 DEFAULT_START = "2026-04-15"
 DEFAULT_END   = "2026-05-20"
 
@@ -162,7 +162,7 @@ def load_slate_pitchers(conn: sqlite3.Connection, start: str, end: str) -> dict:
 # ---------------------------------------------------------------------------
 
 # Persistent on-disk cache so repeat runs don't pay the MLB API roundtrip.
-GAMELOG_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "cache" / "diagnostics_pitcher_gamelog"
+GAMELOG_CACHE_DIR = CACHE_DIR / "diagnostics_pitcher_gamelog"
 
 
 def _gamelog_path(pid: int, season: int) -> Path:

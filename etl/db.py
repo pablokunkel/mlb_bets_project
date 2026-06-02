@@ -39,6 +39,26 @@ DB_PATH = (Path(os.environ["HR_BETS_DB"]) if os.environ.get("HR_BETS_DB")
            else Path(__file__).parent.parent.parent / "data" / "hr_bets.db")
 DB_DIR = DB_PATH.parent  # retained for back-compat with importers of DB_DIR
 
+# B26 (2026-06-02): shared path anchors, derived from the SAME canonical root
+# as DB_PATH so no script resolves a non-canonical data / cache / results
+# location from any cwd (worktree included). With HR_BETS_DB set these are
+# worktree-independent; with it unset they fall back to the repo-sibling
+# layout that the Linux/main checkout + GitHub Actions rely on — that fallback
+# is a hard portability constraint, do NOT change it. Importers replace their
+# ad-hoc relative `.parent`-count path math with these shared names, so there
+# is exactly ONE place that computes them.
+DATA_DIR = DB_DIR                          # <root>/data        (DB + caches live here)
+CACHE_DIR = DATA_DIR / "cache"             # <root>/data/cache  (API/Statcast caches)
+RESULTS_DIR = DATA_DIR.parent / "results"  # <root>/results     (sibling of data/; picks_<DATE>.json)
+
+# SITE_DATA_DIR is the ONE anchor that is intentionally NOT canonical: the
+# dashboard's exported JSON is committed to the repo and deployed from the
+# checkout, so it must stay REPO-relative (worktree-local) — the opposite of
+# DB_PATH. Derived from this file's location, never from HR_BETS_DB, so an
+# export from a worktree lands in that worktree's tree to be committed.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+SITE_DATA_DIR = _REPO_ROOT / "mlb_hr_bet_site" / "data"
+
 
 def get_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     """
