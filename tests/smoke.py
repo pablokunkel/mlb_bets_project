@@ -4411,6 +4411,113 @@ def pin_backfill_form_archetype_reset_flag() -> Result:
     )
 
 
+def pin_get_db_resolution_and_fail_loud() -> Result:
+    """B24 (2026-06-01): etl.db DB resolution + get_db() fail-loud contract.
+
+    Three behaviors, all guarding against the stray-DB divergence that
+    spawned three copies of hr_bets.db (canonical, `.claude\\worktrees\\data\\`,
+    in-repo) and kept B16's slate_pct backfill off the canonical DB:
+
+      1. get_db() with NO arg (canonical default) must FAIL LOUD with
+         FileNotFoundError when the canonical DB is absent — never silently
+         mkdir+create a stray empty DB the pipeline then writes picks into.
+         Also asserts no file was created as a side effect.
+      2. get_db(explicit_path) must PRESERVE create-on-demand (bootstrap /
+         --db throwaway DBs depend on it).
+      3. DB_PATH must honor the HR_BETS_DB env override at import time, from
+         any cwd. Verified hermetically in a subprocess so we never mutate
+         this process's already-imported etl.db.
+
+    HALT severity: a regression here silently re-diverges the canonical DB.
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    import etl.db as _etldb
+
+    failures: list[str] = []
+    repo_root = str(Path(__file__).resolve().parent.parent)
+
+    # --- 1 & 2: fail-loud on default, preserve-create on explicit ---------
+    tmp_dir = Path(tempfile.mkdtemp(prefix="b24_getdb_"))
+    missing_default = tmp_dir / "nope" / "canonical.db"   # parent absent too
+    explicit_new = tmp_dir / "explicit_created.db"
+    orig_db_path = _etldb.DB_PATH
+    try:
+        _etldb.DB_PATH = missing_default
+        # 1. default path, file absent -> FileNotFoundError, no file created.
+        try:
+            conn = _etldb.get_db()
+            conn.close()
+            failures.append(
+                "get_db() did NOT raise on a missing canonical DB "
+                "(silent stray-DB creation regressed)"
+            )
+        except FileNotFoundError:
+            pass  # expected
+        except Exception as e:
+            failures.append(
+                f"get_db() raised {type(e).__name__}, want FileNotFoundError"
+            )
+        if missing_default.exists():
+            failures.append(
+                "get_db() created the DB file despite it being the "
+                "fail-loud default path"
+            )
+        # 2. explicit path, file absent -> created + usable (preserve).
+        try:
+            conn = _etldb.get_db(explicit_new)
+            conn.execute("CREATE TABLE IF NOT EXISTS _t (x INTEGER)")
+            conn.close()
+            if not explicit_new.exists():
+                failures.append(
+                    "get_db(explicit_path) did not create the DB file "
+                    "(bootstrap/--db path regressed)"
+                )
+        except Exception as e:
+            failures.append(
+                f"get_db(explicit_path) raised {type(e).__name__}: {e} "
+                "(must preserve create-on-demand)"
+            )
+    finally:
+        _etldb.DB_PATH = orig_db_path
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # --- 3: HR_BETS_DB env override resolves DB_PATH (hermetic subprocess) -
+    sentinel = str(Path(tempfile.gettempdir()) / "b24_env_sentinel" / "hr_bets.db")
+    child_env = dict(os.environ)
+    child_env["HR_BETS_DB"] = sentinel
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "from etl.db import DB_PATH; print(DB_PATH)"],
+            capture_output=True, text=True, cwd=repo_root, env=child_env,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            failures.append(
+                f"env-override subprocess failed (rc={proc.returncode}): "
+                f"{(proc.stderr or '').strip()[:160]}"
+            )
+        elif Path(proc.stdout.strip()) != Path(sentinel):
+            failures.append(
+                f"DB_PATH with HR_BETS_DB set = {proc.stdout.strip()!r}, "
+                f"want {sentinel!r} (env override not honored)"
+            )
+    except Exception as e:
+        failures.append(
+            f"env-override subprocess check crashed: {type(e).__name__}: {e}"
+        )
+
+    if failures:
+        return Result("get_db resolution + fail-loud (B24)", Result.HALT,
+                      "; ".join(failures))
+    return Result(
+        "get_db resolution + fail-loud (B24)", Result.PASS,
+        "fail-loud on missing default, create on explicit, HR_BETS_DB honored",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -4548,6 +4655,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_backfill_park_archetype_idempotent,
     pin_pick_inputs_park_archetype_columns_exist,
     pin_backtest_park_archetype_runs_against_populated_db,
+    # 2026-06-01: B24 — canonical DB anchor + fail-loud on the default path
+    pin_get_db_resolution_and_fail_loud,
 ]
 
 
