@@ -13,21 +13,31 @@ Anchors compared:
   xwoba_contact: 0.280-0.500  (unchanged -- already calibrated to MLB)
   pull_fb_pct:   5-25         (unchanged)
 
-Composite delta uses stored_composite + 0.250 * (new_power - old_power)
-because power_score is NOT slate-reranked at scoring time. The script
-also reproduces the CURRENT score_power and prints |repro - stored|
-so you can see if my reproduction matches reality (it should be ~0).
+Composite delta uses stored_composite + POWER_WEIGHT * (new_power - old_power)
+because power_score is NOT slate-reranked at scoring time. POWER_WEIGHT is the
+live default power weight (WEIGHT_CONFIGS["default"]["power"]). The script also
+reproduces the CURRENT score_power and prints |repro - stored| so you can see
+if my reproduction matches reality (it should be ~0).
 
 Usage (from project root):
-    python simulate_power_anchors.py
+    python diagnostics/simulate_power_anchors.py [--db PATH]
 """
 
+import argparse
 import sqlite3
+import sys
 from pathlib import Path
+
 import numpy as np
 
-DB_PATH = Path(r"C:\Users\pablo\OneDrive\Documents\Claude\Projects\data\hr_bets.db")
-POWER_WEIGHT = 0.250  # WEIGHT_CONFIGS["default"]["power"]
+# This diagnostic lives in diagnostics/; put the repo root on sys.path so
+# `etl.db` and `score_batters` import regardless of the cwd it's run from.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from etl.db import DB_PATH            # canonical, HR_BETS_DB-aware DB path
+from score_batters import WEIGHT_CONFIGS
+
+POWER_WEIGHT = WEIGHT_CONFIGS["default"]["power"]  # live default power weight (0.48)
 TOP_N = 30
 
 
@@ -76,8 +86,9 @@ PROPOSED_ANCHORS = {
 }
 
 
-def main():
-    conn = sqlite3.connect(DB_PATH)
+def main(db_path=None):
+    db_path = Path(db_path) if db_path else DB_PATH
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
     latest = conn.execute("SELECT MAX(date) FROM pick_inputs").fetchone()[0]
@@ -210,4 +221,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Read-only score_power anchor simulator (re-ranks today's slate)."
+    )
+    parser.add_argument(
+        "--db", default=None,
+        help="DB path override (default: canonical etl.db.DB_PATH, HR_BETS_DB-aware)",
+    )
+    args = parser.parse_args()
+    main(args.db)

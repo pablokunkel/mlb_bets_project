@@ -4747,25 +4747,56 @@ def _db_path() -> Optional[Path]:
     return p if p.exists() else None
 
 
+# B30 (2026-06-02): batting_order > 9 is documented false-alarm #2 — 428 rows
+# of old-roster-fallback residue, all confined to 2026-04-29..2026-05-02. The
+# active-fetch fix landed after that window; the 30+ days of lineups since carry
+# zero such rows. score_lineup_position returns 35.0 for the residue via its
+# default branch ("do not fix"). So this probe is DATE-SCOPED: residue dated on
+# or before the cutoff is expected and ignored; only a NEW date emitting
+# batting_order > 9 — a genuine regression of the lineup fetcher — trips the
+# HALT. (Preferred over baseline-allowing a count: a count-based rule would miss
+# a regression that merely *replaces* residue rows, and a clean date cutoff
+# exists.)
+LINEUP_BATTING_ORDER_RESIDUE_CUTOFF = "2026-05-02"
+
+
 def db_lineup_batting_order_capped() -> Result:
-    """daily_lineup must never have batting_order > 9 (HIGH #1 fix)."""
+    """daily_lineup must never have batting_order > 9 *after the fetcher fix*
+    (HIGH #1 fix).
+
+    The 428 pre-cutoff rows are false-alarm #2 (old-roster-fallback residue,
+    2026-04-29..2026-05-02) and are expected. Only rows dated after
+    LINEUP_BATTING_ORDER_RESIDUE_CUTOFF count as a regression — see the
+    constant's comment.
+    """
     db = _db_path()
     if not db:
         return Result(
             "daily_lineup.batting_order <= 9 (DB missing — skipped)",
             Result.INFO, str(db),
         )
+    cutoff = LINEUP_BATTING_ORDER_RESIDUE_CUTOFF
     conn = sqlite3.connect(str(db))
-    n = conn.execute(
-        "SELECT COUNT(*) FROM daily_lineup WHERE batting_order > 9"
+    n_new = conn.execute(
+        "SELECT COUNT(*) FROM daily_lineup WHERE batting_order > 9 AND date > ?",
+        (cutoff,),
+    ).fetchone()[0]
+    n_residue = conn.execute(
+        "SELECT COUNT(*) FROM daily_lineup WHERE batting_order > 9 AND date <= ?",
+        (cutoff,),
     ).fetchone()[0]
     conn.close()
-    if n == 0:
-        return Result("daily_lineup.batting_order <= 9", Result.PASS, "0 rows out-of-range")
+    if n_new == 0:
+        return Result(
+            "daily_lineup.batting_order <= 9 (post-cutoff)",
+            Result.PASS,
+            f"0 rows after {cutoff}; {n_residue} pre-cutoff residue ignored (false-alarm #2)",
+        )
     return Result(
-        "daily_lineup.batting_order <= 9",
+        "daily_lineup.batting_order <= 9 (post-cutoff)",
         Result.HALT,
-        f"{n} rows have batting_order > 9 — HIGH #1 fix may have regressed",
+        f"{n_new} rows dated after {cutoff} have batting_order > 9 — "
+        f"HIGH #1 fix may have regressed",
     )
 
 
