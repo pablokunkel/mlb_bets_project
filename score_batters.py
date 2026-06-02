@@ -1835,8 +1835,8 @@ def main():
     parser.add_argument("--output", default=None, help="Output JSON path")
     args = parser.parse_args()
 
-    data_dir = Path(__file__).parent.parent / "data"
-    data_file = data_dir / f"daily_{args.date}.json"
+    from etl.db import DATA_DIR  # single anchor (B26)
+    data_file = DATA_DIR / f"daily_{args.date}.json"
 
     if not data_file.exists():
         print(f"No data file found for {args.date}. Run fetch_daily_data.py first.")

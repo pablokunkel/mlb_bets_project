@@ -2,17 +2,20 @@
 debug_buxton.py — show the THREE places Buxton's power inputs come from
 to find why live scoring computed power=13 vs displayed estimates of ~48.
 """
-import sqlite3, json
+import json
+import sys
 from pathlib import Path
 
-DB = Path(__file__).parent.parent / "data" / "hr_bets.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.db import get_db
+
 PICKS = Path(__file__).parent / "mlb_hr_bet_site" / "data" / "picks_latest.json"
 
 print("=" * 70)
 print("1. WHAT season_batting TABLE HAS (used by export_site_data → modal)")
 print("=" * 70)
-conn = sqlite3.connect(str(DB))
-conn.row_factory = sqlite3.Row
+# Canonical DB (HR_BETS_DB / repo-sibling fallback); fail-loud if absent (B26).
+conn = get_db()
 rows = conn.execute("""
     SELECT player_name, season, hr, ab, pa, avg, slg, iso,
            barrel_pct, exit_velo, hr_fb_pct, fetched_at

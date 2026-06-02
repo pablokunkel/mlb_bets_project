@@ -117,7 +117,7 @@ from pathlib import Path
 # Make project root importable from etl/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from etl.db import get_db, create_tables, log_etl_start, log_etl_complete, log_etl_fail
+from etl.db import get_db, create_tables, RESULTS_DIR, log_etl_start, log_etl_complete, log_etl_fail
 from load_picks_to_db import load_picks
 from generate_picks import generate_card, format_card
 
@@ -128,9 +128,8 @@ from generate_picks import generate_card, format_card
 DEFAULT_START = "2025-03-27"
 DEFAULT_END   = "2025-09-30"
 
-# Where generate_card writes its picks_<DATE>.json (matches the production
-# convention in load_picks_to_db.resolve_json_path).
-RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "results"
+# RESULTS_DIR (where generate_card writes picks_<DATE>.json) is imported from
+# etl.db above — the single anchor matching load_picks_to_db.resolve_json_path.
 
 
 # ---------------------------------------------------------------------------

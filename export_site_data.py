@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from etl.db import get_db, create_tables
+from etl.db import get_db, create_tables, RESULTS_DIR, SITE_DATA_DIR
 from score_batters import WEIGHT_CONFIGS
 
 
@@ -139,7 +139,7 @@ def export_latest_picks(conn, out_dir: Path):
     latest_date = row[0] if row and row[0] else None
 
     if not latest_date:
-        results_dir = Path(__file__).parent.parent / "results"
+        results_dir = RESULTS_DIR
         json_files = sorted(results_dir.glob("picks_*.json"), reverse=True)
         if json_files:
             with open(json_files[0]) as f:
@@ -2005,7 +2005,7 @@ def main():
     if args.out:
         out_dir = Path(args.out)
     else:
-        out_dir = Path(__file__).parent / "mlb_hr_bet_site" / "data"
+        out_dir = SITE_DATA_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Exporting site data to {out_dir}/")

@@ -73,8 +73,8 @@ except Exception:
         "form": 0.279, "weather": 0.057, "lineup": 0.150,
     }
 
-# DB path — same convention as etl/db.py
-DB_PATH = _THIS.parent.parent / "data" / "hr_bets.db"
+# DB path — the single canonical anchor from etl.db (HR_BETS_DB-aware; B26).
+from etl.db import DB_PATH
 
 FACTORS = ["power", "matchup", "park", "form", "weather", "lineup"]
 

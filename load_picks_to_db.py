@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from etl.db import get_db, create_tables
+from etl.db import get_db, create_tables, RESULTS_DIR
 
 
 def resolve_json_path(date_str: str, explicit: str | None) -> Path:
@@ -39,7 +39,7 @@ def resolve_json_path(date_str: str, explicit: str | None) -> Path:
         return Path(explicit)
 
     candidates = [
-        Path(__file__).parent.parent / "results" / f"picks_{date_str}.json",
+        RESULTS_DIR / f"picks_{date_str}.json",
         Path(__file__).parent / "results" / f"picks_{date_str}.json",
         Path.home() / "Desktop" / "HR-Picks" / f"picks_{date_str}.json",
     ]

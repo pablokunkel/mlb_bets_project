@@ -126,7 +126,7 @@ VENUE_TZ = {
     "American Family Field": "America/Chicago",
 }
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+from etl.db import DATA_DIR, CACHE_DIR  # single anchor (B26)
 
 
 def ensure_data_dir():
@@ -949,9 +949,7 @@ _OPEN_METEO_ARCHIVE_THRESHOLD_DAYS = 5
 # Cache lives in data/cache/weather_archive/ and is NOT synced to R2.
 # Production noon runs hit the FORECAST endpoint, so this cache is never
 # written or read by production - it's a backfill-only optimization.
-_WEATHER_ARCHIVE_CACHE_DIR = (
-    Path(__file__).parent.parent / "data" / "cache" / "weather_archive"
-)
+_WEATHER_ARCHIVE_CACHE_DIR = CACHE_DIR / "weather_archive"
 
 
 def _weather_archive_cache_path(venue: str, date_str: str) -> Path:

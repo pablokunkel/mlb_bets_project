@@ -4,13 +4,15 @@ After tightening woba anchors (2026-05-01: 0.290-0.395), the avg_matchup
 column should climb steeply across bins instead of staying flat.
 Run: python check_woba_today.py
 """
-import sqlite3
+import sys
 from pathlib import Path
 
-DB = Path(__file__).parent.parent / "data" / "hr_bets.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from etl.db import get_db
 
-conn = sqlite3.connect(str(DB))
-conn.row_factory = sqlite3.Row
+# Canonical DB (HR_BETS_DB / repo-sibling fallback); fail-loud if absent so a
+# missing DB is never silently created as a stray (B26).
+conn = get_db()
 
 latest = conn.execute("SELECT MAX(date) FROM daily_picks").fetchone()[0]
 print(f"Latest date in daily_picks: {latest}\n")
