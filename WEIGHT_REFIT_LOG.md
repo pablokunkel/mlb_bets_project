@@ -6,6 +6,136 @@ Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr
 
 ---
 
+## 2026-06-02 — A1 close: flip default to candidate A + remove park additive
+
+**Status: shipped.** Closes the A1 cycle opened by the 2026-05-26 refit (which
+presented FREE / PINNED candidates and deferred the flip to the user).
+`WEIGHT_CONFIGS["default"]` is now **candidate A**, and the 2026-05-03
+`composite += 0.05 * park` additive bonus is removed.
+
+### What shipped
+
+| factor   | old default | **candidate A** | FREE (05-26) | PINNED (05-26) |
+|----------|------------:|----------------:|-------------:|---------------:|
+| power    | 0.250       | **0.48**        | 0.271        | 0.230          |
+| matchup  | 0.264       | **0.28**        | 0.572        | 0.486          |
+| park     | 0.000       | **0.04**        | 0.000        | 0.000          |
+| form     | 0.279       | **0.12**        | 0.038        | 0.033          |
+| weather  | 0.057       | **0.08**        | 0.119        | 0.101          |
+| lineup   | 0.150       | **0.00**        | 0.000        | 0.150          |
+| **sum**  | 1.000       | **1.00**        | 1.000        | 1.000          |
+
+### Why candidate A (and not FREE/PINNED)
+
+This is a **deliberate judgment call, shipped below the formal +1.0 pp OOS
+gate** — not an automated gate pass. The 2026-05-26 refit's only
+gate-passing variant was FREE, whose ~93%-on-power+matchup concentration
+(form ≈ 0.04, lineup 0) the same entry flagged as a multicollinearity
+artifact with thin ballast (see that entry's "Skepticism / artifacts"
+section). Candidate A keeps the refit's unambiguous signal — power leads,
+matchup second — but:
+
+- **retains real form ballast (0.12)** instead of zeroing it, so the
+  composite doesn't rotate almost entirely on power+matchup;
+- **brings park back as a small *weighted* factor (0.04)** rather than a 0
+  weight plus an out-of-band additive;
+- **drops the lineup carve-out to 0** (lineup_score is anti-correlated with
+  HR on the 2025 sample, r = −0.020 — see 05-26; the PINNED variant that
+  preserved 0.15 lineup failed the OOS gate).
+
+The form-factor rebuild is the queued next lever (post-B26); candidate A is
+the interim weighting that banks the power-led signal without over-committing
+to the FREE extreme while form is still being reworked.
+
+### Park additive removal (the redundancy A1 closed)
+
+The `+0.05 * park` bonus was added 2026-05-03 *specifically because* park was
+pinned to weight 0 — it was the only way within-slate park signal reached the
+composite. With park now a 0.04 weighted factor, keeping the additive would
+count park twice. Removed (`score_batters.py` compute_composite, the line
+formerly at ~1542). Per the brief, verified first that
+`refit_weights.compute_composite_from_weights` (refit_weights.py:519) is a
+**pure weighted average** with no additive — it is (`out += weights[f] * v`
+over FACTORS). So the refit harness already optimized over the no-additive
+composite; removing the production additive *aligns* production with the
+harness rather than diverging from it. Platoon dampener / season-HR floor /
+rookie bonus are weight-orthogonal and untouched.
+
+### Production-frame spot-check (2026-06-02 live board, 348 rows)
+
+Re-scored the most recent live slate under the new `compute_composite`.
+Method: `daily_picks` persists every per-factor score + the final composite,
+so `comp_new = persisted_composite × (pre_new / pre_old)` where
+`pre_old = Σ old_w·score + 0.05·park` and `pre_new = Σ candidate_A_w·score`
+(both pre-dampener). This carries production's exact platoon dampener through
+the persisted value. `lineup_score` is persisted NULL for current live rows
+(a separate, pre-existing persistence gap since ~2026-04-29 — moot under
+candidate A's lineup=0), so it was recomputed from `batting_order` via
+`score_lineup_position` for `pre_old`. Validation: the implied dampener
+backed out of every row landed in [0.901, 1.002] (the platoon floor range),
+0/348 outliers, **0 NaN/inf** in `comp_new`.
+
+Top-8 (max 2/game, confirmed starters, IL-filtered — same rule as
+`generate_picks`):
+
+```
+BEFORE (old weights + 0.05*park)        AFTER (candidate A, no additive)
+1 Yordan Alvarez   HOU  83.1            1 Yordan Alvarez   HOU  78.7
+2 Miguel Vargas    CWS  80.2            2 Kyle Schwarber   PHI  78.3
+3 Dillon Dingler   DET  80.1            3 James Wood       WSH  77.6
+4 Kyle Schwarber   PHI  79.7            4 Miguel Vargas    CWS  76.9
+5 Juan Soto        NYM  77.7            5 Ben Rice         NYY  76.6
+6 James Wood       WSH  77.2            6 Bryce Harper     PHI  75.4
+7 JJ Bleday        CIN  76.8            7 Dillon Dingler   DET  75.0
+8 Christian Walker* tie  76.5           8 Brandon Lowe     PIT  74.1
+  (*tied 76.5 w/ Curtis Mead)
+```
+
+- **Dropped:** Juan Soto (form 100, matchup 59.7, park 4.9 — a recent-HR /
+  weak-environment pick), JJ Bleday (form 90, matchup 49.1), and the #8 tie.
+- **Added:** Ben Rice (power 94.0, park 85.7), Bryce Harper (power 88.5,
+  matchup 80.6), Brandon Lowe (matchup 87.3 — top of the board).
+- **Mean factor profile of the top-8** (the intended shift): form
+  85.7 → 71.9, matchup 67.2 → 73.7, park 41.3 → 51.2, power 89.5 → 89.6
+  (flat — already the dominant filter), weather 55.6 → 53.7. More
+  power/matchup/park-led, fewer recent-HR-only picks, no NaN regressions.
+
+### Verification
+
+- `python -m tests.smoke` on Python 3.14 + PowerShell: **118 PASS / 0 WARN /
+  0 HALT / 4 INFO**. No pin asserts the default weights or the park additive,
+  so no pin needed a value update; the one stale weight reference (a docstring
+  in `pin_form_fetch_as_of_date_threaded` naming form's old 0.279 weight) was
+  refreshed. (DB sanity probes skip under a worktree — smoke's probe path is
+  not `HR_BETS_DB`-aware — exactly as they skip in CI; the pin layer, which
+  exercises the edited scoring code, passed in full.)
+- `score_batters` imports cleanly with the new config; spot-check ran against
+  the canonical DB (`HR_BETS_DB`).
+
+### Files touched
+
+- `score_batters.py` — `WEIGHT_CONFIGS["default"]` → candidate A + docstring
+  refresh; removed `composite += 0.05 * park` (comment replaced with a
+  do-not-re-add note).
+- `tests/smoke.py` — refreshed one stale form-weight docstring reference.
+- `WEIGHT_REFIT_LOG.md` — this entry.
+
+### Not touched / follow-ups for the PM
+
+- No other scoring logic (form rebuild = post-B26).
+- Stale references to the *old* power weight (0.25) left for a separate PR,
+  since two are **functional**, not just comments: `index.html:3207` and
+  `compute_lab_accuracy.py:147` both compute a "non-power composite" as
+  `composite − 0.25 * power_score` for the Lab "Homerun Leaders" view — now
+  under-subtracting (power is 0.48). Stale *comments* also at
+  `refit_weights.py:60-74` (the live `SHIPPED_DEFAULT_W` import auto-tracks;
+  only its dead fallback + comment are stale), `generate_picks.py:658`,
+  `diagnostics/simulate_power_anchors.py`, `diagnostics/backtest_form_anchors.py`.
+- `daily_picks.lineup_score` persisted NULL for all live rows since
+  ~2026-04-29 (per-factor display gap; pre-existing; orthogonal to A1).
+
+---
+
 ## 2026-05-27 — B17 power input anchor recalibration
 
 **Status: shipped.** Five `score_power` anchors retuned against empirical `pick_inputs` distribution. No weight refit; this is an input-curve change ahead of the next A1 cycle so the refit fits weights against well-calibrated factor scores (per the audit recommendation in PR #100 section A and BACKLOG B17).
