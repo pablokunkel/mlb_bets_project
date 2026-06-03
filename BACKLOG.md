@@ -450,11 +450,11 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ### B27. Form factor rebuild — recent contact quality (decorrelate from power)
 
-**Status.** Queued — **prioritized after B26** (user call 2026-06-02). The real lever A1 surfaced.
+**Status.** Queued — **gated on B31 (data-integrity audit) → B32 (backfill)**: the recent-window data this needs (21d/28d, `ev_trend`, archetypes) is currently **0% populated** (audit 2026-06-02). Re-scoped 2026-06-02 (user): this is a **top-8-accuracy scoring rework via an empirical window-sweep**, NOT Lab cards (the form-archetype→Lab-card pivot is deprioritized). Design decisions from the 2026-06-02 hammer-out: (1) form = recent-vs-season **delta** ("hotter than his own baseline"), NOT recent *level* — the level correlates ~0.5 with season power and the refit zeros it (the A1 result); (2) do **not** data-mine each batter's best window from his HR history (too few HRs/batter → noise that won't generalize) — use an **ensemble** of windows or a window picked by a **stable trait** (PA volume / volatility); (3) the window-sweep runs through the existing `backtest_form_anchors.py` harness, OOS top-8 + top-decile lift (A1 gate).
 
 **Why it matters.** A1's honest refit drove `form`'s weight toward 0 (logreg coef negative). That is NOT "recent form is useless" — it's (a) multicollinearity: today's `score_form` = `recent_hr_10g` + `recent_iso_30g`, i.e. recent HR *output*, which overlaps season power at r≈0.49, so form adds ~0 marginal signal above power; and (b) the calc measures recent *output*, not recent *contact quality* ("how is this hitter squaring the ball up this week"). Live symptom (user, 2026-06-02): the board over-picks recent-HR hitters with thin other support. Candidate A keeps form at 0.12 as ballast pending this rebuild. See WEIGHT_REFIT_LOG.md 2026-06-02.
 
-**Spec (scope before building).** Rebuild `score_form`'s inputs toward recent contact quality that is *distinct* from season power — e.g. recent xwOBA-on-contact / barrel% *trend* (recent vs season), the real EV-trend slot (**A2** — wired but always NULL today), days-since-last patterns. **Heed the B6/B12 negative finding:** recent-contact *levels* at 14/21/28d *underperformed* season aggregates (per-player recent windows are noisy), so this must be smarter than re-adding 14d Statcast — trend framing, longer windows, or a different construction. Coordinates with **A2** (real EV-trend ETL) and overlaps **C5** (form-archetype centroid). Then re-refit (A1-style) to find form's earned weight.
+**Spec (scope before building).** Rebuild `score_form`'s inputs toward recent contact quality that is *distinct* from season power — e.g. recent xwOBA-on-contact / barrel% *trend* (recent vs season), the real EV-trend slot (**A2** — wired but always NULL today), days-since-last patterns. **Note on B6/B12:** B6's *14d-level-as-power* result is real (14d IS populated) — recent levels don't beat season as a power input. But B12's "21d/28d don't help" is **unreliable** — those columns are 0% populated (the backfill never landed, same stray-DB class as A1), so that variant scored on no data. So at the *form* layer the **delta** framing and any window >14d are genuinely untested; B32 backfills them first, then this sweeps them. Coordinates with **A2** (real EV-trend ETL) and overlaps **C5** (form-archetype centroid). Then re-refit (A1-style) to find form's earned weight.
 
 **Files.** `score_batters.py::score_form`, `etl/etl_nightly.py` (recent-contact ETL / A2), `etl/db.py` (cols), `generate_picks.py` / `load_picks_to_db.py`, `WEIGHT_REFIT_LOG.md`.
 
@@ -490,9 +490,9 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 **Source.** A1 flip session (#106) observation, 2026-06-02.
 
-### B30. Smoke probe recalibration (false-alarm #2) + `simulate_power_anchors` cleanup
+### ~~B30. Smoke probe recalibration (false-alarm #2) + `simulate_power_anchors` cleanup~~ — SHIPPED PR #112 (2026-06-02)
 
-**Status.** Queued — small, fast. Two B26 follow-ups bundled (same smoke / diagnostics-hygiene lane). Recommended **before B27** so the form rebuild verifies against a clean smoke gate.
+**Status.** Shipped — `db_lineup_batting_order_capped` date-scoped at `2026-05-02` (catches post-cutoff regressions, ignores the 428-row residue); `simulate_power_anchors.py` de-hardcoded (`DB_PATH` + `WEIGHT_CONFIGS`). `python -m tests.smoke` back to **exit 0** (123 PASS), verified on merged main. Original spec below.
 
 **Why it matters.** (a) B26 made the smoke DB probes actually run, which surfaces the `db_lineup_batting_order_capped` **HALT** on the 428 `batting_order > 9` rows — CLAUDE.md **false-alarm #2** (intentional roster-fallback residue, "do not fix"). The probe and that residue have always been inconsistent; B26 just made the probe run everywhere. Net: `python -m tests.smoke` now exits non-zero on known-good data, which erodes smoke as a gate (alarm fatigue; a real HALT could hide behind the known one). (b) `diagnostics/simulate_power_anchors.py` carries a hardcoded `OneDrive\Documents` DB path (a stale 4th location) + a stale `0.250` power literal — it slipped B26's sweep because the done-when grep matches `.parent`-count math, not hardcoded absolutes.
 
@@ -506,6 +506,30 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 **Done when.** `python -m tests.smoke` exits 0 on the canonical DB (no false HALT) while still HALTing on a genuine `batting_order > 9` regression; `simulate_power_anchors.py` resolves canonical + reads the live weight; one fewer hardcoded-absolute DB path in the repo.
 
 **Source.** B26 (#109) follow-ups, surfaced 2026-06-02 (PM review).
+
+### B31. Data-integrity audit — model-input coverage map + prioritized backfill plan
+
+**Status.** Queued — **do first** (gates B32 → B27). Read-only diagnostic.
+
+**Why it matters.** Spot-check 2026-06-02: ~18 `pick_inputs` model-signal columns are **0% populated** — all three archetype sub-signals (form / park / pitch-type), the 21d/28d recent windows, and `ev_trend`. These are the 2026-05-26-cycle + B12 backfills that "ran" but never landed (defeated by the stray-DB path bug now fixed in B24/B26, and the form-archetype NA bug). Other columns look thin on 2026-live, but that's muddied by mid-season feature adds. We can't build the window harness or trust "we have the data to pick hitters" until we know, column-by-column, what's intentional-NULL vs broken-backfill vs live-pipeline-gap.
+
+**Spec.** Build a re-runnable `diagnostics/data_integrity_audit.py` (anchored to `etl.db.DB_PATH`, `--db`): coverage by era **including a recent-live-14d window** for every `pick_inputs` column + the snapshot/support tables (`batter_park_archetype`, `batter_form_archetype`, `batter_pitch_type_splits` — count NON-NULL centroids, not just rows; `season_batting`, `career_batting`, `pitcher_arsenals`). Classify each gap: **intentional** (xwoba_contact 2025-by-design, Vegas-not-2025, legacy proxies, pull_fb_pct=B20) / **broken-backfill** / **live-gap**, cross-referencing CLAUDE.md false-alarms + the 2026-05-26 handoff. Emit `docs/data_integrity_audit_<date>.md`: the table + classification + a **ranked backfill plan** naming, per broken item, the existing backfill script + whether the failure was the (now-fixed) path bug or a code bug (e.g. form-archetype NA) still needing a fix before re-run.
+
+**Done when.** The doc exists with a recent-live-14d coverage column, every gap classified, and a ranked backfill plan; the script is re-runnable so B32 can VERIFY backfills land. No data / scoring changes.
+
+**Source.** User direction 2026-06-02 ("not confident we have the data to pick hitters efficiently") + the coverage spot-check.
+
+### B32. Backfill the broken/missing model-input data (verified to canonical)
+
+**Status.** Queued — after B31 (its ranked plan defines exact scope).
+
+**Why it matters.** Re-run the backfills that never landed — to **canonical**, now that B24/B26 made paths anchor + fail loud (the reason they failed before). Top candidates per the form goal: 21d/28d recent-quality windows (+7d if the audit says short windows matter — new ETL), `ev_trend` (A2, real recent-EV trend), and the three archetype sub-signals (form / park / pitch-type) — fixing any remaining code bug (form-archetype NA) first.
+
+**Spec.** Per B31's ranked list: fix any code bug, run the backfill to canonical, then **re-run `data_integrity_audit.py` to confirm coverage > target** (the verification step missing every prior cycle). Wire the nightly ETL to keep the new columns populated live, not just backfilled. One PR per data family (windows / ev_trend / each archetype) so each ships + verifies independently.
+
+**Done when.** The audit's broken-backfill items are > target coverage on 2025 **and** recent-live; nightly ETL keeps them current; coverage verified by re-running the audit script.
+
+**Source.** B31 findings + user direction 2026-06-02.
 
 ---
 
@@ -1036,6 +1060,7 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 
 ### 2026-06-02 — A1 weight refit closed + repo path hygiene
 
+- **PR #112 — B30** smoke probe date-scoped (false-alarm #2) + `simulate_power_anchors` de-hardcoded → `tests.smoke` back to exit 0. (Paired **#111** — BACKLOG sync: B25/B26 shipped, B30 filed.)
 - **PR #109 — B26** path-resolution hardening: 18 files anchored to shared `etl.db` paths (`DATA_DIR/CACHE_DIR/RESULTS_DIR` env-aware, `SITE_DATA_DIR` repo-relative); in-repo stray deleted (one `hr_bets.db` on disk); smoke guard added; DB probes now actually run. Follow-ups → **B30** (probe HALT on false-alarm #2; `simulate_power_anchors` missed).
 - **PR #110 — B25** `docs/r2_sync_gotchas.md` — worktree path-divergence + R2 pull/push gotchas reference.
 - **PR #106 — A1** flipped `WEIGHT_CONFIGS["default"]` to candidate A (`power .48 / matchup .28 / park .04 / form .12 / weather .08 / lineup 0`) and removed the `+0.05*park` additive — a judgment call below the formal gate (ties FREE on top-8, far less power concentration, form kept at .12). Honest re-eval: matchup's inflated coef was a NULL-`slate_pct` artifact, power is the true lead. See WEIGHT_REFIT_LOG.md 2026-06-02. (Paired **#105** — BACKLOG sync: B16/B17/B19 marked shipped, B26 filed.)
