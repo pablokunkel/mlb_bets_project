@@ -507,9 +507,9 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 **Source.** B26 (#109) follow-ups, surfaced 2026-06-02 (PM review).
 
-### B31. Data-integrity audit — model-input coverage map + prioritized backfill plan
+### ~~B31. Data-integrity audit — model-input coverage map + prioritized backfill plan~~ — SHIPPED PR #114 (2026-06-04)
 
-**Status.** Queued — **do first** (gates B32 → B27). Read-only diagnostic.
+**Status.** Shipped — `diagnostics/data_integrity_audit.py` (re-runnable, read-only, fail-loud) + `docs/data_integrity_audit_2026-06-03.md`. Findings: **today's picks are NOT data-starved** (every weighted factor >90% on recent-live; weather the only soft spot, at 0.08 weight). 17 broken-backfill `pick_inputs` cols + 3 broken snapshot tables = the work-list → B32, with per-item path-bug-vs-code-bug classification in the doc. Original spec below.
 
 **Why it matters.** Spot-check 2026-06-02: ~18 `pick_inputs` model-signal columns are **0% populated** — all three archetype sub-signals (form / park / pitch-type), the 21d/28d recent windows, and `ev_trend`. These are the 2026-05-26-cycle + B12 backfills that "ran" but never landed (defeated by the stray-DB path bug now fixed in B24/B26, and the form-archetype NA bug). Other columns look thin on 2026-live, but that's muddied by mid-season feature adds. We can't build the window harness or trust "we have the data to pick hitters" until we know, column-by-column, what's intentional-NULL vs broken-backfill vs live-pipeline-gap.
 
@@ -521,7 +521,7 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ### B32. Backfill the broken/missing model-input data (verified to canonical)
 
-**Status.** Queued — after B31 (its ranked plan defines exact scope).
+**Status.** Queued — scoped from the B31 audit's ranked plan (`docs/data_integrity_audit_2026-06-03.md`). Agreed priority (2026-06-03 triage): **clean re-runs first** — **(a) 21d/28d windows** (`etl/backfill_statcast_windows.py`; unblocks B27's form sweep) + **(b) pitch-type splits** (`etl/backfill_pitch_type_splits.py`; feeds matchup, the 0.28 factor) — briefs written 2026-06-03. Then **(c) `ev_trend` / A2** — a *build* (nightly EV ETL), not a re-run. **Parked:** form-archetype (NA code-bug fix; the centroid path we set aside for the window-sweep) + park-archetype (venue data-model fix; park weight 0.04). Note: each backfill **enables a test** (form sweep / arsenal sub-signal) — it does not flip the live model until that test + a flag/weight decision.
 
 **Why it matters.** Re-run the backfills that never landed — to **canonical**, now that B24/B26 made paths anchor + fail loud (the reason they failed before). Top candidates per the form goal: 21d/28d recent-quality windows (+7d if the audit says short windows matter — new ETL), `ev_trend` (A2, real recent-EV trend), and the three archetype sub-signals (form / park / pitch-type) — fixing any remaining code bug (form-archetype NA) first.
 
@@ -1057,6 +1057,10 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-06-04 — B31 data-integrity audit
+
+- **PR #114 — B31** data-integrity audit (`diagnostics/data_integrity_audit.py` + `docs/data_integrity_audit_2026-06-03.md`). Coverage map of every model-input column + snapshot tables; confirms today's picks are NOT data-starved (weighted factors >90% recent-live), and ranks the backfill work-list (17 broken cols + 3 broken snapshot tables) for B32. Re-runnable so B32 verifies each backfill lands. (Paired **#113** — BACKLOG: B30 shipped, B31/B32 filed, B27 re-scoped.)
 
 ### 2026-06-02 — A1 weight refit closed + repo path hygiene
 
