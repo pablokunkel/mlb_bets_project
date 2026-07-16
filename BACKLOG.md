@@ -531,6 +531,25 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 **Source.** B31 findings + user direction 2026-06-02.
 
+### B33. "No games → no picks" guard + purge dead days from accuracy metrics
+
+**Status.** Queued — **do next** (small, user-facing). Found by the 2026-07-16 performance review.
+
+**Why it matters.** During the 2026 All-Star break the pipeline published a full 8-pick card into days with **zero scheduled games**: 7/13 (8 picks, 0 slate games), 7/15 (8 picks, 0 games), plus 8 picks against the **All-Star exhibition** on 7/14 — 26 dead picks that could never cash. Two harms: (1) **user-facing** — dingersonly.cc showed a normal-looking top-8 on days with no baseball; (2) **metric pollution** — the dead picks count as misses and dragged July's measured per-pick rate from **30.2% → 25.9%**, making the model look ~4pp worse than it is. This is the inverse of C3's never-built guard ("fail loud on zero picks when games exist"); we need "publish nothing when no games exist." The break recurs every season.
+
+**Spec.**
+- **Guard:** in `generate_picks.py`, if the slate has **zero eligible regular-season games** (after PR #40's postponed/cancelled filter), publish **no picks** + emit an explicit "no games today" state rather than falling through to a roster/T4 fallback that invents 8 batters. Trace how 7/13 produced 8 picks with `daily_slate` empty — that fallback path is the bug.
+- **Exclude exhibitions:** the ASG ingested as a normal game (41 outcome rows on 7/14). Filter non-regular-season `gameType` (ASG / exhibition / spring) out of the slate so it's never scored.
+- **Site:** render a "no games today" empty state, not a stale card. Minimal.
+- **Purge from metrics:** accuracy/performance surfaces must exclude no-game days + exhibitions so the pick % isn't diluted — check `export_site_data.py` (performance.json / hr_leaderboard capture-rate), `compute_lab_accuracy.py`, and any `daily_picks`-based hit-rate math. Decide: filter at read time (safer, preserves history) vs. delete the dead rows.
+- **Guard test:** a smoke pin that a zero-game slate yields zero picks.
+
+**Files.** `generate_picks.py`, `fetch_daily_data.py` (gameType filter), `export_site_data.py` + `compute_lab_accuracy.py` (metric exclusion), `mlb_hr_bet_site/index.html` (empty state), `tests/smoke.py`.
+
+**Done when.** A zero-game date publishes zero picks (verified by replaying 2026-07-13); the ASG date is excluded as non-regular-season; metrics exclude the dead days (July reads ~30.2%, not 25.9%); smoke pin passes.
+
+**Source.** 2026-07-16 performance review (PM). Evidence: 7/13 + 7/15 = 8 picks each with 0 slate games; 7/14 = 8 picks vs the ASG exhibition.
+
 ---
 
 ## Model factor review & heatmap (2026-05-19/20 sessions)
@@ -1002,6 +1021,16 @@ Evidence: A1 weight refit (PR #82) found `lineup_score` has Pearson r = -0.020 w
 ---
 
 ## Parked
+
+### All-Star break tab — Derby + ASG betting (idea, not scoped)
+
+**Status:** parked — **idea only**, no scoping done. Raised 2026-07-16.
+
+The break days are dead air (B33 stops us publishing junk picks into them). But the **Home Run Derby** and the **All-Star Game** are themselves HR-betting events, and we already hold most of the raw material (season power inputs, park factors, per-batter HR profiles). Idea: an **"ASG" tab that appears only during the break** — a Derby bracket/prop view + an ASG HR view — so the product has something to say on those 3–4 days instead of going dark.
+
+Open questions before this is worth scoping: which markets are actually offered (Derby winner / round survival / total HRs; ASG anytime-HR / first-HR)? Does our park+matchup machinery mean anything for a Derby (no real pitcher, BP pitching, single park) — probably a *different* model, closer to raw power × park. And is 3–4 days/yr worth the build, or is this a fun showcase rather than a real edge?
+
+**Source.** User idea 2026-07-16, alongside B33.
 
 ### Platoon detection (vs the soft dampener already shipped)
 
