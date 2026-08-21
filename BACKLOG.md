@@ -1107,6 +1107,10 @@ Open questions before this is worth scoping: which markets are actually offered 
 
 (Newest first. Trim entries past ~6 weeks.)
 
+### 2026-08-21 (day) — B34b afternoon odds snapshot
+
+- **PR #127 — B34b** `.github/workflows/odds-snapshot.yml`: cron 19:30 UTC (3:30 PM ET, label `afternoon`) re-snapshots the day's picks' DK `batter_home_runs` prices; same R2 pull → write → push pattern and the shared `hr-bets-db` concurrency group as the other DB workflows; fetch fail-soft, push gated on a successful pull. **Why:** B34's first live run (09:07 ET, 2026-08-21) matched all 15 events but DK had posted zero HR-prop lines that early — `0/8 picks priced`. Evening cron (22:45 UTC) left commented out pending a month of observed spend (free tier 500/mo; afternoon alone ≈ 184-308/mo total). Validated post-merge via `workflow_dispatch` (label `manual`): pull/label/match/push all OK, still 0 priced at 10:15 ET. First real capture expected from the 3:30 PM ET run today; check `hr_prop_odds` for `snapshot='afternoon'` rows tomorrow.
+
 ### 2026-08-21 (overnight) — audit quick wins ×3
 
 - **PR #121 — audit P0-2a** plausibility guard on the synthetic power inputs: `score_power` treats physically impossible values (EV outside [75,99], barrel outside [0,28], HR/FB outside [0,35]) as MISSING — skipped, never clamped — with a `[power-guard]` warning. Bit-identical scores verified for all plausible inputs (10,584-combo grid, 0 mismatches); the audit's 127-mph row drops 56.9 → 35.4. Follow-up filed below: extend bounds to `iso`/`xwoba_contact` with the min-AB filter (the same garbage row carried an impossible ISO 2.25, which still scores).
