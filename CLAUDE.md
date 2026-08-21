@@ -29,8 +29,10 @@ confirmed starters only, non-postponed games), and publishes to
   `python infra/r2_sync.py pull`
 - **GitHub Actions** runs the daily pipeline. Cloudflare Workers Builds
   auto-deploys `dingersonly.cc` on push to `main`.
-- **Daily flow:** 2am nightly ETL → noon pipeline (lineups + weather +
-  score + export + commit + push) → 1am next-day outcomes.
+- **Daily flow:** 2am nightly ETL → **09:07 ET** pipeline (cron 13:07 UTC —
+  lineups + weather + score + export + commit + push; note this is HOURS
+  before MLB posts lineups, see audit 2026-08-21 P0-1) → 1am next-day
+  outcomes.
 
 ## Cold-start read order
 
@@ -81,7 +83,6 @@ If you "discover" one of these in passing, leave it alone:
   added AFTER A1 refit on purpose; will get reads when flags flip on
 - Weather API failures since 2026-05-12 — known (B14 in BACKLOG), GH
   Actions runner IP issue
-- `hr_fb_pct` anchor `(8, 20)` — known anchor mis-cal, filed
 - `pitcher_fb_pct_allowed > 100` (23 rows) — known Savant parse bug, filed
 - `season_batting.team = '???'` for ~20 Athletics — known (C2)
 - T4-untiered NULL `barrel_pct_source` — known (B13)

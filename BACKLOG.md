@@ -533,7 +533,7 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ### B33. "No games → no picks" guard + purge dead days from accuracy metrics
 
-**Status.** Queued — **do next** (small, user-facing). Found by the 2026-07-16 performance review.
+**Status.** ~~Queued — do next~~ **SHIPPED 2026-08-21 (PR #118).** Both simulation leaks closed (the fetch-fallback AND the per-tier empty-pool re-simulation that built 6 of the 8 ASG-day picks); gameType allowlist `R/F/D/L/W` at `get_schedule` + both `etl_outcomes` schedule paths; explicit no-games site state; `purge_dead_days.py`. Purge applied to canonical same day — 1,718 rows across 6 tables (archive: `docs/purges/b33_2026-07-13/`) — and pushed to R2. Found by the 2026-07-16 performance review.
 
 **Why it matters.** During the 2026 All-Star break the pipeline published a full 8-pick card into days with **zero scheduled games**: 7/13 (8 picks, 0 slate games), 7/15 (8 picks, 0 games), plus 8 picks against the **All-Star exhibition** on 7/14 — 26 dead picks that could never cash. Two harms: (1) **user-facing** — dingersonly.cc showed a normal-looking top-8 on days with no baseball; (2) **metric pollution** — the dead picks count as misses and dragged July's measured per-pick rate from **30.2% → 25.9%**, making the model look ~4pp worse than it is. This is the inverse of C3's never-built guard ("fail loud on zero picks when games exist"); we need "publish nothing when no games exist." The break recurs every season.
 
@@ -1086,6 +1086,12 @@ Open questions before this is worth scoping: which markets are actually offered 
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-08-21 — B33 + B34 shipped, full model audit landed
+
+- **PR #118 — B33** no-games guard + dead-day purge (see the B33 entry above for the full shipped scope). July metrics recompute on real-game days from the next export.
+- **PR #117 — B34** per-pick HR prop odds capture: new `fetch_pick_odds.py` snapshots DraftKings `batter_home_runs` **Over + Under** for the published card into the new `hr_prop_odds` table (write-only — nothing reads it yet), wired fail-soft into the daily workflow *after* publish. ~4–8 credits/day; fits the free the-odds-api tier alongside the existing totals fetch. **Watch item:** first live capture unconfirmed — DK may not post HR props by the 09:07 ET run (see audit P0-1); check the run log's `[odds] SUMMARY` line.
+- **PR #119 — audit** `docs/model_audit_2026-08-21.md` (read-only). Engine verified faithful: composite reproduces on 23,599/24,037 live rows, published card reproduced exactly 77/77 days. The inputs are not: **P0-1** the "noon" pipeline actually runs **09:07 ET**, so 86.8% of picks score on *yesterday's* lineup and 8.3% of published picks were structurally dead (didn't start / later-postponed — all failures on the `recent:` lineup path, 0/78 on `posted`); **P0-2** power's contact-quality inputs are synthetic re-encodings of season HR rate with no plausibility clamp (season-avg EVs to 127 mph; 9 tiny-sample picks, all power=100 — the min-AB item's mechanism); **B14 de-escalated** (weather 78% real, defaults near-neutral, whole factor ≈ 0.5 pick-slots/day); plus `pick_inputs` can't key a doubleheader, `opp_pitcher_id`=0 everywhere, B29 root-caused (serializer omits `lineup_score` from `full_board`), and 3 venues (Sutter / Las Vegas Ballpark / Field of Dreams) missing from all 3 geo tables. Ranked fix order in the doc §"Suggested fix order".
 
 ### 2026-06-04 — B31 data-integrity audit
 
