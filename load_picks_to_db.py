@@ -64,7 +64,14 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     weight_config = data.get("scoring_config", "default")
     mode = data.get("mode")  # 'live' / 'offline_simulation' (added 2026-05-03)
 
-    if not board:
+    # B33 (2026-08-21): explicit no-games day. generate_picks writes a
+    # zero-pick payload with no_games=true when MLB has no eligible games.
+    # Still run the DELETE below so a re-run over a previously-populated
+    # date clears it, but say so plainly instead of emitting the
+    # "no full_board" warning, which reads like a malformed JSON.
+    no_games = bool(data.get("no_games"))
+
+    if not board and not no_games:
         # Older JSON without full_board — treat the 8-pick card as the entire board.
         board = card
         print(f"  [warn] No full_board in JSON; loading card-only ({len(card)} rows).")
@@ -96,6 +103,12 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     # Idempotent: clear and re-insert this date's picks.
     conn.execute("DELETE FROM daily_picks WHERE date = ?", (date_str,))
     conn.commit()
+
+    if no_games:
+        print(f"  [B33] {date_str} is a no-games day - 0 rows loaded "
+              f"(any prior rows for this date were cleared).")
+        conn.close()
+        return 0, 0
 
     # B7 (2026-05-25): is_likely_out + status_description + promoted_due_to
     # are NULL-safe additive columns. Older pick JSONs (pre-B7) will set

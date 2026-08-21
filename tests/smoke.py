@@ -4590,6 +4590,182 @@ def pin_no_stray_db_and_canonical_anchor() -> Result:
     )
 
 
+# ---------------------------------------------------------------------------
+# B33 (2026-08-21) — "no games -> no picks" guard
+# ---------------------------------------------------------------------------
+
+def pin_b33_zero_game_slate_yields_zero_picks() -> Result:
+    """B33: a zero-game slate produces ZERO picks, never a simulated card.
+
+    Stubs get_schedule to return [] (no network) and runs the real
+    generate_card in live mode. Pre-B33 this fell through to
+    simulate_slate and invented a full 8-pick card — exactly what
+    published on 2026-07-13 and 2026-07-15 over the All-Star break.
+
+    Asserts the whole contract, not just the pick count: empty card,
+    empty full board, and mode == MODE_NO_GAMES so downstream consumers
+    can render an off day rather than a stale or failed one.
+    """
+    import generate_picks as gp
+
+    original = gp.get_schedule
+    try:
+        gp.get_schedule = lambda date_str: []
+        card, tier_details, mode, full_board, _status = gp.generate_card(
+            "2026-07-13", (8, 0, 0),
+        )
+    except Exception as e:
+        return Result(
+            "B33 zero-game slate -> zero picks", Result.HALT,
+            f"generate_card raised {type(e).__name__}: {e}",
+        )
+    finally:
+        gp.get_schedule = original
+
+    failures = []
+    if card:
+        failures.append(f"card has {len(card)} picks, want 0")
+    if full_board:
+        failures.append(f"full_board has {len(full_board)} rows, want 0")
+    if mode != gp.MODE_NO_GAMES:
+        failures.append(f"mode={mode!r}, want {gp.MODE_NO_GAMES!r}")
+    if tier_details:
+        failures.append(f"tier_details non-empty: {sorted(tier_details)}")
+
+    if failures:
+        return Result(
+            "B33 zero-game slate -> zero picks", Result.HALT, "; ".join(failures),
+        )
+    return Result(
+        "B33 zero-game slate -> zero picks (no simulation)", Result.PASS,
+        f"0 picks, 0 board rows, mode={mode}",
+    )
+
+
+def pin_b33_schedule_error_raises_not_simulates() -> Result:
+    """B33: a schedule/API *failure* raises SlateFetchError, never simulates.
+
+    The failure case and the off-day case both used to collapse into
+    `return None` -> offline simulation. They must now diverge: an error
+    propagates so main() can exit non-zero and GH Actions goes red.
+    """
+    import generate_picks as gp
+
+    original = gp.get_schedule
+
+    def boom(date_str):
+        raise ConnectionError("simulated statsapi outage")
+
+    try:
+        gp.get_schedule = boom
+        gp.generate_card("2026-08-01", (8, 0, 0))
+    except gp.SlateFetchError:
+        return Result(
+            "B33 schedule error raises SlateFetchError", Result.PASS,
+            "fails loud instead of simulating",
+        )
+    except Exception as e:
+        return Result(
+            "B33 schedule error raises SlateFetchError", Result.HALT,
+            f"raised {type(e).__name__} instead of SlateFetchError: {e}",
+        )
+    else:
+        return Result(
+            "B33 schedule error raises SlateFetchError", Result.HALT,
+            "generate_card returned normally on a failed schedule fetch",
+        )
+    finally:
+        gp.get_schedule = original
+
+
+def pin_b33_game_type_allowlist() -> Result:
+    """B33: only standings-counting gameTypes are scorable.
+
+    The All-Star Game ("A") ingesting as an ordinary game is what put 2
+    exhibition picks on the 2026-07-14 card and 41 ASG rows in outcomes.
+    """
+    from fetch_daily_data import SCORABLE_GAME_TYPES, is_scorable_game_type
+
+    failures = []
+    for gt in ("R", "F", "D", "L", "W"):
+        if not is_scorable_game_type(gt):
+            failures.append(f"gameType {gt!r} should be scorable")
+    for gt in ("A", "S", "E", "I", "P", "C", "", None, "r"):
+        if is_scorable_game_type(gt):
+            failures.append(f"gameType {gt!r} should NOT be scorable")
+    if SCORABLE_GAME_TYPES != frozenset({"R", "F", "D", "L", "W"}):
+        failures.append(f"allowlist drifted: {sorted(SCORABLE_GAME_TYPES)}")
+
+    if failures:
+        return Result("B33 gameType allowlist", Result.HALT, "; ".join(failures))
+    return Result(
+        "B33 gameType allowlist (R/F/D/L/W only; ASG excluded)", Result.PASS,
+        "All-Star / spring / exhibition rejected",
+    )
+
+
+def pin_b33_get_schedule_drops_non_regular_season() -> Result:
+    """B33: get_schedule itself filters the payload, with no network call.
+
+    Feeds a canned /schedule response holding one regular-season game and
+    one All-Star game; only the former should survive.
+    """
+    import fetch_daily_data as fdd
+
+    payload = {"dates": [{"games": [
+        {
+            "gamePk": 111, "gameType": "R",
+            "status": {"detailedState": "Scheduled"},
+            "teams": {
+                "home": {"team": {"name": "Philadelphia Phillies", "id": 143}},
+                "away": {"team": {"name": "New York Mets", "id": 121}},
+            },
+            "venue": {"name": "Citizens Bank Park", "id": 2681},
+            "gameDate": "2026-07-16T23:10:00Z",
+        },
+        {
+            "gamePk": 222, "gameType": "A",
+            "status": {"detailedState": "Scheduled"},
+            "teams": {
+                "home": {"team": {"name": "National League All-Stars", "id": 159}},
+                "away": {"team": {"name": "American League All-Stars", "id": 160}},
+            },
+            "venue": {"name": "Citizens Bank Park", "id": 2681},
+            "gameDate": "2026-07-15T00:00:00Z",
+        },
+    ]}]}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return payload
+
+    original = fdd.requests.get
+    try:
+        fdd.requests.get = lambda *a, **k: _Resp()
+        games = fdd.get_schedule("2026-07-16")
+    finally:
+        fdd.requests.get = original
+
+    pks = [g["game_pk"] for g in games]
+    if pks != [111]:
+        return Result(
+            "B33 get_schedule drops non-regular-season", Result.HALT,
+            f"kept game_pks {pks}, want [111] (222 is the All-Star Game)",
+        )
+    if games[0].get("game_type") != "R":
+        return Result(
+            "B33 get_schedule drops non-regular-season", Result.HALT,
+            f"game_type not captured: {games[0].get('game_type')!r}",
+        )
+    return Result(
+        "B33 get_schedule drops non-regular-season", Result.PASS,
+        "1 of 2 events kept; game_type captured on the row",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -4729,6 +4905,11 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_backtest_park_archetype_runs_against_populated_db,
     # 2026-06-01: B24 — canonical DB anchor + fail-loud on the default path
     pin_get_db_resolution_and_fail_loud,
+    # 2026-08-21: B33 - "no games -> no picks" guard
+    pin_b33_zero_game_slate_yields_zero_picks,
+    pin_b33_schedule_error_raises_not_simulates,
+    pin_b33_game_type_allowlist,
+    pin_b33_get_schedule_drops_non_regular_season,
     # 2026-06-02: B26 — no stray DB + canonical anchor (path-hardening guard)
     pin_no_stray_db_and_canonical_anchor,
 ]

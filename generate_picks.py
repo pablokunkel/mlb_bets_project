@@ -90,6 +90,46 @@ from features_v2 import (
 USE_PER_PLAYER_STATCAST = True
 
 # ---------------------------------------------------------------------------
+# B33 (2026-08-21): no-games guard
+# ---------------------------------------------------------------------------
+#
+# Before B33, `fetch_live_slate` returned None for BOTH "the schedule API
+# blew up" and "MLB genuinely isn't playing today", and `generate_card`
+# answered both with the offline simulator. Over the 2026 All-Star break
+# that produced full 8-pick cards on 07-13 and 07-15 — days with zero
+# scheduled games — built from invented game_pks and impossible matchups
+# (Aaron Judge vs. Nestor Cortes). Those dead picks rendered as a normal
+# card on dingersonly.cc and were then counted as real losses by the
+# performance surfaces: 2026-07-14 showed as an honest-looking 0-for-8
+# in picks_history, and the hit streak reset across all three days.
+#
+# The two cases now have distinct signals and distinct outcomes:
+#
+#   no eligible games  -> fetch_live_slate returns None, generate_card
+#                         returns an empty card with mode=MODE_NO_GAMES,
+#                         main() writes a no-games payload and exits 0.
+#   schedule/API error -> fetch_live_slate raises SlateFetchError, which
+#                         propagates out of generate_card so main() can
+#                         exit non-zero and let GH Actions surface it.
+#                         Nothing is published.
+#
+# The offline simulator is now reachable ONLY via --offline (the backtest
+# tool). A production run never simulates, for any reason.
+
+MODE_NO_GAMES = "no_games"
+
+
+class SlateFetchError(RuntimeError):
+    """The slate could not be fetched (API error, bad payload, timeout).
+
+    Distinct from "there are no games today", which is a legitimate,
+    zero-pick outcome rather than a failure. Raised by fetch_live_slate
+    and deliberately NOT caught by generate_card — a production run that
+    cannot see the schedule must fail loud, never simulate.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Data source status tracking
 # ---------------------------------------------------------------------------
 
@@ -832,8 +872,13 @@ def fetch_live_slate(
 ) -> dict:
     """
     Fetch the real MLB slate for *date_str*: games, lineups, pitchers, weather.
-    Returns a dict with all data needed for scoring, or None if APIs fail.
     Populates *status* tracker with per-source results.
+
+    Returns a dict with all data needed for scoring, or None when the day
+    has no eligible games (an off day — All-Star break, or every game
+    postponed). B33: an off day is a legitimate zero-pick outcome, so it
+    returns None; an API/schedule *failure* raises SlateFetchError instead.
+    Callers must not conflate the two — see the SlateFetchError docstring.
 
     *as_of_date* — YYYY-MM-DD; when set, threads as-of-date semantics through
     every fetcher that supports them (per-batter / per-pitcher Statcast,
@@ -856,11 +901,19 @@ def fetch_live_slate(
     try:
         games = get_schedule(date_str)
     except Exception as e:
+        # B33: a fetch failure is NOT an off day. Raise so the caller
+        # fails loud rather than publishing a simulated card.
         status.fail("MLB Schedule API", f"Error: {e}")
-        return None
+        raise SlateFetchError(
+            f"MLB schedule fetch failed for {date_str}: {type(e).__name__}: {e}"
+        ) from e
 
     if not games:
-        status.fail("MLB Schedule API", "No games found")
+        # Zero eligible games. Either MLB isn't playing (All-Star break,
+        # off day) or every event on the calendar was a non-regular-season
+        # game filtered out by get_schedule's gameType allowlist.
+        status.warn("MLB Schedule API", "No eligible games scheduled — off day")
+        print(f"  [LIVE] No eligible MLB games scheduled for {date_str}.")
         return None
 
     # 2026-05-05: filter out games that won't actually be played today.
@@ -890,17 +943,19 @@ def fetch_live_slate(
                     f"{len(games)} games found ({len(excluded)} skipped: {labels})")
         print(f"  [LIVE] Skipping {len(excluded)} non-playing game(s): {labels}")
     elif not games:
-        status.fail("MLB Schedule API",
+        status.warn("MLB Schedule API",
                     f"All {len(excluded)} games postponed/cancelled — no slate today")
         return None
     else:
         status.ok("MLB Schedule API", f"{len(games)} games found")
 
     if not games:
-        # Belt-and-suspenders: should be unreachable given the elif above,
-        # but if every game on the calendar is postponed (extreme weather
-        # day, league-wide cancellation, etc.) we'd land here.
-        status.fail("MLB Schedule API", "No playable games today")
+        # Belt-and-suspenders: reachable when the calendar had games but
+        # every one of them is postponed/cancelled/suspended (extreme
+        # weather day, league-wide cancellation). B33: still an off day,
+        # not a failure — zero picks, not simulated ones.
+        status.warn("MLB Schedule API", "No playable games today")
+        print(f"  [LIVE] Every scheduled game on {date_str} is postponed/cancelled.")
         return None
 
     # Normalize venue names so park factors / weather coords resolve correctly
@@ -957,8 +1012,16 @@ def fetch_live_slate(
             print(f"  [LIVE] No lineup for game {gpk} ({away} @ {home}) — SKIPPING")
 
     if not games_with_lineups:
+        # B33: this is NOT an off day — real games are on the calendar and
+        # we simply couldn't get a single lineup (lineups API down, or the
+        # run fired far too early). Publishing a "no games today" card here
+        # would be a lie, and simulating one is what B33 exists to stop.
+        # Fail loud: the previous slate stays up and GH Actions goes red.
         status.fail("Confirmed Lineups", "No lineups found for any game")
-        return None
+        raise SlateFetchError(
+            f"{len(games)} game(s) scheduled for {date_str} but no lineups "
+            f"could be fetched for any of them"
+        )
 
     status.ok("Confirmed Lineups", f"{len(games_with_lineups)}/{len(games)} games")
     games = games_with_lineups
@@ -2121,6 +2184,9 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date:
 
     if not force_offline:
         print("\n  Attempting live data fetch...")
+        # B33: SlateFetchError is deliberately NOT caught here. A production
+        # run that cannot see the slate must fail loud (main() exits non-zero,
+        # GH Actions goes red, yesterday's card stays up) - never simulate.
         live_slate = fetch_live_slate(date_str, status=status, as_of_date=as_of_date)
         if live_slate and live_slate["games"]:
             # PR 4: tag backfill rows so the A1 refit / dashboards can
@@ -2129,8 +2195,14 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date:
             tier_src = "LIVE rolling" if live_slate.get("live_tiers") else "hardcoded 2025"
             print(f"  Using LIVE data ({len(live_slate['games'])} games, tiers: {tier_src}, mode={mode})")
         else:
-            print("  Live fetch failed or no games — falling back to offline mode")
-            live_slate = None
+            # B33: zero eligible games - a legitimate off day. Return an
+            # empty card so the caller can publish an explicit no-games
+            # state. Pre-B33 this branch ran the offline simulator and
+            # invented a full 8-pick card (2026-07-13 / 07-15).
+            print(f"  No eligible MLB games for {date_str} - publishing ZERO "
+                  f"picks (no-games state). The simulator is --offline only.")
+            status.warn("Mode", "NO GAMES - zero picks published for this date")
+            return [], {}, MODE_NO_GAMES, [], status
 
     if not live_slate:
         print("  Using OFFLINE simulated slate")
@@ -2198,9 +2270,21 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date:
             scored = simulate_slate(date_str, tier, config, rng, pf, slate_ctx=slate_ctx)
 
         if not scored:
-            print(f"  WARNING: No batters scored for tier {tier} — "
-                  f"team may have off day. Falling back to offline.")
-            scored = simulate_slate(date_str, tier, config, rng, pf, slate_ctx=slate_ctx)
+            # B33 (2026-08-21): pre-B33 this re-simulated the whole tier
+            # whenever its live pool came back empty - even mid-LIVE-run.
+            # That is how 6 of the 8 picks published against the 2026-07-14
+            # All-Star Game were invented: the ASG slate had one real game,
+            # so T1/T2/T3 pools were empty and each one got simulated.
+            # A live run now leaves an empty tier empty; only --offline
+            # reaches the simulator.
+            if live_slate:
+                print(f"  WARNING: No batters scored for tier {tier} on the "
+                      f"live slate - leaving the tier empty (no simulation).")
+                scored = []
+            else:
+                print(f"  WARNING: No batters scored for tier {tier} - "
+                      f"simulating (offline mode).")
+                scored = simulate_slate(date_str, tier, config, rng, pf, slate_ctx=slate_ctx)
 
         tier_label = {1: "T1-Chalk", 2: "T2-Mid", 3: "T3-Longshot"}[tier]
         for s in scored:
@@ -2484,10 +2568,62 @@ def main():
     # combo is kept for compatibility but now just means "pick N total"
     combo = (n_picks, 0, 0)
 
-    card, tier_details, mode, full_board, status = generate_card(date_str, combo, force_offline=args.offline)
+    # B33: separate the two ways a live run can produce no card.
+    #   SlateFetchError -> we could not see the slate. Publish NOTHING and
+    #     exit 2 so the GH Actions step fails and the site keeps yesterday's
+    #     card (see export_slate_date's "stuck = loud signal" docstring).
+    #   MODE_NO_GAMES   -> MLB genuinely isn't playing. Publish an explicit
+    #     zero-pick no-games payload and exit 0; the day is not a failure.
+    try:
+        card, tier_details, mode, full_board, status = generate_card(
+            date_str, combo, force_offline=args.offline
+        )
+    except SlateFetchError as e:
+        print()
+        print("=" * 76)
+        print(f"  SLATE FETCH FAILED for {date_str}")
+        print(f"  {e}")
+        print("  No picks were generated and nothing was published.")
+        print("  This is a hard failure, NOT an off day - the pipeline must")
+        print("  not simulate a card. Re-run once the upstream API recovers.")
+        print("=" * 76)
+        return 2
 
     # Print data source status table FIRST
     print(status.format_table())
+
+    if args.output:
+        out_path = args.output
+    else:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = str(RESULTS_DIR / f"picks_{date_str}.json")
+
+    # B33: explicit no-games state. Write a zero-pick payload carrying a
+    # `no_games` flag so every downstream consumer (load_picks_to_db,
+    # export_site_data, the dashboard) can tell "MLB is off today" apart
+    # from "the pipeline broke" or "the card hasn't been generated yet".
+    # Exits 0 - an off day is a successful run with nothing to bet on.
+    if mode == MODE_NO_GAMES:
+        print()
+        print("=" * 76)
+        print(f"  NO GAMES - {date_str}")
+        print("  Zero eligible MLB games on the schedule (off day / All-Star")
+        print("  break / every game postponed). Publishing ZERO picks.")
+        print("=" * 76)
+        no_games_payload = {
+            "date": date_str,
+            "mode": MODE_NO_GAMES,
+            "no_games": True,
+            "n_picks": 0,
+            "picks": [],
+            "tier_details": {},
+            "full_board": [],
+            "generated_at": datetime.now().isoformat(),
+        }
+        with open(out_path, "w") as f:
+            json.dump(no_games_payload, f, indent=2)
+        print(f"  No-games JSON saved to {out_path}")
+        return 0
 
     output = format_card(card, date_str, combo, tier_details, mode)
     print(output)
@@ -2497,17 +2633,11 @@ def main():
     board_output = format_full_board(full_board, card_names)
     print(board_output)
 
-    # Save JSON
-    if args.output:
-        out_path = args.output
-    else:
-        results_dir = RESULTS_DIR
-        results_dir.mkdir(parents=True, exist_ok=True)
-        out_path = str(results_dir / f"picks_{date_str}.json")
-
+    # Save JSON (out_path resolved above, before the no-games short-circuit)
     pick_data = {
         "date": date_str,
         "mode": mode,
+        "no_games": False,
         "n_picks": len(card),
         "picks": [
             {
@@ -2586,7 +2716,8 @@ def main():
     with open(out_path, "w") as f:
         json.dump(pick_data, f, indent=2)
     print(f"\n  JSON saved to {out_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
