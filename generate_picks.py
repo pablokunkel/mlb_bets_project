@@ -1639,8 +1639,10 @@ def score_live_slate(
         batter_is_home = (batter_team == ht or batter_team == home_abbrev)
         if batter_is_home:
             opp_pitcher_name = game.get("away_pitcher_name", "TBD")
+            opp_pitcher_id = game.get("away_pitcher_id") or 0
         else:
             opp_pitcher_name = game.get("home_pitcher_name", "TBD")
+            opp_pitcher_id = game.get("home_pitcher_id") or 0
 
         opp = slate["pitchers"].get(opp_pitcher_name) or dict(
             LEAGUE_AVG_PITCHER, name=opp_pitcher_name or "league_avg"
@@ -1747,6 +1749,10 @@ def score_live_slate(
         result["player_id"] = player_id
         result["game_pk"] = gpk
         result["opp_pitcher"] = opp_pitcher_name
+        # P1-3 (audit 2026-08-21): carry the MLB pitcher id so the picks
+        # JSON serializers persist a real id instead of the 0 default.
+        # TBD / unposted pitcher -> id stays 0.
+        result["opp_pitcher_id"] = opp_pitcher_id
         result["tier"] = tier
         result["game_venue"] = venue
         result["home_team"] = ht
@@ -1956,6 +1962,10 @@ def score_untiered_starters(
             game.get("away_pitcher_name", "TBD") if side == "home"
             else game.get("home_pitcher_name", "TBD")
         )
+        opp_pitcher_id = (
+            game.get("away_pitcher_id") if side == "home"
+            else game.get("home_pitcher_id")
+        ) or 0
         opp = slate["pitchers"].get(opp_pitcher_name) or dict(
             LEAGUE_AVG_PITCHER, name=opp_pitcher_name or "league_avg"
         )
@@ -2029,6 +2039,8 @@ def score_untiered_starters(
         result["player_id"] = pid
         result["game_pk"] = gpk
         result["opp_pitcher"] = opp_pitcher_name
+        # P1-3 (audit 2026-08-21): same id carry as the tiered path.
+        result["opp_pitcher_id"] = opp_pitcher_id
         result["tier"] = 4
         result["game_venue"] = venue
         result["home_team"] = ht
@@ -2150,6 +2162,10 @@ def simulate_slate(date_str, tier, config_name, rng, pf, slate_ctx: dict | None 
                 result["player_id"] = entry["player_id"]
                 result["game_pk"] = gpk
                 result["opp_pitcher"] = opp_name
+                # P1-3 (audit 2026-08-21): offline sim pitchers are
+                # hardcoded (PITCHERS_2025) and carry no MLB id — 0,
+                # matching what the serializer defaulted to before.
+                result["opp_pitcher_id"] = 0
                 result["tier"] = tier
                 all_scored.append(result)
 
@@ -2697,6 +2713,11 @@ def main():
                 "park_score": p.get("park_score", 0),
                 "form_score": p.get("form_score", 0),
                 "weather_score": p.get("weather_score", 0),
+                # B29 / audit P2-8 (2026-08-21): full_board omitted
+                # lineup_score while the 8-pick list carried it, so
+                # load_picks_to_db (which loads from full_board) wrote
+                # NULL to daily_picks.lineup_score on every row.
+                "lineup_score": p.get("lineup_score", 0),
                 "batting_order": p.get("batting_order"),
                 "game_pk": p.get("game_pk"),
                 "selected": p.get("selected", False),
