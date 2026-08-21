@@ -4902,6 +4902,75 @@ def pin_fetch_pick_odds_is_fail_soft() -> Result:
     )
 
 
+def pin_score_power_implausible_input_guard() -> Result:
+    """Audit P0-2a: physically impossible synthetic power inputs are skipped.
+
+    The 2026-08-16 published pick carried season-average exit_velo 127.0 mph
+    (a season_batting_fallback transform blown up by a tiny-sample slg) and
+    scored power = 100.0. The guard must treat such a value as MISSING —
+    not clamp it to the anchor top — while leaving legitimate elite values
+    (Judge-class EV ~96-97, barrel ~20-25) completely untouched.
+    """
+    import contextlib
+    import io
+
+    from score_batters import score_power
+
+    # Case 1: garbage EV alongside plausible inputs. If 127.0 were consumed
+    # it would clamp to the top of the 85-95 anchor (sub-score 100) and pull
+    # the mean up to ~57; skipped, the score must equal the same batter
+    # scored without an exit_velo at all (~35.4).
+    garbage = {"name": "Pin Garbage", "exit_velo": 127.0,
+               "barrel_pct": 6.0, "iso": 0.150}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        with_garbage = score_power(garbage)
+        without_ev = score_power({"barrel_pct": 6.0, "iso": 0.150})
+    ceiling_if_counted = 56.0  # mean(37.5, 100, 33.3) ≈ 56.9 if 127 scored
+
+    if with_garbage != without_ev:
+        return Result(
+            "P0-2a: implausible exit_velo skipped",
+            Result.HALT,
+            f"got {with_garbage:.2f} with EV=127.0 vs {without_ev:.2f} "
+            "without it; the garbage value is still contributing",
+        )
+    if with_garbage >= ceiling_if_counted:
+        return Result(
+            "P0-2a: implausible exit_velo skipped",
+            Result.HALT,
+            f"got {with_garbage:.2f} (>= {ceiling_if_counted}); EV=127.0 "
+            "appears to be clamped-and-scored rather than dropped",
+        )
+    if "exit_velo=127.0" not in buf.getvalue():
+        return Result(
+            "P0-2a: implausible exit_velo skipped",
+            Result.HALT,
+            "guard fired silently; expected a one-line warning naming the "
+            "batter, input and value",
+        )
+
+    # Case 2: a legit elite line must be untouched by the guard. EV 96.5 and
+    # barrel 22 both sit inside the plausible bounds and above the B17 anchor
+    # highs (95 / 11), so both sub-scores clamp to 100 -> mean exactly 100.
+    with contextlib.redirect_stdout(buf):
+        elite = score_power({"name": "Pin Elite",
+                             "exit_velo": 96.5, "barrel_pct": 22.0})
+    if elite != 100.0:
+        return Result(
+            "P0-2a: legit elite line unaffected by guard",
+            Result.HALT,
+            f"score_power(EV=96.5, barrel=22) -> {elite}; expected 100.0 — "
+            "the plausibility guard is eating legitimate elite values",
+        )
+
+    return Result(
+        "P0-2a: power plausibility guard (127mph skipped, elite intact)",
+        Result.PASS,
+        f"garbage-EV row -> {with_garbage:.1f} (= no-EV row), elite -> 100.0",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -5052,6 +5121,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_hr_prop_odds_table_exists,
     pin_fetch_pick_odds_name_matching,
     pin_fetch_pick_odds_is_fail_soft,
+    # 2026-08-21: audit P0-2a — plausibility guard on synthetic power inputs
+    pin_score_power_implausible_input_guard,
 ]
 
 
