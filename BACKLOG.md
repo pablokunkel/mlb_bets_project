@@ -552,6 +552,26 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ---
 
+### B35. Empirical park factors (full build) + missing-venue geo rows
+
+**Status.** **PR #125 open — reviewed by PM 2026-08-21, awaiting user sign-off** (changes composites: Sutter batters' park_score 50.0 → 96.7). Spawned from the 2026-08-21 park check + audit P3-9.
+
+**What it does.** New `etl/compute_park_factors.py`: one-year home-vs-road HR/game park factor per venue, shrunk toward the curated seed (K=60 overall / K=100 per hand), written nightly as `park_factors` rows with `source='empirical_blend_v1'` (PK migrated to `(venue, season, source)`, transactional + idempotent). Live read path now DB blended → curated → hardcoded seed, with loud fallthrough logging. Adds Sutter Health Park / Las Vegas Ballpark / Field of Dreams to the park seed, `VENUE_COORDS`, `VENUE_TZ`, `PARK_CF_BEARING` (Sutter bearing corrected 340 → 45 NE).
+
+**Review numbers.** Sutter blends to **125.3** (raw 158.3, G=46, w=0.43). Movers >20 vs curated: Sutter +25, **Busch −21** (1.35 HR/G home vs 2.40 road — eyeball this). 45-day backtest: top-8 capture 63 → 61 of 354 (noise), park-rank AUC 0.507 → 0.538. Smoke 134 PASS. Handedness splits are degenerate until B36 lands (see below) — the module switches to real hand splits automatically once `bats` is real.
+
+### B36. `bats` is 'R' for every batter — platoon + park-handedness computed as if the whole league hits right-handed
+
+**Status.** Queued — **P0, do next after #125 merges** (lane conflict: touches `etl/etl_nightly.py`, `fetch_daily_data.py`, `generate_picks.py`). Found 2026-08-21 during the B35 review; the audit marked `bats` HEALTHY because it is 100% *populated* — with the same letter.
+
+**Evidence.** `pick_inputs.bats` = 'R' on 5,947/5,947 August rows; `season_batting.bats` = 'R' on 639/639; `daily_lineup.bats` NULL on all rows. `platoon_advantage` = 1 on 28% of rows — exactly the LHP share — i.e. the platoon signal is currently "pitcher is left-handed" regardless of the batter.
+
+**Root cause.** Every `bats` source defaults to "R" when `batSide` is absent, and it is always absent: `etl_nightly.py:490` (the `/stats` season endpoint returns no `batSide`), `fetch_daily_data.py:242` (`schedule?hydrate=lineups` person objects carry id + name only), `:746` (splits parser). B9's T4 fix copied `season_batting.bats` — which is itself all-R.
+
+**Impact.** ~40% of PAs are LHB/switch. For all of them: platoon inverted (LHB vs RHP scores 0, LHB vs LHP scores 1), v1's +10 platoon bonus misapplied, park `hr_pf_lhb/rhb` split wrong (Oracle 72 vs 90 is a 9-point park_score swing), wind alignment handedness wrong, and v2 archetype similarity's handedness term wrong. Touches matchup (0.28) + park (0.04) + weather (0.08).
+
+**Fix shape.** One batch call/day to `/people?personIds=<ids>` (chunks of ≤100) returns `batSide.code` (L/R/S) for every player; write real values into `season_batting.bats` in the nightly sync and into the lineup/roster batter dicts at build time; never default silently — log a count of unresolved ids. Backfill `season_batting.bats` for 2026 in the same PR so scoring is correct the first morning. Confirm `score_batters` handles 'S' sanely (platoon: switch hitters always have the advantage; park: use overall PF). Smoke pin: `bats` on a recent slate has ≥3 distinct values and a plausible L share (25-35%). Report the 45-day backtest delta — this one is expected to move capture, unlike B35.
+
 ## Model factor review & heatmap (2026-05-19/20 sessions)
 
 A factor-by-factor audit of the 6-factor composite, plus tooling/data carry-forwards. **Form** and **Matchup** are done — PRs **#56** (`form-factor-rebuild`) and **#57** (`matchup-vulnerability-fix`). The 2026-05-20 scoring audit (`docs/scoring_audit_2026-05-20.md`) added B8/B9/B10 — see those entries for the audit findings they wrap.
