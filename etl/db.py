@@ -1165,7 +1165,11 @@ def _migrate_park_factors_pk(conn: sqlite3.Connection) -> bool:
     pk_cols = {c[1] for c in cols if c[5]}  # c[5] = pk ordinal (0 = not in PK)
     if "source" in pk_cols:
         return False
+    # One transaction: a crash between DROP and RENAME must not leave the
+    # canonical DB with no park_factors table (executescript alone does
+    # not open one).
     conn.executescript("""
+        BEGIN;
         CREATE TABLE park_factors__b35 (
             venue           TEXT NOT NULL,
             season          INTEGER NOT NULL,
@@ -1184,6 +1188,7 @@ def _migrate_park_factors_pk(conn: sqlite3.Connection) -> bool:
         FROM park_factors;
         DROP TABLE park_factors;
         ALTER TABLE park_factors__b35 RENAME TO park_factors;
+        COMMIT;
     """)
     return True
 
