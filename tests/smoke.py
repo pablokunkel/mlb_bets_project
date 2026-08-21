@@ -4766,6 +4766,142 @@ def pin_b33_get_schedule_drops_non_regular_season() -> Result:
     )
 
 
+def pin_hr_prop_odds_table_exists() -> Result:
+    """B34: create_tables makes hr_prop_odds, keyed so snapshots don't collide.
+
+    The `snapshot` column has to be part of the primary key or B34b's
+    close-line capture would overwrite the noon row instead of sitting beside
+    it — which is the whole reason the column exists.
+    """
+    import sqlite3
+    import tempfile
+    from etl.db import create_tables
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        conn = sqlite3.connect(tmp_path)
+        create_tables(conn)
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='hr_prop_odds'"
+        ).fetchall()
+        info = conn.execute("PRAGMA table_info(hr_prop_odds)").fetchall()
+        cols = {r[1] for r in info}
+        pk = {r[1] for r in info if r[5]}
+        conn.close()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if not rows:
+        return Result(
+            "hr_prop_odds table exists", Result.HALT,
+            "create_tables did not create the table",
+        )
+    expected = {
+        "date", "batter_id", "batter_name", "game_pk", "event_id",
+        "bookmaker", "market", "side", "price_american", "point",
+        "fetched_at", "snapshot",
+    }
+    missing = expected - cols
+    if missing:
+        return Result(
+            "hr_prop_odds columns", Result.HALT,
+            f"missing columns: {sorted(missing)}",
+        )
+    for required_key in ("side", "snapshot"):
+        if required_key not in pk:
+            return Result(
+                "hr_prop_odds primary key", Result.HALT,
+                f"'{required_key}' must be in the PK (found {sorted(pk)}) — "
+                f"without it a second snapshot/side overwrites the first",
+            )
+    return Result(
+        "hr_prop_odds table created with required columns", Result.PASS,
+        f"PK={sorted(pk)}",
+    )
+
+
+def pin_fetch_pick_odds_name_matching() -> Result:
+    """B34: prop outcomes match picks across accent / suffix / initials drift."""
+    import fetch_pick_odds as fpo
+
+    cases = [
+        ("Julio Rodríguez", "julio rodriguez"),
+        ("Ronald Acuña Jr.", "ronald acuna"),
+        ("Michael Harris II", "michael harris"),
+        ("Ha-Seong Kim", "ha seong kim"),      # hyphen -> space
+        ("J.T. Realmuto", "jt realmuto"),      # period deleted, not spaced
+        ("O'Neil Cruz", "oneil cruz"),
+    ]
+    bad = [
+        (raw, fpo.normalize_name(raw), want)
+        for raw, want in cases
+        if fpo.normalize_name(raw) != want
+    ]
+    if bad:
+        return Result("fetch_pick_odds.normalize_name", Result.HALT, f"{bad}")
+
+    # A book spelling initials without periods must still find the pick.
+    picks = [{"batter_id": 1, "batter_name": "J. T. Realmuto", "team": "PHI", "game_pk": 1},
+             {"batter_id": 2, "batter_name": "Nobody Priced", "team": "PHI", "game_pk": 1}]
+    payload = {"id": "e1", "bookmakers": [
+        {"key": "fanduel", "markets": [{"key": "batter_home_runs", "outcomes": [
+            {"name": "Over", "description": "JT Realmuto", "price": 999, "point": 0.5}]}]},
+        {"key": "draftkings", "markets": [{"key": "batter_home_runs", "outcomes": [
+            {"name": "Over", "description": "JT Realmuto", "price": 420, "point": 0.5},
+            {"name": "Under", "description": "JT Realmuto", "price": -550, "point": 0.5},
+            {"name": "Over", "description": "Not Our Guy", "price": 300, "point": 0.5}]}]},
+    ]}
+    rows, missing = fpo.extract_prices(payload, picks, "draftkings")
+    if len(rows) != 2:
+        return Result("fetch_pick_odds.extract_prices", Result.HALT,
+                      f"expected 2 rows (Over+Under for one pick), got {len(rows)}")
+    if any(r["bookmaker"] != "draftkings" for r in rows):
+        return Result("fetch_pick_odds.extract_prices", Result.HALT,
+                      "non-DraftKings bookmaker leaked into the rows")
+    if [m["batter_name"] for m in missing] != ["Nobody Priced"]:
+        return Result("fetch_pick_odds.extract_prices", Result.HALT,
+                      f"unposted pick not flagged: {[m['batter_name'] for m in missing]}")
+    return Result(
+        "B34: prop name matching + DK-only + unposted pick flagged", Result.PASS,
+        "accent / suffix / initials folds; 2 rows, 1 logged as unpriced",
+    )
+
+
+def pin_fetch_pick_odds_is_fail_soft() -> Result:
+    """B34: an odds failure must never fail the daily pipeline.
+
+    main() has to swallow everything and return 0 by default. If this pin ever
+    goes red, the noon workflow can start dying on a sportsbook outage.
+    """
+    import os
+
+    import fetch_pick_odds as fpo
+
+    saved_argv, saved_key = sys.argv, os.environ.pop("VEGAS_ODDS_API_KEY", None)
+    try:
+        sys.argv = ["fetch_pick_odds.py", "--date", "1999-01-01"]
+        rc_soft = fpo.main()
+        sys.argv = ["fetch_pick_odds.py", "--date", "1999-01-01", "--strict"]
+        rc_strict = fpo.main()
+    finally:
+        sys.argv = saved_argv
+        if saved_key is not None:
+            os.environ["VEGAS_ODDS_API_KEY"] = saved_key
+
+    if rc_soft != 0:
+        return Result("fetch_pick_odds fail-soft", Result.HALT,
+                      f"main() returned {rc_soft} on a missing API key; must be 0")
+    if rc_strict != 1:
+        return Result("fetch_pick_odds --strict", Result.HALT,
+                      f"--strict returned {rc_strict} on a real failure; must be 1")
+    return Result(
+        "B34: fetch_pick_odds exits 0 on failure (--strict exits 1)", Result.PASS,
+        "missing API key is non-fatal by default",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -4912,6 +5048,10 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_b33_get_schedule_drops_non_regular_season,
     # 2026-06-02: B26 — no stray DB + canonical anchor (path-hardening guard)
     pin_no_stray_db_and_canonical_anchor,
+    # 2026-08-21: B34 — HR prop odds capture (schema + matching + fail-soft)
+    pin_hr_prop_odds_table_exists,
+    pin_fetch_pick_odds_name_matching,
+    pin_fetch_pick_odds_is_fail_soft,
 ]
 
 
