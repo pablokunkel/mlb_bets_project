@@ -168,6 +168,23 @@ jobs:
           git pull --rebase --autostash origin main
           git push origin main
 
+      # ─── Capture sportsbook HR-prop odds on the published picks ─────────
+      # B34. Deliberately placed AFTER the commit+push above: the picks are
+      # already live on dingersonly.cc by the time this runs, so an odds
+      # outage can't block or delay publishing. Before the R2 push, so the
+      # rows it writes land in the source-of-truth DB.
+      #
+      # Belt-and-suspenders on fail-soft: fetch_pick_odds.py already catches
+      # everything and exits 0 (see its main()), and continue-on-error means
+      # even an interpreter-level crash leaves the job green. A step marked
+      # continue-on-error does not trip the `if: success()` gate below.
+      #
+      # Costs ~4-8 the-odds-api credits/day (1 per event containing a pick);
+      # the events listing it does first is free. Quota remaining is logged.
+      - name: Capture HR prop odds (B34)
+        continue-on-error: true
+        run: python fetch_pick_odds.py --date "${{ steps.date.outputs.date }}"
+
       # ─── Push DB back to R2 ─────────────────────────────────────────────
       # Only push if every step above succeeded. A failed pipeline means
       # the local DB may have partial writes; uploading it would corrupt
