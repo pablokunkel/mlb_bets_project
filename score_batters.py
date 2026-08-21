@@ -492,7 +492,8 @@ LEAGUE_AVG_PITCHER = {
 # This flag adds a discrete-tier floor on power_score keyed off the
 # batter's season HR count. The floor only ELEVATES — never pulls a
 # good score down. Composite then propagates the floored power forward
-# at the standard 0.25 weight.
+# at the live power weight (0.48 as of the A1 refit; see
+# WEIGHT_REFIT_LOG.md).
 #
 # Off by default; flip to True after backtest validation. Different
 # from USE_CAREER_PRIOR (which Bayesian-shrinks per-PA rates toward
@@ -641,6 +642,42 @@ def compute_season_hr_floor(season_hr: int | None, smooth: bool | None = None) -
     return floor
 
 
+# Audit 2026-08-21 P0-2a: hard physical plausibility bounds for the synthetic
+# contact-quality inputs. `barrel_pct`, `exit_velo` and `hr_fb_pct` are
+# algebraic transforms of hr_per_pa / slg (never real Statcast on live rows),
+# and tiny-sample `season_batting_fallback` batters can blow the formulas up —
+# a published pick carried a season-average exit_velo of 127.0 mph and scored
+# power = 100.0. A value outside these bounds carries ZERO information, so it
+# is treated as MISSING (the standard skip-on-missing path), NOT clamped: a
+# clamp would still hand a garbage row the top of the anchor range.
+#
+# Bounds are deliberately wide so no legitimate season-average value is ever
+# touched (Aaron Judge's real avg EV is ~96-97; best real barrel% ~20-25;
+# best real HR/FB% ~30). Single choke point here in the scorer per the
+# audit's fix shape (i) — not at the ETL write.
+POWER_INPUT_PLAUSIBLE_BOUNDS: dict[str, tuple[float, float]] = {
+    "exit_velo": (75.0, 99.0),
+    "barrel_pct": (0.0, 28.0),
+    "hr_fb_pct": (0.0, 35.0),
+}
+
+
+def _power_input_plausible(batter: dict, key: str, value: float) -> bool:
+    """True if *value* is inside the hard physical bounds for *key*.
+
+    Prints a one-line warning and returns False for an impossible value so
+    score_power can skip it exactly like a missing input.
+    """
+    lo, hi = POWER_INPUT_PLAUSIBLE_BOUNDS[key]
+    if lo <= value <= hi:
+        return True
+    print(
+        f"    [power-guard] {batter.get('name', 'unknown')}: "
+        f"{key}={value} outside plausible [{lo}, {hi}] -> treated as missing"
+    )
+    return False
+
+
 def score_power(batter: dict) -> float:
     """
     Factor 1: Power Profile (barrel%, exit velo, HR/FB, ISO as xHR proxy).
@@ -652,6 +689,11 @@ def score_power(batter: dict) -> float:
     happened to land at zero (or who was renormalized down to zero in
     fetch_daily_data._splits_to_batters) had their power score dragged
     to ~13 even with elite real Statcast inputs (Buxton 5/1, refit notes).
+
+    2026-08-21 (audit P0-2a): barrel_pct / exit_velo / hr_fb_pct additionally
+    pass a plausibility guard (POWER_INPUT_PLAUSIBLE_BOUNDS) — a physically
+    impossible synthetic value (e.g. season-avg EV 127.0 mph from a 3-AB
+    fallback row) is skipped like a missing input, with a printed warning.
 
     2026-05-03 anchor re-tune: original min_max ranges were generous on
     the upside (barrel 0-25, EV 80-100, HR/FB 0-30) so even MLB-leading
@@ -678,19 +720,31 @@ def score_power(batter: dict) -> float:
     """
     scores = []
 
+    # P0-2a: the three synthetic inputs pass through the plausibility guard
+    # (POWER_INPUT_PLAUSIBLE_BOUNDS above) — an impossible value is skipped
+    # like a missing one, never clamped to the anchor boundary.
     barrel = batter.get("barrel_pct")
-    if barrel is not None and barrel > 0:
+    if (
+        barrel is not None
+        and barrel > 0
+        and _power_input_plausible(batter, "barrel_pct", barrel)
+    ):
         scores.append(min_max_scale(barrel, 3, 11))
 
     ev = batter.get("exit_velo")
-    if ev is not None and ev > 0:
+    if (
+        ev is not None
+        and ev > 0
+        and _power_input_plausible(batter, "exit_velo", ev)
+    ):
         scores.append(min_max_scale(ev, 85, 95))
 
     hr_fb = batter.get("hr_fb_pct")
     if hr_fb is not None and hr_fb > 0:
         if hr_fb < 1:
             hr_fb *= 100
-        scores.append(min_max_scale(hr_fb, 3, 10))
+        if _power_input_plausible(batter, "hr_fb_pct", hr_fb):
+            scores.append(min_max_scale(hr_fb, 3, 10))
 
     iso = batter.get("iso")
     if iso is not None and iso > 0:
