@@ -4902,6 +4902,69 @@ def pin_fetch_pick_odds_is_fail_soft() -> Result:
     )
 
 
+def pin_full_board_serializer_carries_persisted_keys() -> Result:
+    """P1-3 + B29 (audit 2026-08-21): the picks-JSON `full_board` serializer
+    must emit `opp_pitcher_id` and `lineup_score`. load_picks_to_db loads
+    daily_picks from full_board (not from the 8-pick list), so a key dropped
+    there silently zeroes/NULLs the column on EVERY daily_picks row — the
+    B29 root cause: lineup_score was NULL on all 35k rows because only the
+    8-pick `picks` list carried it.
+
+    Runs the real CLI in --offline mode (no network, no DB writes) against a
+    temp output path and asserts every full_board row carries both keys with
+    a non-null lineup_score. Offline sim pitchers are hardcoded with no MLB
+    id, so opp_pitcher_id is 0 here — key presence is what's pinned; the
+    non-zero id path is live-only (fed by home/away_pitcher_id on the game).
+    """
+    import json
+    import subprocess
+    import tempfile
+    proj = Path(__file__).resolve().parent.parent
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "generate_picks.py", "--offline",
+             "--date", "2025-06-01", "--output", str(tmp_path)],
+            capture_output=True, text=True, timeout=120, cwd=str(proj),
+        )
+        if proc.returncode != 0:
+            return Result(
+                "full_board serializer keys (offline run)", Result.HALT,
+                f"exit {proc.returncode}: {proc.stderr[-300:]}",
+            )
+        # read_text() default encoding matches the json.dump(open(path, "w"))
+        # writer in generate_picks.main() — both use the locale encoding.
+        data = json.loads(tmp_path.read_text())
+    except Exception as e:
+        return Result(
+            "full_board serializer keys (offline run)", Result.HALT,
+            f"failed: {type(e).__name__}: {e}",
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    board = data.get("full_board", [])
+    if not board:
+        return Result(
+            "full_board serializer keys", Result.HALT,
+            "offline run produced an empty full_board — cannot pin keys",
+        )
+    missing_id = sum(1 for r in board if "opp_pitcher_id" not in r)
+    null_ls = sum(1 for r in board if r.get("lineup_score") is None)
+    if missing_id or null_ls:
+        return Result(
+            "full_board serializer keys", Result.HALT,
+            f"{missing_id}/{len(board)} rows missing opp_pitcher_id key; "
+            f"{null_ls}/{len(board)} rows with null lineup_score",
+        )
+    return Result(
+        "P1-3+B29: full_board carries opp_pitcher_id + lineup_score",
+        Result.PASS,
+        f"{len(board)} board rows, all with both keys (offline run)",
+    )
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
     pin_score_power_empty,
     pin_score_power_all_zero,
@@ -5052,6 +5115,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_hr_prop_odds_table_exists,
     pin_fetch_pick_odds_name_matching,
     pin_fetch_pick_odds_is_fail_soft,
+    # 2026-08-21: audit P1-3 + B29 — full_board must carry the columns
+    # load_picks_to_db persists into daily_picks
+    pin_full_board_serializer_carries_persisted_keys,
 ]
 
 
