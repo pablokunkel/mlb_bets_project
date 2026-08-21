@@ -36,6 +36,10 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from etl.db import DB_PATH, RESULTS_DIR  # single anchor (B26)
+from etl.compute_park_factors import (  # B35: DB-backed park factor read path
+    load_park_factors_for_scoring,
+    report_slate_park_coverage,
+)
 
 from score_batters import (
     WEIGHT_CONFIGS,
@@ -50,7 +54,6 @@ from score_batters import (
 from fetch_daily_data import (
     DOME_STADIUMS,
     VENUE_COORDS,
-    get_hardcoded_park_factors,
     get_schedule,
     get_weather,
     get_roster,
@@ -988,14 +991,14 @@ def fetch_live_slate(
         status.warn("Weather (Open-Meteo)", f"{weather_ok} OK, {weather_fail} defaulted")
 
     # ── Park factor matching ──────────────────────────────────────────
-    pf_df = get_hardcoded_park_factors()
-    pf_venues = set(pf_df["venue"].tolist())
+    # B35 (2026-08-21): resolve through the DB-backed read path
+    # (empirical_blend_v1 -> curated -> hardcoded seed) and log LOUDLY any
+    # slate venue that fell through to a default. The hardcoded table
+    # used to be the only source, and a venue missing from it (Sutter
+    # Health Park, all season) silently scored park = 50.0.
+    pf_df = load_park_factors_for_scoring()
     game_venues = {g["venue"] for g in games}
-    unmatched = game_venues - pf_venues
-    if not unmatched:
-        status.ok("Park Factor Match", f"{len(game_venues)} venues matched")
-    else:
-        status.warn("Park Factor Match", f"{len(unmatched)} unmatched: {', '.join(sorted(unmatched))}")
+    report_slate_park_coverage(pf_df, game_venues, status=status)
 
     # ── Lineups ───────────────────────────────────────────────────────
     lineups = {}
@@ -2190,7 +2193,10 @@ def generate_card(date_str, combo=(3, 2, 3), force_offline=False, *, as_of_date:
     distinguish backfill rows from production rows. Production callers
     pass None (= today, no filter, mode='live').
     """
-    pf = get_hardcoded_park_factors()
+    # B35: DB-backed park factors (blended -> curated -> hardcoded seed).
+    # Never raises; falls back to the seed table with a printed warning if
+    # the DB is unreachable, so the pipeline still runs with park_factors empty.
+    pf = load_park_factors_for_scoring()
     mode = "offline_simulation"
     live_slate = None
     status = DataSourceStatus()

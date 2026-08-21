@@ -721,10 +721,10 @@ def create_tables(conn: sqlite3.Connection):
         hr_pf_overall   REAL NOT NULL,      -- Overall HR factor (100 = neutral)
         hr_pf_lhb       REAL NOT NULL,      -- HR factor for left-handed batters
         hr_pf_rhb       REAL NOT NULL,      -- HR factor for right-handed batters
-        source          TEXT,               -- 'seed', 'savant', 'fangraphs'
+        source          TEXT NOT NULL DEFAULT 'seed',  -- 'seed' (curated prior), 'empirical_blend_v1' (B35)
         notes           TEXT,
         fetched_at      TEXT DEFAULT (datetime('now')),
-        PRIMARY KEY (venue, season)
+        PRIMARY KEY (venue, season, source)
     );
 
     -- ================================================================
@@ -1149,7 +1149,43 @@ def create_tables(conn: sqlite3.Connection):
             except Exception:
                 pass
 
+    # B35 (2026-08-21): park_factors PK (venue, season) -> (venue, season,
+    # source) so the curated seed rows (the prior) and the nightly
+    # empirical_blend_v1 rows coexist for the same season. SQLite cannot
+    # alter a PK in place, so rebuild once; idempotent on already-migrated DBs.
+    _migrate_park_factors_pk(conn)
+
     conn.commit()
+
+
+def _migrate_park_factors_pk(conn: sqlite3.Connection) -> bool:
+    """Rebuild park_factors with PK (venue, season, source). Returns True if
+    a rebuild happened."""
+    cols = conn.execute("PRAGMA table_info(park_factors)").fetchall()
+    pk_cols = {c[1] for c in cols if c[5]}  # c[5] = pk ordinal (0 = not in PK)
+    if "source" in pk_cols:
+        return False
+    conn.executescript("""
+        CREATE TABLE park_factors__b35 (
+            venue           TEXT NOT NULL,
+            season          INTEGER NOT NULL,
+            hr_pf_overall   REAL NOT NULL,
+            hr_pf_lhb       REAL NOT NULL,
+            hr_pf_rhb       REAL NOT NULL,
+            source          TEXT NOT NULL DEFAULT 'seed',
+            notes           TEXT,
+            fetched_at      TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (venue, season, source)
+        );
+        INSERT OR REPLACE INTO park_factors__b35
+            (venue, season, hr_pf_overall, hr_pf_lhb, hr_pf_rhb, source, notes, fetched_at)
+        SELECT venue, season, hr_pf_overall, hr_pf_lhb, hr_pf_rhb,
+               COALESCE(source, 'seed'), notes, fetched_at
+        FROM park_factors;
+        DROP TABLE park_factors;
+        ALTER TABLE park_factors__b35 RENAME TO park_factors;
+    """)
+    return True
 
 
 # ---------------------------------------------------------------------------
