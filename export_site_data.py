@@ -63,6 +63,38 @@ def atomic_write_json(path: Path, data, indent: int = 2) -> None:
         raise
 
 
+# B33 (2026-08-21): no-games detection.
+#
+# On an off day there are ZERO daily_picks rows, so every DB-driven
+# "latest slate" query (MAX(date) WHERE selected = 1) silently resolves to
+# YESTERDAY and the site keeps showing a stale card as if it were today's.
+# generate_picks writes results/picks_<DATE>.json with {"no_games": true}
+# on such a day; that file is the signal, because it is the only artifact
+# that distinguishes "MLB is off" from "the pipeline never ran".
+#
+# Deliberately NOT inferred from an empty daily_picks table: a failed run
+# also leaves daily_picks empty, and those two states must render
+# differently (empty state vs. stale-card-plus-red-CI).
+
+def _no_games_date(today: str | None = None) -> str | None:
+    """Return the date string when today is an explicit no-games day.
+
+    Reads results/picks_<today>.json (written by generate_picks). Returns
+    None when the file is absent, unreadable, or does not carry
+    no_games=true — i.e. anything other than a confirmed off day.
+    """
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    path = RESULTS_DIR / f"picks_{today}.json"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if data.get("no_games") and not data.get("picks"):
+        return data.get("date") or today
+    return None
+
+
 def export_slate_date(conn, out_dir: Path) -> str:
     """
     Write `slate_date.json` — the canonical "today's slate" date in ET.
@@ -98,6 +130,21 @@ def export_slate_date(conn, out_dir: Path) -> str:
 
     Returns the slate date string for callers that want it.
     """
+    # B33: an explicit no-games day wins over MAX(date). Without this the
+    # query below resolves to yesterday and the worker/dashboard keep
+    # presenting the previous slate as today's.
+    no_games_date = _no_games_date()
+    if no_games_date:
+        payload = {
+            "date":       no_games_date,
+            "no_games":   True,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source":     "export_site_data.py",
+        }
+        atomic_write_json(out_dir / "slate_date.json", payload)
+        print(f"  Exported slate_date.json (date={no_games_date}, no_games=true)")
+        return no_games_date
+
     row = conn.execute(
         "SELECT MAX(date) FROM daily_picks WHERE selected = 1"
     ).fetchone()
@@ -105,6 +152,7 @@ def export_slate_date(conn, out_dir: Path) -> str:
 
     payload = {
         "date":       slate_date,
+        "no_games":   False,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source":     "export_site_data.py",
     }
@@ -131,6 +179,23 @@ def export_latest_picks(conn, out_dir: Path):
         with weather/Vegas/"X in top 25" counts, used by the Big Board
         sidebar.
     """
+
+    # B33: explicit no-games day - emit an empty card with the flag set
+    # instead of re-exporting yesterday's picks under today's banner.
+    no_games_date = _no_games_date()
+    if no_games_date:
+        atomic_write_json(out_dir / "picks_latest.json", {
+            "date":        no_games_date,
+            "no_games":    True,
+            "mode":        "no_games",
+            "n_picks":     0,
+            "picks":       [],
+            "full_board":  [],
+            "slate_games": [],
+            "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        print(f"  Exported picks_latest.json (no_games={no_games_date}, 0 picks)")
+        return
 
     # Find the latest date with picks
     row = conn.execute(

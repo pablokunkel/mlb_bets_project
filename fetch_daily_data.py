@@ -137,8 +137,43 @@ def ensure_data_dir():
 # MLB Stats API helpers
 # ---------------------------------------------------------------------------
 
+# B33 (2026-08-21): gameType allowlist. The MLB Stats API's /schedule
+# endpoint returns EVERY sportId=1 event on a date, not just games that
+# count. On 2026-07-14 that meant the All-Star Game (gameType "A") came
+# back looking like an ordinary matchup, so the pipeline scored the AL/NL
+# All-Star rosters, published 2 exhibition picks, and etl_outcomes wrote
+# 41 ASG outcome rows against them.
+#
+# Keep only games that belong to the competitive season:
+#   R  Regular season
+#   F  Wild Card
+#   D  Division Series
+#   L  League Championship Series
+#   W  World Series
+# Everything else is dropped at the source, which is what keeps the ASG
+# out of BOTH the scoring path and the outcomes path:
+#   A  All-Star Game        S  Spring Training
+#   E  Exhibition           P  Playoffs (legacy/aggregate bucket)
+#   I  Intrasquad           C  Championship (non-MLB)
+SCORABLE_GAME_TYPES = frozenset({"R", "F", "D", "L", "W"})
+
+
+def is_scorable_game_type(game_type: str | None) -> bool:
+    """True when *game_type* is a real, standings-counting MLB game.
+
+    A missing/None gameType is treated as NOT scorable: the field is
+    always present on live API payloads, so its absence means we're
+    looking at something we don't understand and shouldn't bet on.
+    """
+    return game_type in SCORABLE_GAME_TYPES
+
+
 def get_schedule(date_str: str) -> list[dict]:
-    """Fetch MLB games for a given date from the Stats API."""
+    """Fetch MLB games for a given date from the Stats API.
+
+    Non-competitive events (All-Star, spring training, exhibitions) are
+    filtered out via SCORABLE_GAME_TYPES — see the note above.
+    """
     url = f"{MLB_STATS_API}/schedule"
     params = {
         "sportId": 1,
@@ -149,12 +184,18 @@ def get_schedule(date_str: str) -> list[dict]:
     resp.raise_for_status()
     data = resp.json()
     games = []
+    n_skipped_type = 0
     for date_entry in data.get("dates", []):
         for g in date_entry.get("games", []):
+            game_type = g.get("gameType")
+            if not is_scorable_game_type(game_type):
+                n_skipped_type += 1
+                continue
             game = {
                 "game_pk": g["gamePk"],
                 "date": date_str,
                 "status": g["status"]["detailedState"],
+                "game_type": game_type,
                 "home_team": g["teams"]["home"]["team"]["name"],
                 "away_team": g["teams"]["away"]["team"]["name"],
                 "home_team_id": g["teams"]["home"]["team"]["id"],
@@ -171,6 +212,9 @@ def get_schedule(date_str: str) -> list[dict]:
             game["away_pitcher_id"] = ap.get("id")
             game["away_pitcher_name"] = ap.get("fullName", "TBD")
             games.append(game)
+    if n_skipped_type:
+        print(f"  [schedule] {date_str}: skipped {n_skipped_type} non-regular-season "
+              f"event(s) (All-Star / spring / exhibition)")
     return games
 
 

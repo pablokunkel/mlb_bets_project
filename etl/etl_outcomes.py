@@ -35,6 +35,10 @@ from etl.db import (
     get_db, create_tables, RESULTS_DIR,
     log_etl_start, log_etl_complete, log_etl_fail,
 )
+# B33: single source of truth for "is this a real, standings-counting game".
+# Imported from fetch_daily_data so this module and get_schedule() can never
+# drift apart on which gameTypes count.
+from fetch_daily_data import is_scorable_game_type
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
@@ -54,17 +58,28 @@ def fetch_outcomes_for_date(conn, date_str: str) -> int:
     ).fetchall()
 
     if not games:
-        # Try fetching schedule directly if no slate exists
+        # Try fetching schedule directly if no slate exists.
+        # B33 (2026-08-21): this direct-fetch path is how the 41 All-Star
+        # Game outcome rows landed on 2026-07-14 — daily_slate was empty,
+        # so we fell through here and took every sportId=1 event the API
+        # returned, exhibition included. Same allowlist as get_schedule().
         url = f"{MLB_API}/schedule"
         params = {"sportId": 1, "date": date_str}
         try:
             resp = requests.get(url, params=params, timeout=15)
             resp.raise_for_status()
             game_pks = []
+            n_skipped_type = 0
             for d in resp.json().get("dates", []):
                 for g in d.get("games", []):
+                    if not is_scorable_game_type(g.get("gameType")):
+                        n_skipped_type += 1
+                        continue
                     if g["status"]["detailedState"] in ("Final", "Game Over"):
                         game_pks.append(g["gamePk"])
+            if n_skipped_type:
+                print(f"    Skipped {n_skipped_type} non-regular-season event(s) "
+                      f"on {date_str} (All-Star / spring / exhibition)")
             games = [{"game_pk": gpk} for gpk in game_pks]
         except Exception as e:
             print(f"    ERROR fetching schedule: {e}")
@@ -185,10 +200,19 @@ def fetch_hr_events_for_date(conn, date_str: str) -> int:
             resp = requests.get(url, params=params, timeout=15)
             resp.raise_for_status()
             game_pks = []
+            n_skipped_type = 0
             for d in resp.json().get("dates", []):
                 for g in d.get("games", []):
+                    # B33: keep exhibitions out of hr_events too, or the
+                    # HR Recap / leaderboard surfaces pick up All-Star HRs.
+                    if not is_scorable_game_type(g.get("gameType")):
+                        n_skipped_type += 1
+                        continue
                     if g["status"]["detailedState"] in ("Final", "Game Over"):
                         game_pks.append(g["gamePk"])
+            if n_skipped_type:
+                print(f"    Skipped {n_skipped_type} non-regular-season event(s) "
+                      f"on {date_str} for hr_events")
             games = [{"game_pk": gpk} for gpk in game_pks]
         except Exception as e:
             print(f"    ERROR fetching schedule for hr_events: {e}")

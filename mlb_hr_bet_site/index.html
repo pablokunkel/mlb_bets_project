@@ -2005,6 +2005,38 @@
     .loading { text-align: center; padding: 60px 20px; color: var(--text-muted); }
     .empty { text-align: center; padding: 40px; color: var(--text-muted); font-size: 14px; }
 
+    /* B33: "No games today" state for the Today's Picks card. Reuses the
+       scoreboard panel treatment so an off day still looks like a board
+       that is deliberately dark, not like a card that failed to load. */
+    .no-games {
+      background: linear-gradient(180deg, #2a4a26 0%, #1d3519 100%);
+      border: 1px solid #1a2f17;
+      border-radius: 6px;
+      box-shadow: 0 0 0 2px #2a4a26, 0 0 0 3px #c8a868, 0 0 0 4px #8c7637;
+      padding: 44px 20px;
+      text-align: center;
+      color: #efe6cf;
+    }
+    .no-games .no-games-title {
+      font-family: 'VT323', monospace;
+      font-size: 34px;
+      letter-spacing: 2px;
+      color: #f2d98a;
+      line-height: 1.1;
+    }
+    .no-games .no-games-sub {
+      margin-top: 8px;
+      font-size: 13px;
+      color: rgba(239, 230, 207, 0.72);
+    }
+    .no-games .no-games-date {
+      margin-top: 14px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: rgba(239, 230, 207, 0.50);
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
       /* Container — tighter padding so we use every pixel of the viewport */
@@ -3085,6 +3117,21 @@
 
       const picks = data.picks || [];
       const board = data.full_board || [];
+
+      // B33: explicit no-games day. The export sets no_games=true when MLB
+      // has zero eligible games (All-Star break, off day, full postponement).
+      // Render an honest empty state rather than a stale or blank card —
+      // before B33 the pipeline invented a full 8-pick card on these days.
+      if (data.no_games) {
+        document.getElementById('todayStats').innerHTML = '';
+        document.getElementById('todayTable').innerHTML = `
+          <div class="no-games">
+            <div class="no-games-title">NO GAMES TODAY</div>
+            <div class="no-games-sub">MLB isn't playing — no card today. Back when the slate is.</div>
+            <div class="no-games-date">${formatLongDate(data.date)}</div>
+          </div>`;
+        return;
+      }
 
       document.getElementById('todayStats').innerHTML = `
         <div class="stat-card"><div class="label">Board Size</div><div class="value">${board.length}</div></div>
