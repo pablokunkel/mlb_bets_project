@@ -786,6 +786,47 @@ def create_tables(conn: sqlite3.Connection):
         ON historical_calibration(season);
 
     -- ================================================================
+    -- Sportsbook HR-prop odds on published picks (B34, 2026-08-21).
+    --
+    -- One row per (date, batter, book, market, side, snapshot). Written by
+    -- fetch_pick_odds.py right after the picks are published; nothing reads
+    -- it yet. Purpose is to bank the price we could actually have taken, so
+    -- break-even can be computed from real numbers instead of the assumed
+    -- flat +300, and so picks can be scored against the de-vigged market.
+    --
+    -- BOTH sides are stored: the two-way (Over + Under) price is what makes
+    -- de-vigging possible. Over-only would leave the vig unrecoverable.
+    --
+    -- `snapshot` is in the primary key so B34b can add a close-line capture
+    -- ('close') without a migration and without overwriting the noon row.
+    -- `market` is in the key for the same reason (a future 2+ HR market
+    -- would otherwise collide with batter_home_runs).
+    --
+    -- price_american is the American price as posted (e.g. 310, -145).
+    -- point is the market line (0.5 for the standard HR prop).
+    -- fetched_at is UTC ISO8601 — the moment we saw the price, which is the
+    -- whole point of the table.
+    -- ================================================================
+    CREATE TABLE IF NOT EXISTS hr_prop_odds (
+        date            TEXT NOT NULL,
+        batter_id       INTEGER NOT NULL,
+        batter_name     TEXT,
+        game_pk         INTEGER,
+        event_id        TEXT,               -- the-odds-api event id
+        bookmaker       TEXT NOT NULL,      -- 'draftkings'
+        market          TEXT NOT NULL,      -- 'batter_home_runs'
+        side            TEXT NOT NULL,      -- 'Over' / 'Under'
+        price_american  INTEGER,
+        point           REAL,
+        fetched_at      TEXT,               -- UTC ISO8601
+        snapshot        TEXT NOT NULL,      -- 'noon' (B34b adds 'close')
+        PRIMARY KEY (date, batter_id, bookmaker, market, side, snapshot)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_hr_prop_odds_date
+        ON hr_prop_odds(date);
+
+    -- ================================================================
     -- ETL run log (tracks freshness)
     -- ================================================================
     CREATE TABLE IF NOT EXISTS etl_log (
