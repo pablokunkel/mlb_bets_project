@@ -478,7 +478,7 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ### B29. `daily_picks.lineup_score` persisted NULL on live rows (since ~2026-04-29)
 
-**Status.** Queued — LOW. Pre-existing, no scoring impact (moot under candidate A's lineup weight = 0). Data-hygiene / observability.
+**Status.** ~~Queued — LOW~~ **SHIPPED 2026-08-21 (PR #123).** Root cause per the audit (P2-8): the `full_board` serializer omitted `lineup_score` while the 8-pick list carried it, and `load_picks_to_db` loads from `full_board`. Fixed alongside audit P1-3 (`opp_pitcher_id` now plumbed from the slate through all three result-dict sites). No backfill of historical NULLs — populated from 2026-08-22 forward.
 
 **Why it matters.** `daily_picks.lineup_score` is NULL for every live row since ~2026-04-29 (non-NULL only through 2026-04-28 + the 2025 backfill) — the factor is computed at scoring time but not persisted on the INSERT path, so the dashboard's factor decomposition / any `daily_picks.lineup_score` consumer reads NULL. Surfaced during A1's spot-check.
 
@@ -1086,6 +1086,13 @@ Open questions before this is worth scoping: which markets are actually offered 
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-08-21 (overnight) — audit quick wins ×3
+
+- **PR #121 — audit P0-2a** plausibility guard on the synthetic power inputs: `score_power` treats physically impossible values (EV outside [75,99], barrel outside [0,28], HR/FB outside [0,35]) as MISSING — skipped, never clamped — with a `[power-guard]` warning. Bit-identical scores verified for all plausible inputs (10,584-combo grid, 0 mismatches); the audit's 127-mph row drops 56.9 → 35.4. Follow-up filed below: extend bounds to `iso`/`xwoba_contact` with the min-AB filter (the same garbage row carried an impossible ISO 2.25, which still scores).
+- **PR #123 — audit P1-3 + B29** persistence fixes: real `opp_pitcher_id` on every result dict (TBD/offline → 0) and `lineup_score` added to the `full_board` serializer. Verified live end-to-end on a DB copy: 345 board rows, 309 non-zero pitcher ids (all 36 zeros = TBD games), 0 NULL lineup_scores. Discovered in passing (pre-existing, now pinned around): `generate_picks.py`'s status table prints U+2500 box-drawing chars, so ANY piped run on a cp1252 Windows console crashes at `format_table` — GH Actions (UTF-8) and interactive consoles never hit it; the new smoke pin forces `PYTHONIOENCODING=utf-8` in its subprocess. Small follow-up: make `format_table` encoding-safe.
+- **PR #122 — audit P2-7** `How_The_HR_Model_Works.md` refreshed to the live model (all 7 discrepancies, verified against code; "Last verified 2026-08-21" stamped). Note: the doc still presents the 36-40% band as the target — the "re-anchor the goal" queue item remains open and is now the only place the phantom 40% survives.
+- Deliberately NOT shipped overnight: audit P2-6 (dome contamination of `weather_pct`) — it changes composites and needs a backtest first, per the audit itself.
 
 ### 2026-08-21 — B33 + B34 shipped, full model audit landed
 
