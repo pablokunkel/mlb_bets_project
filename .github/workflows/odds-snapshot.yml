@@ -1,0 +1,157 @@
+# =============================================================================
+# odds-snapshot.yml — Afternoon HR-prop odds snapshot (B34b).
+#
+# Why this exists: daily-picks.yml runs fetch_pick_odds.py at 13:07 UTC
+# (9:07 AM ET), which is HOURS before DraftKings posts batter_home_runs
+# props. First live run (2026-08-21): all 15 events matched, 0 priced —
+# the markets simply weren't up yet. Props post in the early afternoon,
+# so this workflow re-snapshots the same picks later in the day under a
+# different `snapshot` label. `hr_prop_odds` keys on
+# (date, batter_id, bookmaker, market, side, snapshot), so the noon and
+# afternoon rows coexist and a re-run of the same label is idempotent.
+#
+# Schedule (UTC cron; ET = EDT = UTC-4 during MLB season):
+#   - 19:30 UTC = 3:30 PM ET  -> snapshot label `afternoon`
+#     After DK typically posts HR props, before most first pitches
+#     (evening games ~6:40-7:10 PM ET). Day games that already started
+#     are simply unpriced in this snapshot — acceptable.
+#   - 22:45 UTC = 6:45 PM ET  -> snapshot label `evening`   (NOT ENABLED)
+#     Quota math says no, for now. the-odds-api free tier = 500
+#     credits/month. Each snapshot costs ~4-8 credits (1 per event that
+#     contains a pick; the events listing is free). Existing spend is
+#     ~60/month (features_v2 implied totals ~2/day; the 9:07 ET B34 step
+#     costs 0 when markets are empty). afternoon alone adds 124-248/month
+#     -> ~184-308 total. afternoon + evening would add 248-496/month
+#     -> ~308-556 total, which plausibly blows the 500 cap. Re-enable the
+#     evening cron below (and its label mapping) only after a month of
+#     observed afternoon spend leaves room. The label mapping already
+#     handles it.
+#   Neither time collides with the other DB workflows (9:07 AM ET picks,
+#   1 AM ET outcomes, 2 AM ET nightly). Off-round minutes are not
+#   critical here: ~1-2h of cron drift still lands before first pitch.
+#
+# Concurrency: pinned to the shared `hr-bets-db` group, same as every
+# other workflow that pulls/pushes hr_bets.db. That guarantees two
+# snapshot runs can never overlap each other AND that a snapshot never
+# interleaves with another job's pull->write->push cycle.
+#
+# Safety: the fetch is fail-soft (continue-on-error + the script's own
+# catch-all exit 0). The R2 push is gated on `if: success()`, and the R2
+# pull lives inside the setup action without continue-on-error, so a
+# failed pull fails the job and the push never runs. We never push a DB
+# we didn't pull.
+# =============================================================================
+
+name: HR-prop odds snapshot (afternoon)
+
+on:
+  # Manual trigger — snapshot label defaults to `manual` so a hand-run
+  # never overwrites a scheduled snapshot's rows.
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Date to price picks for (YYYY-MM-DD, blank = today UTC)
+        required: false
+        default: ""
+      snapshot:
+        description: Snapshot label (blank = manual)
+        required: false
+        default: ""
+
+  schedule:
+    # 19:30 UTC = 3:30 PM ET (EDT). Label: afternoon.
+    - cron: "30 19 * * *"
+    # 22:45 UTC = 6:45 PM ET (EDT). Label: evening. DISABLED — see quota
+    # math in the header. Uncomment to enable; the label step already maps it.
+    # - cron: "45 22 * * *"
+
+concurrency:
+  group: hr-bets-db
+  cancel-in-progress: false
+
+permissions:
+  contents: read   # no git push here; only R2 is written
+
+jobs:
+  odds-snapshot:
+    runs-on: ubuntu-latest
+    if: github.repository == 'pablokunkel/mlb_bets_project'
+
+    # Deps install + R2 pull + one small API call + R2 push. Well under this.
+    timeout-minutes: 20
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+      VEGAS_ODDS_API_KEY: ${{ secrets.VEGAS_ODDS_API_KEY }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # ─── Set up Python, deps, and pull DB from R2 ───────────────────────
+      # Identical to daily-picks.yml. The pull runs here WITHOUT
+      # continue-on-error: if it fails, the job fails and the push below
+      # is skipped by its `if: success()` gate.
+      - name: Set up env + pull DB
+        uses: ./.github/actions/setup-mlb-env
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+
+      # ─── Resolve the target date (input override OR today UTC) ──────────
+      # Copied from daily-picks.yml. Both crons fire before 00:00 UTC, so
+      # "today UTC" is still the same calendar day in ET.
+      - name: Resolve date
+        id: date
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.date }}" ]]; then
+            d="${{ inputs.date }}"
+          else
+            d=$(date -u +%Y-%m-%d)
+          fi
+          echo "date=$d" >> "$GITHUB_OUTPUT"
+          echo "Resolved date: $d"
+
+      # ─── Resolve the snapshot label from the cron that fired ────────────
+      # github.event.schedule is the literal cron string on scheduled runs
+      # and empty on workflow_dispatch.
+      - name: Resolve snapshot label
+        id: snap
+        shell: bash
+        run: |
+          case "${{ github.event.schedule }}" in
+            "30 19 * * *") label="afternoon" ;;
+            "45 22 * * *") label="evening" ;;
+            "")            label="${{ inputs.snapshot }}"; label="${label:-manual}" ;;
+            *)             label="manual" ;;
+          esac
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "Resolved snapshot label: $label (schedule='${{ github.event.schedule }}')"
+
+      # ─── Capture HR prop odds ───────────────────────────────────────────
+      # Fail-soft exactly like the B34 step in daily-picks.yml. A step
+      # marked continue-on-error does not trip the `if: success()` gate.
+      - name: Capture HR prop odds (B34b)
+        continue-on-error: true
+        run: >-
+          python fetch_pick_odds.py
+          --date "${{ steps.date.outputs.date }}"
+          --snapshot "${{ steps.snap.outputs.label }}"
+
+      # ─── Push DB back to R2 ─────────────────────────────────────────────
+      # Only if everything above (notably the pull) succeeded.
+      - name: Push hr_bets.db back to R2
+        if: success()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python infra/r2_sync.py push
