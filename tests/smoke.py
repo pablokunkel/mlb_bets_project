@@ -5042,7 +5042,143 @@ def pin_score_power_implausible_input_guard() -> Result:
     )
 
 
+# ---------------------------------------------------------------------------
+# B35 (2026-08-21): empirical park factors — blend math, read-path
+# resolution order, and the park_factors PK migration.
+# ---------------------------------------------------------------------------
+
+def pin_park_factor_blend_math() -> Result:
+    """blend() / shrink_weight() from etl.compute_park_factors: w = G/(G+K),
+    prior pass-through when no empirical estimate, Sutter worked example."""
+    from etl.compute_park_factors import blend, shrink_weight, K_OVERALL, K_HAND
+    failures = []
+    if K_OVERALL != 60 or K_HAND != 100:
+        failures.append(f"K constants drifted: K_OVERALL={K_OVERALL} K_HAND={K_HAND} (brief: 60 / 100)")
+    if shrink_weight(0, 60) != 0.0:
+        failures.append("shrink_weight(0, 60) != 0")
+    if abs(shrink_weight(60, 60) - 0.5) > 1e-9:
+        failures.append("shrink_weight(60, 60) != 0.5")
+    v, w = blend(None, 95.0, 40, 60)
+    if v != 95.0 or w != 0.0:
+        failures.append(f"blend(None, 95, 40, 60) -> ({v}, {w}); expected (95.0, 0.0)")
+    # Sutter worked example from the 2026-08-20 DB: G=46, empirical 158.3, prior 100
+    v, w = blend(158.3, 100.0, 46, 60)
+    if abs(w - 46 / 106) > 1e-9 or abs(v - 125.3) > 0.1:
+        failures.append(f"blend(158.3, 100, 46, 60) -> ({v:.2f}, {w:.4f}); expected (~125.3, 0.4340)")
+    # Larger K shrinks harder
+    v_hand, _ = blend(158.3, 100.0, 46, 100)
+    if not v_hand < v:
+        failures.append("K=100 did not shrink harder than K=60")
+    if failures:
+        return Result("park factor blend math (B35)", Result.HALT, "; ".join(failures))
+    return Result("park factor blend math (B35)", Result.PASS, "w=G/(G+K); Sutter 158.3@46G -> 125.3")
+
+
+def pin_park_factor_read_path_resolution() -> Result:
+    """load_park_factors_for_scoring(): blended > curated DB > hardcoded seed,
+    per venue; unreachable DB -> all hardcoded, never raises. Also exercises
+    the (venue, season) -> (venue, season, source) PK migration on a legacy
+    park_factors table."""
+    import os
+    import tempfile
+    from etl.compute_park_factors import (
+        load_park_factors_for_scoring, BLEND_SOURCE, CURATED_SOURCE,
+    )
+    from etl.db import create_tables
+
+    failures = []
+    tmpdir = tempfile.mkdtemp(prefix="b35_pf_")
+    tmp_db = Path(tmpdir) / "hr_bets.db"
+    conn = sqlite3.connect(str(tmp_db))
+    try:
+        # Legacy schema: PK (venue, season), one curated row + one stray NULL source.
+        conn.executescript("""
+            CREATE TABLE park_factors (
+                venue TEXT NOT NULL, season INTEGER NOT NULL,
+                hr_pf_overall REAL NOT NULL, hr_pf_lhb REAL NOT NULL, hr_pf_rhb REAL NOT NULL,
+                source TEXT, notes TEXT, fetched_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (venue, season));
+            INSERT INTO park_factors VALUES ('Coors Field', 2026, 130, 132, 128, 'seed', 'x', '2026-01-01');
+            INSERT INTO park_factors VALUES ('Oracle Park', 2026, 82, 72, 90, NULL, 'x', '2026-01-01');
+        """)
+        conn.commit()
+        create_tables(conn)  # runs the B35 migration
+        pk_cols = {c[1] for c in conn.execute("PRAGMA table_info(park_factors)").fetchall() if c[5]}
+        if pk_cols != {"venue", "season", "source"}:
+            failures.append(f"PK after migration = {sorted(pk_cols)}")
+        n = conn.execute("SELECT COUNT(*) FROM park_factors").fetchone()[0]
+        if n != 2:
+            failures.append(f"migration lost rows: {n} != 2")
+        null_src = conn.execute("SELECT COUNT(*) FROM park_factors WHERE source IS NULL").fetchone()[0]
+        if null_src:
+            failures.append("NULL source survived migration (should COALESCE to 'seed')")
+        # Blended row alongside the curated one for the same venue+season.
+        conn.execute(
+            "INSERT INTO park_factors (venue, season, hr_pf_overall, hr_pf_lhb, hr_pf_rhb, source, notes) "
+            "VALUES ('Coors Field', 2026, 123.1, 125.0, 121.2, ?, 'G=49')", (BLEND_SOURCE,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    df = load_park_factors_for_scoring(tmp_db)
+    by = {r["venue"]: r for _, r in df.iterrows()}
+    if by.get("Coors Field", {}).get("pf_source") != BLEND_SOURCE or abs(by["Coors Field"]["hr_pf_overall"] - 123.1) > 1e-6:
+        failures.append(f"Coors should resolve to blended 123.1: {by.get('Coors Field')}")
+    if by.get("Oracle Park", {}).get("pf_source") != CURATED_SOURCE:
+        failures.append(f"Oracle should resolve to curated DB row: {by.get('Oracle Park', {}).get('pf_source')}")
+    if by.get("Sutter Health Park", {}).get("pf_source") != "hardcoded":
+        failures.append("Sutter (no DB row) should resolve to the hardcoded seed")
+    if "hr_park_factor" not in df.columns:
+        failures.append("legacy hr_park_factor alias column missing")
+
+    # Unreachable DB: fail-soft to the seed table.
+    try:
+        df_missing = load_park_factors_for_scoring(Path(tmpdir) / "does_not_exist.db")
+        if df_missing.empty or set(df_missing["pf_source"]) != {"hardcoded"}:
+            failures.append("missing DB did not fall back to all-hardcoded")
+        if "Sutter Health Park" not in set(df_missing["venue"]):
+            failures.append("hardcoded seed lacks Sutter Health Park (P3-9 amendment)")
+    except Exception as e:
+        failures.append(f"missing DB raised {type(e).__name__}: {e}")
+
+    try:
+        os.remove(tmp_db)
+        os.rmdir(tmpdir)
+    except OSError:
+        pass
+    if failures:
+        return Result("park factor read path (B35)", Result.HALT, "; ".join(failures))
+    return Result("park factor read path (B35)", Result.PASS,
+                  "blended > curated > hardcoded; PK migration keeps rows; missing DB fail-soft")
+
+
+def pin_geo_tables_cover_temp_venues() -> Result:
+    """Audit P3-9: Sutter Health Park, Las Vegas Ballpark, Field of Dreams must
+    be present in park_factors_seed, VENUE_COORDS, VENUE_TZ and PARK_CF_BEARING,
+    and the old 'verify' Sutter bearing (340) must be gone."""
+    from etl.park_factors_seed import get_seed_dataframe
+    from fetch_daily_data import VENUE_COORDS, VENUE_TZ
+    from score_batters import PARK_CF_BEARING
+    venues = ["Sutter Health Park", "Las Vegas Ballpark", "Field of Dreams"]
+    seed = set(get_seed_dataframe()["venue"])
+    failures = []
+    for v in venues:
+        for name, table in (("park_factors_seed", seed), ("VENUE_COORDS", VENUE_COORDS),
+                            ("VENUE_TZ", VENUE_TZ), ("PARK_CF_BEARING", PARK_CF_BEARING)):
+            if v not in table:
+                failures.append(f"{v} missing from {name}")
+    if PARK_CF_BEARING.get("Sutter Health Park") == 340:
+        failures.append("Sutter bearing still the unverified 340")
+    if failures:
+        return Result("geo tables cover temp venues (P3-9)", Result.HALT, "; ".join(failures))
+    return Result("geo tables cover temp venues (P3-9)", Result.PASS,
+                  "3 venues x 4 tables; Sutter CF bearing=%d" % PARK_CF_BEARING["Sutter Health Park"])
+
+
 PIN_TESTS: list[Callable[[], Result]] = [
+    pin_park_factor_blend_math,
+    pin_park_factor_read_path_resolution,
+    pin_geo_tables_cover_temp_venues,
     pin_score_power_empty,
     pin_score_power_all_zero,
     pin_score_power_elite,
@@ -5396,7 +5532,50 @@ def db_daily_picks_starter_coverage() -> Result:
     )
 
 
+def db_park_factor_slate_venue_coverage() -> Result:
+    """B35: every distinct venue on the last 7 days of daily_slate must
+    resolve a park factor through the live read path (blended > curated >
+    hardcoded seed). A venue that resolves to nothing would score park=50.0
+    silently — the Sutter Health Park bug. Read-only against the canonical
+    DB; no network."""
+    db = _db_path()
+    if not db:
+        return Result("park factor slate venue coverage (DB missing — skipped)", Result.INFO, str(db))
+    from etl.compute_park_factors import load_park_factors_for_scoring
+    conn = sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro", uri=True)
+    try:
+        venues = [r[0] for r in conn.execute("""
+            SELECT DISTINCT venue FROM daily_slate
+            WHERE date >= date((SELECT MAX(date) FROM daily_slate), '-7 days')
+              AND venue IS NOT NULL AND venue != ''
+        """).fetchall()]
+    except sqlite3.OperationalError as e:
+        return Result("park factor slate venue coverage", Result.INFO, f"schema mismatch: {e}")
+    finally:
+        conn.close()
+    if not venues:
+        return Result("park factor slate venue coverage", Result.INFO, "no daily_slate rows in last 7d")
+    pf = load_park_factors_for_scoring(db)
+    src = dict(zip(pf["venue"], pf["pf_source"]))
+    missing = [v for v in venues if v not in src]
+    counts: dict[str, int] = {}
+    for v in venues:
+        counts[src.get(v, "MISSING")] = counts.get(src.get(v, "MISSING"), 0) + 1
+    summary = ", ".join(f"{k}={n}" for k, n in sorted(counts.items()))
+    if missing:
+        return Result(
+            "park factor slate venue coverage (last 7d)", Result.HALT,
+            f"{len(missing)}/{len(venues)} venues resolve to NO park factor (would score 50.0): "
+            + ", ".join(missing),
+        )
+    return Result(
+        "park factor slate venue coverage (last 7d)", Result.PASS,
+        f"{len(venues)} venues resolved ({summary})",
+    )
+
+
 DB_PROBES: list[Callable[[], Result]] = [
+    db_park_factor_slate_venue_coverage,
     db_lineup_batting_order_capped,
     db_pitcher_league_mean_count,
     db_weather_fallback_check,
