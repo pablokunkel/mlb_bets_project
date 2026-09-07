@@ -21,10 +21,17 @@ What it does. For today's card (daily_picks, selected=1):
      not likely-out, game not dead and not started, max 2 per game, no
      duplicate names).
   4. daily_picks is updated in place: removed rows get selected=0 +
-     status_description='revalidate:<reason>' (+ is_likely_out=1 so the
-     board renders the scratch badge); replacements get selected=1 +
-     promoted_due_to='revalidate'. Nothing is rescored; composites are the
-     morning's.
+     status_description='revalidate <ts>: <reason>'; replacements get
+     selected=1 + promoted_due_to='revalidate' (+ the posted batting
+     order). is_likely_out is NOT touched — that column is the B7 roster
+     status flag (IL / paternity) and feeds its own audit; a scratched or
+     rained-out pick is a different thing. Nothing is rescored; composites
+     are the morning's.
+
+Caveats. A row whose game_pk cannot be resolved is treated as pending and
+kept. A same-day re-run of the morning pipeline (load_picks_to_db DELETEs
+the date) rebuilds the board from scratch and drops any earlier swap — it
+logs a warning when that happens; run this again afterwards.
 
 The workflow that runs this (revalidate-picks.yml) re-exports the site JSON
 and pushes only when something changed. Idempotent: a second run on an
@@ -233,8 +240,7 @@ def apply_plan(conn, plan: dict, dry_run: bool) -> None:
             conn.execute(
                 """
                 UPDATE daily_picks
-                SET selected = 0, is_likely_out = 1,
-                    status_description = ?
+                SET selected = 0, status_description = ?
                 WHERE id = ?
                 """,
                 (f"revalidate {now}: {reason}"[:120], row["id"]),

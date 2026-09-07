@@ -116,7 +116,11 @@ jobs:
         run: |
           set -euo pipefail
           git add mlb_hr_bet_site/data/*.json || true
-          git commit -m "Revalidate picks ${{ steps.date.outputs.date }}" --allow-empty
+          if git diff --cached --quiet; then
+            echo "Re-exported JSON is byte-identical; nothing to commit."
+            exit 0
+          fi
+          git commit -m "Revalidate picks ${{ steps.date.outputs.date }}"
           git pull --rebase --autostash origin main
           git push origin main
 
