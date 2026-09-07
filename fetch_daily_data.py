@@ -234,6 +234,100 @@ def get_game_boxscore(game_pk: int) -> dict:
     return resp.json()
 
 
+# ---------------------------------------------------------------------------
+# B36 (2026-09-07): real batter handedness.
+#
+# Every `bats` source in this repo defaulted to "R" when `batSide` was absent
+# from the payload — and it is ALWAYS absent: the /stats season endpoint's
+# `player` object carries only id + fullName, and so does schedule?hydrate=
+# lineups. Result: season_batting.bats was 'R' on 100% of rows, pick_inputs
+# .bats 'R' on 100% of live rows, and platoon_advantage was literally "the
+# pitcher is left-handed" for the whole league. With real handedness
+# (MLB API /people, 2026-09-07 pull of 989 board batters: 410 R / 250 L /
+# 80 S) the platoon effect is large — LHB hit HR in 11.5% of games vs RHP
+# and 7.1% vs LHP; RHB 10.8% vs LHP and 8.3% vs RHP — and the model was
+# applying it backwards for ~40% of batters (LHB vs LHP scored as the
+# advantaged side; park L/R skew and wind pull-side wrong too).
+#
+# /people?personIds=a,b,c returns batSide.code (L/R/S) for up to 100 ids per
+# call. Resolution is batched, cached per process, and NEVER silently
+# defaulted: callers log a count of unresolved ids before falling back.
+# ---------------------------------------------------------------------------
+
+_BAT_SIDE_CACHE: dict[int, str] = {}
+_BAT_SIDE_UNRESOLVED: set[int] = set()
+BAT_SIDE_CHUNK = 100
+
+
+def fetch_bat_sides(player_ids, chunk_size: int = BAT_SIDE_CHUNK) -> dict[int, str]:
+    """{player_id: "L" | "R" | "S"} for every id the MLB API can resolve.
+
+    Batched (`chunk_size` ids per /people call), cached per process so the
+    tier build's cur + prior passes and the T4 path share one lookup. Ids
+    the API does not return are omitted from the result (and remembered so
+    they are not re-requested); the caller decides what to do with them.
+    """
+    ids = sorted({int(i) for i in player_ids if i})
+    need = [i for i in ids if i not in _BAT_SIDE_CACHE and i not in _BAT_SIDE_UNRESOLVED]
+    for start in range(0, len(need), chunk_size):
+        chunk = need[start:start + chunk_size]
+        people = None
+        # One retry per chunk: this runs once a day, and a single transient
+        # blip would otherwise default up to 100 batters to 'R' for the day.
+        for attempt in (1, 2):
+            try:
+                resp = requests.get(
+                    f"{MLB_STATS_API}/people",
+                    params={"personIds": ",".join(str(i) for i in chunk)},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                people = resp.json().get("people", []) or []
+                break
+            except Exception as e:
+                print(f"  [BATS] /people batch of {len(chunk)} failed "
+                      f"(attempt {attempt}/2): {e}")
+                if attempt == 1:
+                    time.sleep(1.0)
+        if people is None:
+            continue
+        for person in people:
+            pid = person.get("id")
+            code = ((person.get("batSide") or {}).get("code") or "").upper()
+            if pid and code in ("L", "R", "S"):
+                _BAT_SIDE_CACHE[int(pid)] = code
+    for i in need:
+        if i not in _BAT_SIDE_CACHE:
+            _BAT_SIDE_UNRESOLVED.add(i)
+    return {i: _BAT_SIDE_CACHE[i] for i in ids if i in _BAT_SIDE_CACHE}
+
+
+def apply_bat_sides(batters: list[dict], id_key: str = "player_id",
+                    label: str = "batters", default: str = "R") -> tuple[int, int]:
+    """Fill a missing/blank `bats` on each batter dict from fetch_bat_sides.
+
+    Only dicts whose `bats` is not already a real L/R/S are touched. Logs
+    "resolved X / unresolved Y" and returns (resolved, unresolved). Unresolved
+    dicts fall back to `default` — loudly, never silently.
+    """
+    todo = [b for b in batters if (b.get("bats") or "").upper() not in ("L", "R", "S")]
+    if not todo:
+        return 0, 0
+    sides = fetch_bat_sides(b.get(id_key) for b in todo)
+    resolved = unresolved = 0
+    for b in todo:
+        code = sides.get(int(b.get(id_key) or 0))
+        if code:
+            b["bats"] = code
+            resolved += 1
+        else:
+            b["bats"] = default
+            unresolved += 1
+    print(f"  [BATS] {label}: {resolved} resolved via /people, "
+          f"{unresolved} unresolved -> default '{default}'")
+    return resolved, unresolved
+
+
 def get_roster(team_id: int, date_str: str) -> list[dict]:
     """Fetch active roster for a team."""
     url = f"{MLB_STATS_API}/teams/{team_id}/roster"
@@ -247,8 +341,11 @@ def get_roster(team_id: int, date_str: str) -> list[dict]:
                 "player_id": p["person"]["id"],
                 "name": p["person"]["fullName"],
                 "position": p.get("position", {}).get("abbreviation", ""),
-                "bats": p.get("person", {}).get("batSide", {}).get("code", "R"),
+                # B36: None when absent (it always is on this endpoint);
+                # resolved below via /people instead of a silent "R".
+                "bats": (p.get("person", {}).get("batSide") or {}).get("code"),
             })
+    apply_bat_sides(roster, label=f"roster team {team_id}")
     return roster
 
 
@@ -751,7 +848,9 @@ def _splits_to_batters(splits: list) -> list[dict]:
         team_name = team.get("name", "")
         team_abbrev = (team.get("abbreviation")
                        or _TEAM_NAME_TO_ABBREV.get(team_name, "???"))
-        bat_side = player.get("batSide", {}).get("code", "R")
+        # B36: the /stats player object never carries batSide; leave it
+        # None here and batch-resolve every id once via /people below.
+        bat_side = (player.get("batSide") or {}).get("code")
 
         batters.append({
             "name": player.get("fullName", "Unknown"),
@@ -774,6 +873,9 @@ def _splits_to_batters(splits: list) -> list[dict]:
             # that these fields are MLB-Stats-API-derived estimates.
             "_barrel_pct_source": "synthetic_hr_per_pa",
         })
+    # B36 (2026-09-07): real L/R/S for the whole split set in <= 5 batched
+    # calls. Pre-B36 every batter here was "R".
+    apply_bat_sides(batters, label=f"season splits ({len(batters)})")
     return batters
 
 

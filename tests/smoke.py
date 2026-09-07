@@ -862,6 +862,112 @@ def pin_power_sample_pa_persisted_end_to_end() -> Result:
 
 
 # ---------------------------------------------------------------------------
+# B36 (2026-09-07): real batter handedness via /people
+# ---------------------------------------------------------------------------
+
+def pin_fetch_bat_sides_batches_and_caches() -> Result:
+    """fetch_bat_sides: <=100 ids per /people call, L/R/S parsed, unresolved
+    omitted (and not re-requested), cache serves repeat lookups with 0 calls."""
+    import fetch_daily_data as fdd
+
+    calls: list[list[int]] = []
+
+    class _FakeResp:
+        def __init__(self, ids):
+            self._ids = ids
+        def raise_for_status(self):
+            pass
+        def json(self):
+            people = []
+            for i in self._ids:
+                if i % 10 == 0:          # every 10th id: API does not know it
+                    continue
+                code = {0: "L", 1: "R", 2: "S"}[i % 3]
+                people.append({"id": i, "fullName": f"P{i}", "batSide": {"code": code}})
+            return {"people": people}
+
+    def _fake_get(url, params=None, timeout=None, **kw):
+        ids = [int(x) for x in (params or {}).get("personIds", "").split(",") if x]
+        calls.append(ids)
+        return _FakeResp(ids)
+
+    orig_get = fdd.requests.get
+    orig_cache, orig_unres = dict(fdd._BAT_SIDE_CACHE), set(fdd._BAT_SIDE_UNRESOLVED)
+    fdd._BAT_SIDE_CACHE.clear(); fdd._BAT_SIDE_UNRESOLVED.clear()
+    fdd.requests.get = _fake_get
+    try:
+        ids = list(range(900001, 900251))          # 250 ids -> 3 calls
+        out = fdd.fetch_bat_sides(ids)
+        n_calls_first = len(calls)
+        sizes = [len(c) for c in calls]
+        out2 = fdd.fetch_bat_sides(ids + [900251])  # 1 new id -> exactly 1 more call
+        n_calls_second = len(calls) - n_calls_first
+        batters = [{"player_id": 900001, "bats": None}, {"player_id": 900010, "bats": None},
+                   {"player_id": 900002, "bats": "L"}]
+        res, unres = fdd.apply_bat_sides(batters, label="pin")
+    finally:
+        fdd.requests.get = orig_get
+        fdd._BAT_SIDE_CACHE.clear(); fdd._BAT_SIDE_CACHE.update(orig_cache)
+        fdd._BAT_SIDE_UNRESOLVED.clear(); fdd._BAT_SIDE_UNRESOLVED.update(orig_unres)
+
+    fails = []
+    if n_calls_first != 3 or max(sizes) > 100:
+        fails.append(f"expected 3 calls of <=100 ids, got {n_calls_first} calls sizes={sizes}")
+    if len(out) != 225:                              # 250 minus 25 unresolved (multiples of 10)
+        fails.append(f"expected 225 resolved, got {len(out)}")
+    if set(out.values()) != {"L", "R", "S"}:
+        fails.append(f"codes parsed wrong: {set(out.values())}")
+    if 900010 in out:
+        fails.append("unresolved id leaked into the result")
+    if n_calls_second != 1 or calls[-1] != [900251]:
+        fails.append(f"cache miss: second lookup made {n_calls_second} call(s) {calls[n_calls_first:]}")
+    if (res, unres) != (1, 1) or batters[0]["bats"] != "R" or batters[1]["bats"] != "R" or batters[2]["bats"] != "L":
+        fails.append(f"apply_bat_sides wrong: {(res, unres)} {[b['bats'] for b in batters]}")
+    if fails:
+        return Result("B36 fetch_bat_sides batching/cache", Result.HALT, "; ".join(fails))
+    return Result("B36 fetch_bat_sides batching/cache", Result.PASS,
+                  "250 ids -> 3 calls, 225 resolved, unresolved omitted, cache hit = 0 calls")
+
+
+def pin_splits_to_batters_resolves_bats() -> Result:
+    """_splits_to_batters no longer stamps 'R' on everyone: with batSide absent
+    from the /stats payload (always), real codes come from /people."""
+    import fetch_daily_data as fdd
+
+    class _FakeResp:
+        def __init__(self, ids): self._ids = ids
+        def raise_for_status(self): pass
+        def json(self):
+            return {"people": [{"id": i, "batSide": {"code": "L" if i == 910001 else "S"}}
+                               for i in self._ids if i != 910003]}
+
+    def _fake_get(url, params=None, timeout=None, **kw):
+        ids = [int(x) for x in (params or {}).get("personIds", "").split(",") if x]
+        return _FakeResp(ids)
+
+    def _split(pid):
+        return {"player": {"id": pid, "fullName": f"P{pid}"}, "team": {"abbreviation": "NYY"},
+                "stat": {"homeRuns": 5, "atBats": 100, "plateAppearances": 110,
+                         "gamesPlayed": 30, "avg": ".250", "slg": ".450", "obp": ".320"}}
+
+    orig_get = fdd.requests.get
+    orig_cache, orig_unres = dict(fdd._BAT_SIDE_CACHE), set(fdd._BAT_SIDE_UNRESOLVED)
+    fdd._BAT_SIDE_CACHE.clear(); fdd._BAT_SIDE_UNRESOLVED.clear()
+    fdd.requests.get = _fake_get
+    try:
+        batters = fdd._splits_to_batters([_split(910001), _split(910002), _split(910003)])
+    finally:
+        fdd.requests.get = orig_get
+        fdd._BAT_SIDE_CACHE.clear(); fdd._BAT_SIDE_CACHE.update(orig_cache)
+        fdd._BAT_SIDE_UNRESOLVED.clear(); fdd._BAT_SIDE_UNRESOLVED.update(orig_unres)
+    got = {b["player_id"]: b["bats"] for b in batters}
+    want = {910001: "L", 910002: "S", 910003: "R"}
+    if got != want:
+        return Result("B36 _splits_to_batters bats", Result.HALT, f"got {got}, want {want}")
+    return Result("B36 _splits_to_batters bats", Result.PASS, "L / S resolved, unknown -> R (logged)")
+
+
+# ---------------------------------------------------------------------------
 # Pitcher recency blend (added 2026-05-13)
 # ---------------------------------------------------------------------------
 
@@ -5343,6 +5449,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
+    # B36 (2026-09-07): real batter handedness
+    pin_fetch_bat_sides_batches_and_caches,
+    pin_splits_to_batters_resolves_bats,
     # 2026-09-07: small-sample shrink on synthetic power inputs
     pin_small_sample_weight_table,
     pin_score_power_small_sample_shrinks_toward_neutral,
@@ -5672,6 +5781,46 @@ def db_daily_picks_starter_coverage() -> Result:
     )
 
 
+# B36 (2026-09-07): before this fix pick_inputs.bats was 'R' on 100% of live
+# rows. Rows written by a post-B36 pipeline run must show a real L/R/S mix
+# (league is roughly 40% L+S). Date-scoped so the probe reads INFO until the
+# first post-merge run lands, then WARN (not HALT: picks still ship, but the
+# platoon / park-hand / wind-pull inputs would be back to nonsense).
+BATS_FIX_CUTOFF = "2026-09-08"
+
+
+def db_pick_inputs_bats_distribution() -> Result:
+    """pick_inputs.bats on post-B36 rows (last 7 days): >= 3 codes, L share 20-40%."""
+    db = _db_path()
+    if not db:
+        return Result("pick_inputs.bats distribution (DB missing — skipped)", Result.INFO, str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(bats, 'NULL'), COUNT(*) FROM pick_inputs
+            WHERE date >= ? AND date >= date('now', '-7 days')
+            GROUP BY 1
+            """,
+            (BATS_FIX_CUTOFF,),
+        ).fetchall()
+    finally:
+        conn.close()
+    total = sum(n for _, n in rows)
+    if total == 0:
+        return Result("pick_inputs.bats distribution (post-B36)", Result.INFO,
+                      f"no rows dated >= {BATS_FIX_CUTOFF} yet")
+    dist = {code: n for code, n in rows}
+    l_share = dist.get("L", 0) / total
+    s_share = dist.get("S", 0) / total
+    codes = {c for c in dist if c in ("L", "R", "S")}
+    detail = ", ".join(f"{c}={n}" for c, n in sorted(dist.items())) + f" (L {l_share:.0%}, S {s_share:.0%})"
+    if len(codes) >= 3 and 0.20 <= l_share <= 0.40:
+        return Result("pick_inputs.bats distribution (post-B36)", Result.PASS, detail)
+    return Result("pick_inputs.bats distribution (post-B36)", Result.WARN,
+                  f"handedness looks defaulted again: {detail}")
+
+
 def db_park_factor_slate_venue_coverage() -> Result:
     """B35: every distinct venue on the last 7 days of daily_slate must
     resolve a park factor through the live read path (blended > curated >
@@ -5716,6 +5865,7 @@ def db_park_factor_slate_venue_coverage() -> Result:
 
 DB_PROBES: list[Callable[[], Result]] = [
     db_park_factor_slate_venue_coverage,
+    db_pick_inputs_bats_distribution,
     db_lineup_batting_order_capped,
     db_pitcher_league_mean_count,
     db_weather_fallback_check,
