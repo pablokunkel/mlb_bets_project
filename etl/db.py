@@ -1017,6 +1017,10 @@ def create_tables(conn: sqlite3.Connection):
     for col, ddl in [
         ("season_hr",
          "ALTER TABLE pick_inputs ADD COLUMN season_hr INTEGER"),
+        # 2026-09-07: PA behind the synthetic power inputs at pick time,
+        # so backtest/refit can replay score_power's small-sample shrink.
+        ("power_sample_pa",
+         "ALTER TABLE pick_inputs ADD COLUMN power_sample_pa INTEGER"),
     ]:
         if col not in existing_cols:
             try:

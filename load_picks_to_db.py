@@ -161,12 +161,12 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
             temperature_f, wind_mph, wind_direction_deg, humidity_pct, is_dome,
             batting_order,
             bats, throws, weather_source, barrel_pct_source, lineup_source,
-            season_hr,
+            season_hr, power_sample_pa,
             fb_slg, fb_pa, br_slg, br_pa, os_slg, os_pa,
             form_archetype_centroid_json, form_archetype_window, form_archetype_n_hrs,
             park_archetype_centroid_json, park_archetype_n_hrs,
             slate_park_pct, slate_weather_pct, slate_pitcher_vulnerability_pct
-        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?)
+        ) VALUES (?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?, ?,  ?,  ?,  ?, ?, ?, ?, ?,  ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?)
     """
 
     # Clear pick_inputs for the date too — re-runs should start clean.
@@ -334,6 +334,9 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
                     # and backtest_factors.rescore_row falls through to its
                     # legacy behavior for those rows.
                     inputs.get("season_hr"),
+                    # 2026-09-07: PA behind the synthetic power inputs
+                    # (small-sample shrink). NULL on older payloads.
+                    inputs.get("power_sample_pa"),
                     # Phase 2 (2026-05-25): pitch-type archetype matchup
                     # sub-signal inputs. NULL on rows where
                     # fetch_batter_pitch_type_splits returned nothing for

@@ -743,6 +743,125 @@ def pin_score_power_floor_does_not_pull_down() -> Result:
 
 
 # ---------------------------------------------------------------------------
+# 2026-09-07: small-sample shrink on the synthetic power inputs
+# ---------------------------------------------------------------------------
+
+def pin_small_sample_weight_table() -> Result:
+    """small_sample_weight: None/NaN/>=MIN -> 1.0; linear below; 0 PA -> 0."""
+    import score_batters as sb
+    M = sb.MIN_POWER_SAMPLE_PA
+    cases = [(None, 1.0), (float("nan"), 1.0), (M, 1.0), (M * 3, 1.0),
+             (M / 2, 0.5), (0, 0.0), (-5, 0.0), ("bad", 1.0)]
+    bad = [(pa, sb.small_sample_weight(pa), want) for pa, want in cases
+           if abs(sb.small_sample_weight(pa) - want) > 1e-9]
+    if bad:
+        return Result("small_sample_weight table", Result.HALT, f"{bad}")
+    if M != 60:
+        return Result("MIN_POWER_SAMPLE_PA", Result.WARN, f"drifted to {M} (shipped 60)")
+    return Result("small_sample_weight table", Result.PASS, f"MIN_POWER_SAMPLE_PA={M}")
+
+
+def pin_score_power_small_sample_shrinks_toward_neutral() -> Result:
+    """A 4-PA call-up with blown-up synthetic inputs must not score power=100.
+
+    Motivating case: 2026-08-16 Joshua Baez, 3 HR in 4 AB -> barrel 25 /
+    HR-FB 35 -> power 100 -> published pick, 0-for. With a 4-PA sample the
+    score must sit just above neutral; the same inputs at >= 60 PA are
+    untouched; an unknown sample is untouched (backtest rows pre-column).
+    """
+    import score_batters as sb
+    prev = (sb.USE_SMALL_SAMPLE_SHRINK, sb.USE_SEASON_HR_FLOOR)
+    sb.USE_SMALL_SAMPLE_SHRINK = True
+    sb.USE_SEASON_HR_FLOOR = True
+    try:
+        blown = {"barrel_pct": 25.0, "exit_velo": 92.0, "hr_fb_pct": 30.0,
+                 "iso": 0.60, "season_hr": 3}
+        full = sb.score_power({**blown, "power_sample_pa": 60})
+        none = sb.score_power(dict(blown))
+        tiny = sb.score_power({**blown, "power_sample_pa": 4})
+        half = sb.score_power({**blown, "power_sample_pa": 30})
+        via_pa = sb.score_power({**blown, "pa": 4})
+        off = None
+        sb.USE_SMALL_SAMPLE_SHRINK = False
+        off = sb.score_power({**blown, "power_sample_pa": 4})
+    finally:
+        sb.USE_SMALL_SAMPLE_SHRINK, sb.USE_SEASON_HR_FLOOR = prev
+    fails = []
+    # Blown-up synthetic inputs score in the 90s un-shrunk (EV 92 is the
+    # only input short of its anchor cap); the exact value is B17's business.
+    if not (85.0 <= full <= 100.0):
+        fails.append(f"60 PA should be untouched (90s), got {full:.1f}")
+    if abs(none - full) > 1e-9:
+        fails.append(f"unknown sample must equal full sample: {none:.1f} vs {full:.1f}")
+    want_tiny = 50.0 + (full - 50.0) * 4.0 / 60.0
+    if abs(tiny - want_tiny) > 1e-6 or not (50.0 < tiny < 56.0):
+        fails.append(f"4 PA should land at {want_tiny:.1f} (just above neutral), got {tiny:.1f}")
+    if abs(half - (50 + (full - 50) * 0.5)) > 1e-6:
+        fails.append(f"30 PA should be halfway to neutral, got {half:.1f}")
+    if abs(via_pa - tiny) > 1e-9:
+        fails.append(f"`pa` fallback key not honored: {via_pa:.1f} vs {tiny:.1f}")
+    if abs(off - full) > 1e-9:
+        fails.append(f"flag off must be a no-op, got {off:.1f}")
+    if fails:
+        return Result("score_power small-sample shrink", Result.HALT, "; ".join(fails))
+    return Result("score_power small-sample shrink", Result.PASS,
+                  f"4 PA -> {tiny:.1f}, 30 PA -> {half:.1f}, 60 PA -> {full:.1f}, None -> {none:.1f}")
+
+
+def pin_score_power_small_sample_floor_still_elevates() -> Result:
+    """The season-HR floor runs AFTER the shrink: 12 HR at 55 PA still floors to 70."""
+    import score_batters as sb
+    prev = (sb.USE_SMALL_SAMPLE_SHRINK, sb.USE_SEASON_HR_FLOOR)
+    sb.USE_SMALL_SAMPLE_SHRINK = True
+    sb.USE_SEASON_HR_FLOOR = True
+    try:
+        v = sb.score_power({"barrel_pct": 9.0, "exit_velo": 90.0, "iso": 0.200,
+                            "season_hr": 12, "power_sample_pa": 55})
+    finally:
+        sb.USE_SMALL_SAMPLE_SHRINK, sb.USE_SEASON_HR_FLOOR = prev
+    if abs(v - 70.0) > 1e-9:
+        return Result("small-sample shrink then floor", Result.HALT,
+                      f"12-HR floor should win at 70.0, got {v:.1f}")
+    return Result("small-sample shrink then floor", Result.PASS, "12 HR / 55 PA -> 70.0")
+
+
+def pin_power_sample_pa_persisted_end_to_end() -> Result:
+    """pick_inputs.power_sample_pa exists in the schema, the loader writes it,
+    and both rescore paths read it back into the batter dict."""
+    import inspect, sqlite3, tempfile, os
+    import load_picks_to_db as lp
+    import backtest_factors as bf
+    import refit_weights as rw
+    from etl.db import create_tables
+    fails = []
+    src = inspect.getsource(lp)
+    if "power_sample_pa" not in src or 'inputs.get("power_sample_pa")' not in src:
+        fails.append("load_picks_to_db does not write power_sample_pa")
+    for mod in (bf, rw):
+        if 'row.get("power_sample_pa")' not in inspect.getsource(mod.rescore_row):
+            fails.append(f"{mod.__name__}.rescore_row does not read power_sample_pa")
+        if "pi.power_sample_pa" not in inspect.getsource(mod):
+            fails.append(f"{mod.__name__} SELECT omits pi.power_sample_pa")
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False); tmp.close()
+    try:
+        conn = sqlite3.connect(tmp.name)
+        create_tables(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(pick_inputs)")}
+        conn.close()
+        if "power_sample_pa" not in cols:
+            fails.append("create_tables did not add pick_inputs.power_sample_pa")
+    finally:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+    if fails:
+        return Result("power_sample_pa persisted end-to-end", Result.HALT, "; ".join(fails))
+    return Result("power_sample_pa persisted end-to-end", Result.PASS,
+                  "schema + loader + backtest/refit rescore all carry it")
+
+
+# ---------------------------------------------------------------------------
 # Pitcher recency blend (added 2026-05-13)
 # ---------------------------------------------------------------------------
 
@@ -5208,6 +5327,11 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_use_season_hr_floor_default_on,
     pin_score_power_floor_lifts_low_score,
     pin_score_power_floor_does_not_pull_down,
+    # 2026-09-07: small-sample shrink on synthetic power inputs
+    pin_small_sample_weight_table,
+    pin_score_power_small_sample_shrinks_toward_neutral,
+    pin_score_power_small_sample_floor_still_elevates,
+    pin_power_sample_pa_persisted_end_to_end,
     # 2026-05-13: pitcher recency blend
     pin_effective_hr9_season_only_when_no_recent,
     pin_effective_hr9_blend_when_enough_starts,

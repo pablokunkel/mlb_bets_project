@@ -111,6 +111,7 @@ def load_history(db_path: Path, since: str) -> pd.DataFrame:
             pi.humidity_pct, pi.is_dome,
             pi.batting_order,
             pi.season_hr,
+            pi.power_sample_pa,
             pi.bats, pi.throws,
             pi.slate_park_pct, pi.slate_weather_pct,
             pi.slate_pitcher_vulnerability_pct,
@@ -181,6 +182,10 @@ def rescore_row(row: pd.Series) -> dict:
         # falls through to no-op there (matches the pre-B8 backtest
         # behavior, so old rows remain comparable).
         "season_hr": row.get("season_hr"),
+        # 2026-09-07: small-sample shrink input. NULL on rows written
+        # before the column existed -> score_power applies no shrink,
+        # which is exactly how those rows were scored in production.
+        "power_sample_pa": row.get("power_sample_pa"),
         # Phase 2 form-archetype (2026-05-26): persisted centroid for
         # this batter at the row's date. Read as JSON; score_form only
         # consumes it when USE_FORM_ARCHETYPE is True (off by default).

@@ -211,7 +211,7 @@ def load_season_batting_lookup(season: int) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT player_id, player_name, games, hr, bats,
+            SELECT player_id, player_name, games, hr, bats, pa,
                    barrel_pct, exit_velo, hr_fb_pct, iso, woba
             FROM season_batting
             WHERE season = ?
@@ -1921,6 +1921,11 @@ def score_untiered_starters(
                         stub["bats"] = sb_row["bats"]
                     if sb_row.get("hr") is not None:
                         stub["hr"] = sb_row["hr"]
+                    # 2026-09-07: season PA behind the fallback power
+                    # inputs -> score_power's small-sample shrink. A T4
+                    # stub with 4 PA and 3 HR no longer scores power=100.
+                    if sb_row.get("pa") is not None:
+                        stub["power_sample_pa"] = sb_row["pa"]
                 if career_lookup:
                     stub = enrich_with_career_prior(stub, career_lookup)
                 stubs.append((stub, game, i, side))
