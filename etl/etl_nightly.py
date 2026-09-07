@@ -468,6 +468,16 @@ def sync_season_batting(conn, season: int, date_str: str):
 
     print(f"    Got {len(splits)} batters from MLB Stats API")
 
+    # B36 (2026-09-07): /stats never returns batSide, so every row used to
+    # be written as 'R'. Resolve real L/R/S for the whole set in <= 5
+    # batched /people calls and log what could not be resolved.
+    from fetch_daily_data import fetch_bat_sides  # repo-root module; lazy
+    ids = [(sp.get("player") or {}).get("id") for sp in splits]
+    bat_sides = fetch_bat_sides(i for i in ids if i)
+    n_unresolved = sum(1 for i in ids if i and i not in bat_sides)
+    print(f"    [BATS] {len(bat_sides)} handedness resolved via /people, "
+          f"{n_unresolved} unresolved -> default 'R'")
+
     inserted = 0
     for s in splits:
         stat = s.get("stat", {})
@@ -488,7 +498,11 @@ def sync_season_batting(conn, season: int, date_str: str):
 
         team_name = team.get("name", "")
         team_abbrev = team.get("abbreviation") or TEAM_NAME_TO_ABBREV.get(team_name, "???")
-        bat_side = player.get("batSide", {}).get("code", "R")
+        bat_side = (
+            ((player.get("batSide") or {}).get("code") or "").upper()
+            or bat_sides.get(player.get("id"))
+            or "R"
+        )
 
         conn.execute("""
             INSERT OR REPLACE INTO season_batting
@@ -509,6 +523,27 @@ def sync_season_batting(conn, season: int, date_str: str):
         inserted += 1
 
     conn.commit()
+
+    # B36: rows for this season that the top-500 pull did not touch (T4
+    # call-ups written by earlier, wider syncs) still carry the pre-fix 'R'.
+    # Resolve them too so score_untiered_starters reads real handedness.
+    synced_ids = {(sp.get("player") or {}).get("id") for sp in splits}
+    leftover = [
+        r[0] for r in conn.execute(
+            "SELECT player_id FROM season_batting WHERE season = ?", (season,)
+        ).fetchall()
+        if r[0] and r[0] not in synced_ids
+    ]
+    if leftover:
+        sides = fetch_bat_sides(leftover)
+        conn.executemany(
+            "UPDATE season_batting SET bats = ? WHERE player_id = ? AND season = ?",
+            [(code, pid, season) for pid, code in sides.items()],
+        )
+        conn.commit()
+        print(f"    [BATS] {len(sides)}/{len(leftover)} leftover season rows "
+              f"resolved via /people")
+
     print(f"  [4/6] Done. {inserted} batters synced.")
     return inserted
 
