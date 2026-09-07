@@ -101,6 +101,20 @@ def load_picks(json_path: Path, db_path: Path | None = None) -> tuple[int, int]:
     create_tables(conn)
 
     # Idempotent: clear and re-insert this date's picks.
+    # 2026-09-07: a same-day re-run drops any pre-game revalidation swaps
+    # (revalidate_picks.py) along with the rest of the board. Say so.
+    try:
+        n_reval = conn.execute(
+            "SELECT COUNT(*) FROM daily_picks WHERE date = ? "
+            "AND promoted_due_to = 'revalidate'",
+            (date_str,),
+        ).fetchone()[0]
+    except Exception:
+        n_reval = 0
+    if n_reval:
+        print(f"  [warn] {date_str} had {n_reval} revalidation swap(s) on the "
+              f"card; this reload discards them - re-run revalidate_picks.py "
+              f"after loading.")
     conn.execute("DELETE FROM daily_picks WHERE date = ?", (date_str,))
     conn.commit()
 
