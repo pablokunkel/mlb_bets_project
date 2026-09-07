@@ -4843,8 +4843,13 @@ def pin_fetch_pick_odds_name_matching() -> Result:
         return Result("fetch_pick_odds.normalize_name", Result.HALT, f"{bad}")
 
     # A book spelling initials without periods must still find the pick.
+    # 2026-09-07: the default is now "any US book" (DraftKings never posts the
+    # market via the-odds-api). Every book's 0.5 lines are stored, keyed by
+    # bookmaker; 1.5+ (multi-HR) lines are skipped; a pick counts as priced
+    # when ANY book posts its Over 0.5.
     picks = [{"batter_id": 1, "batter_name": "J. T. Realmuto", "team": "PHI", "game_pk": 1},
-             {"batter_id": 2, "batter_name": "Nobody Priced", "team": "PHI", "game_pk": 1}]
+             {"batter_id": 2, "batter_name": "Nobody Priced", "team": "PHI", "game_pk": 1},
+             {"batter_id": 3, "batter_name": "Only Multi", "team": "PHI", "game_pk": 1}]
     payload = {"id": "e1", "bookmakers": [
         {"key": "fanduel", "markets": [{"key": "batter_home_runs", "outcomes": [
             {"name": "Over", "description": "JT Realmuto", "price": 999, "point": 0.5}]}]},
@@ -4852,20 +4857,31 @@ def pin_fetch_pick_odds_name_matching() -> Result:
             {"name": "Over", "description": "JT Realmuto", "price": 420, "point": 0.5},
             {"name": "Under", "description": "JT Realmuto", "price": -550, "point": 0.5},
             {"name": "Over", "description": "Not Our Guy", "price": 300, "point": 0.5}]}]},
+        {"key": "betrivers", "markets": [{"key": "batter_home_runs", "outcomes": [
+            {"name": "Over", "description": "Only Multi", "price": 1500, "point": 1.5},
+            {"name": "Over", "description": "JT Realmuto", "price": 1800, "point": 1.5}]}]},
     ]}
     rows, missing = fpo.extract_prices(payload, picks, "draftkings")
-    if len(rows) != 2:
-        return Result("fetch_pick_odds.extract_prices", Result.HALT,
-                      f"expected 2 rows (Over+Under for one pick), got {len(rows)}")
-    if any(r["bookmaker"] != "draftkings" for r in rows):
-        return Result("fetch_pick_odds.extract_prices", Result.HALT,
-                      "non-DraftKings bookmaker leaked into the rows")
-    if [m["batter_name"] for m in missing] != ["Nobody Priced"]:
-        return Result("fetch_pick_odds.extract_prices", Result.HALT,
-                      f"unposted pick not flagged: {[m['batter_name'] for m in missing]}")
+    if len(rows) != 2 or any(r["bookmaker"] != "draftkings" for r in rows):
+        return Result("fetch_pick_odds.extract_prices (restricted)", Result.HALT,
+                      f"expected 2 draftkings rows, got {[(r['bookmaker'], r['side']) for r in rows]}")
+    rows, missing = fpo.extract_prices(payload, picks)  # default: any book
+    books = sorted({r["bookmaker"] for r in rows})
+    if len(rows) != 3 or books != ["draftkings", "fanduel"]:
+        return Result("fetch_pick_odds.extract_prices (any book)", Result.HALT,
+                      f"expected 3 rows over draftkings+fanduel, got {len(rows)} {books}")
+    if any(abs(r["point"] - 0.5) > 1e-9 for r in rows):
+        return Result("fetch_pick_odds.extract_prices (any book)", Result.HALT,
+                      "a 1.5-point (multi-HR) line leaked into the rows")
+    if sorted(m["batter_name"] for m in missing) != ["Nobody Priced", "Only Multi"]:
+        return Result("fetch_pick_odds.extract_prices (any book)", Result.HALT,
+                      f"unpriced picks wrong: {[m['batter_name'] for m in missing]}")
+    if fpo.DEFAULT_BOOKMAKER not in fpo.ANY_BOOKMAKER:
+        return Result("fetch_pick_odds.DEFAULT_BOOKMAKER", Result.HALT,
+                      f"default is {fpo.DEFAULT_BOOKMAKER!r}; must be an any-book sentinel")
     return Result(
-        "B34: prop name matching + DK-only + unposted pick flagged", Result.PASS,
-        "accent / suffix / initials folds; 2 rows, 1 logged as unpriced",
+        "B34: prop name matching + any-book capture + 0.5-line filter", Result.PASS,
+        "accent / suffix / initials folds; 3 rows over 2 books, 1.5 lines skipped, 2 unpriced",
     )
 
 
