@@ -5085,11 +5085,17 @@ def pin_revalidate_plan_swaps_scratched_and_dead() -> Result:
 
 
 def pin_revalidate_is_fail_soft() -> Result:
-    """A crash (bad DB path) exits 0 and prints REVALIDATE_CHANGED=0; --strict exits 1."""
+    """A crash (the --db path is not a SQLite file) exits 0 and prints
+    REVALIDATE_CHANGED=0; --strict exits 1.
+
+    Uses this test file itself as the bogus DB: get_db() with an explicit
+    path CREATES a missing file (B24 only fail-louds the default path), so a
+    nonexistent path would not crash — it would silently make a stray DB.
+    """
     import os, subprocess, sys as _sys
     from pathlib import Path as _P
     script = _P(__file__).resolve().parent.parent / "revalidate_picks.py"
-    bad_db = str(_P(__file__).resolve().parent / "definitely" / "missing.db")
+    bad_db = str(_P(__file__).resolve())   # a .py file: "file is not a database"
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     soft = subprocess.run([_sys.executable, str(script), "--date", "2026-01-01", "--db", bad_db],
@@ -5101,7 +5107,9 @@ def pin_revalidate_is_fail_soft() -> Result:
         fails.append(f"default exit={soft.returncode} (want 0); stderr={soft.stderr[-200:]}")
     if "REVALIDATE_CHANGED=0" not in soft.stdout:
         fails.append("missing REVALIDATE_CHANGED=0 marker on the fail-soft path")
-    if strict.returncode == 0 and "FAILED" in strict.stdout:
+    if "FAILED (non-fatal)" not in soft.stdout:
+        fails.append("the bogus DB did not actually crash the script (pin is vacuous)")
+    if strict.returncode == 0:
         fails.append("--strict should exit non-zero on a crash")
     if fails:
         return Result("revalidate fail-soft", Result.HALT, "; ".join(fails))
