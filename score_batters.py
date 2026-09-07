@@ -509,6 +509,52 @@ LEAGUE_AVG_PITCHER = {
 # career mean): this is a hard, score-level floor. The two could stack
 # (career-prior fixes "his rates LOOK bad due to small sample"; HR-floor
 # fixes "his accumulated season HR count is real proof").
+# 2026-09-07: small-sample shrink on the synthetic power inputs.
+#
+# barrel_pct / exit_velo / hr_fb_pct are algebraic transforms of hr_per_pa
+# and slg (see fetch_daily_data._splits_to_batters). On a 4-PA season line
+# (3 HR in 4 AB in September call-up, say) they blow up to the anchor caps
+# and score_power returns 100 — and the 0.48 weight then puts a batter with
+# no track record at the top of the card. Backtest 2026-06-03 → 09-06: the
+# 30 published picks whose batter had <= 30 season AB at pick time went
+# 0-for-30; 13 of them carried power_score = 100. The ranks 9-12 they
+# displaced hit at 16.7%.
+#
+# Fix: the score is pulled toward neutral (50) in proportion to how much
+# of MIN_POWER_SAMPLE_PA the batter's sample covers. 60 PA at 100 stays
+# 100; 30 PA at 100 becomes 75; 4 PA at 100 becomes 53. Real, plausible
+# inputs on a full-season hitter are untouched. The season-HR floor still
+# applies afterward (it only elevates, and a sub-5-HR sample never fires
+# it), so an established slugger's floor is unaffected.
+#
+# The sample size is the PA behind the synthetic inputs: `pa` on the live
+# tier dict (season-to-date, or the cur+prior blend build_live_tiers
+# applies below window_games — which is exactly the sample those inputs
+# were computed on) and season_batting.pa on T4 stubs. Persisted to
+# pick_inputs.power_sample_pa so backtest_factors / refit_weights replay
+# the same shrink; NULL (pre-2026-09-07 rows) → no shrink, matching how
+# those rows were scored.
+USE_SMALL_SAMPLE_SHRINK = True
+MIN_POWER_SAMPLE_PA = 60
+
+
+def small_sample_weight(sample_pa: float | int | None) -> float:
+    """Fraction of the power score's deviation from neutral that survives.
+
+    1.0 when the sample is unknown (None) or >= MIN_POWER_SAMPLE_PA;
+    linear toward 0.0 as the sample shrinks to 0 PA.
+    """
+    if sample_pa is None:
+        return 1.0
+    try:
+        pa = float(sample_pa)
+    except (TypeError, ValueError):
+        return 1.0
+    if pa != pa:  # NaN
+        return 1.0
+    return max(0.0, min(1.0, pa / MIN_POWER_SAMPLE_PA))
+
+
 USE_SEASON_HR_FLOOR = True   # 2026-05-03: flipped on after 14d harness showed
                               # decisive wins on all 4 metrics. 30d window was
                               # ambiguous because most April hitters hadn't yet
@@ -800,6 +846,18 @@ def score_power(batter: dict) -> float:
             scores.append(min_max_scale(ri, 0.100, 0.300))
 
     base_score = float(np.mean(scores)) if scores else 50.0
+
+    # 2026-09-07: small-sample shrink toward neutral. See the
+    # USE_SMALL_SAMPLE_SHRINK comment block for the mechanism and the
+    # 0-for-30 backtest that motivated it. Applied BEFORE the season-HR
+    # floor so an established slugger's floor still elevates.
+    if USE_SMALL_SAMPLE_SHRINK:
+        sample_pa = batter.get("power_sample_pa")
+        if sample_pa is None:
+            sample_pa = batter.get("pa")
+        w = small_sample_weight(sample_pa)
+        if w < 1.0:
+            base_score = 50.0 + (base_score - 50.0) * w
 
     # Season-HR floor (off by default; gated by USE_SEASON_HR_FLOOR).
     # Hard floor based on the batter's accumulated season HR count.
@@ -1796,6 +1854,12 @@ def compute_composite(
         # batter dict by generate_picks.load_season_hr_lookup; persisted
         # here so backtest_factors.rescore_row can apply the same floor.
         "season_hr":               batter.get("season_hr"),
+        # 2026-09-07: PA behind the synthetic power inputs (small-sample
+        # shrink input). Live tier dict `pa` (season-to-date or the
+        # cur+prior blend); T4 stubs carry season_batting.pa.
+        "power_sample_pa":         (batter.get("power_sample_pa")
+                                    if batter.get("power_sample_pa") is not None
+                                    else batter.get("pa")),
         # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal
         # inputs. Set by fetch_batter_pitch_type_splits via generate_picks;
         # persist here so backtest_arsenal_inputs.py can replay variants

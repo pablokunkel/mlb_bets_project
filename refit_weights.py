@@ -134,6 +134,7 @@ def load_from_db(
             pi.humidity_pct, pi.is_dome,
             pi.batting_order,
             pi.season_hr,
+            pi.power_sample_pa,
             pi.bats, pi.throws,
             pi.slate_park_pct, pi.slate_weather_pct,
             pi.slate_pitcher_vulnerability_pct,
@@ -205,6 +206,10 @@ def rescore_row(row: pd.Series) -> dict:
         "woba_vs_hand": row.get("woba_vs_hand"),
         "bats": bats,
         "season_hr": row.get("season_hr"),
+        # 2026-09-07: small-sample shrink input. NULL on rows written
+        # before the column existed -> score_power applies no shrink,
+        # which is exactly how those rows were scored in production.
+        "power_sample_pa": row.get("power_sample_pa"),
     }
     pitcher = {
         "hr_per_9": row.get("pitcher_hr_per_9"),

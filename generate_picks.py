@@ -211,7 +211,7 @@ def load_season_batting_lookup(season: int) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT player_id, player_name, games, hr, bats,
+            SELECT player_id, player_name, games, hr, bats, pa,
                    barrel_pct, exit_velo, hr_fb_pct, iso, woba
             FROM season_batting
             WHERE season = ?
@@ -574,6 +574,12 @@ def enrich_with_season_batting(batter: dict, season_lookup: dict) -> dict:
     if enriched:
         # Mark provenance so downstream diagnostics can flag this row
         batter["_power_source"] = "season_batting_fallback"
+        # 2026-09-07: the power inputs now come from season_batting, so the
+        # sample behind them is season_batting.pa — not the live dict's
+        # (possibly prior-season-blended) `pa`. score_power's small-sample
+        # shrink reads power_sample_pa first.
+        if sb.get("pa") is not None:
+            batter["power_sample_pa"] = sb["pa"]
     if barrel_overwritten:
         batter["_barrel_pct_source"] = "season_batting_fallback"
     return batter
@@ -1921,6 +1927,11 @@ def score_untiered_starters(
                         stub["bats"] = sb_row["bats"]
                     if sb_row.get("hr") is not None:
                         stub["hr"] = sb_row["hr"]
+                    # 2026-09-07: season PA behind the fallback power
+                    # inputs -> score_power's small-sample shrink. A T4
+                    # stub with 4 PA and 3 HR no longer scores power=100.
+                    if sb_row.get("pa") is not None:
+                        stub["power_sample_pa"] = sb_row["pa"]
                 if career_lookup:
                     stub = enrich_with_career_prior(stub, career_lookup)
                 stubs.append((stub, game, i, side))
