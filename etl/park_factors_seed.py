@@ -73,6 +73,14 @@ PARK_FACTORS_SEED: list[tuple[str, int, int, int, str]] = [
 
     # ─── Extreme pitcher parks ───────────────────────────────────────────
     ("Oracle Park",                82, 72, 90, "Triples Alley obliterates LHB; RHB roughly average"),
+
+    # ─── Non-permanent / temporary MLB venues (B35, audit P3-9) ─────────
+    # No sourced multi-year Statcast factor exists for these, so the prior
+    # is neutral. etl.compute_park_factors blends the season's empirical
+    # rate on top of this (Sutter's 2026 raw rate is league-leading).
+    ("Sutter Health Park",        100, 100, 100, "A's temp home 2025-27 (West Sacramento); neutral prior, empirical blend carries the signal"),
+    ("Las Vegas Ballpark",        100, 100, 100, "A's occasional 2026 home series (Summerlin); neutral prior"),
+    ("Field of Dreams",           100, 100, 100, "Dyersville once-a-year game; neutral prior"),
 ]
 
 

@@ -90,6 +90,11 @@ VENUE_COORDS = {
     "Wrigley Field": (41.9484, -87.6553),
     "Yankee Stadium": (40.8296, -73.9262),
     "American Family Field": (43.0280, -87.9712),
+    # B35 / audit P3-9: temporary + one-off venues that previously fell
+    # through to the coords_missing_default weather row.
+    "Sutter Health Park": (38.5804, -121.5138),   # West Sacramento (Wikipedia infobox)
+    "Las Vegas Ballpark": (36.1523, -115.3294),   # Summerlin South (Wikipedia infobox)
+    "Field of Dreams": (42.4990, -91.0590),       # MLB field, Dyersville IA (Wikipedia infobox)
 }
 
 # Venue → IANA timezone (used for weather hour lookups)
@@ -124,6 +129,9 @@ VENUE_TZ = {
     "Wrigley Field": "America/Chicago",
     "Yankee Stadium": "America/New_York",
     "American Family Field": "America/Chicago",
+    "Sutter Health Park": "America/Los_Angeles",
+    "Las Vegas Ballpark": "America/Los_Angeles",
+    "Field of Dreams": "America/Chicago",
 }
 
 from etl.db import DATA_DIR, CACHE_DIR  # single anchor (B26)
@@ -1234,24 +1242,21 @@ def get_park_factors_data(season: int) -> pd.DataFrame:
     then falls back to the curated seed dataset in etl.park_factors_seed.
 
     Returns a DataFrame with columns:
-        venue, hr_pf_overall, hr_pf_lhb, hr_pf_rhb, hr_park_factor (legacy alias)
+        venue, hr_pf_overall, hr_pf_lhb, hr_pf_rhb, hr_park_factor (legacy alias),
+        pf_source
+
+    B35 (2026-08-21): routed through etl.compute_park_factors so the
+    resolution order is empirical_blend_v1 -> curated DB row -> seed table
+    (per venue, latest season). *season* is accepted for signature compat;
+    the resolver always takes the latest season present per source.
     """
-    # Try the database first
     try:
-        from etl.db import get_db
-        conn = get_db()
-        df = pd.read_sql_query(
-            "SELECT venue, hr_pf_overall, hr_pf_lhb, hr_pf_rhb "
-            "FROM park_factors WHERE season = ?",
-            conn, params=(season,)
-        )
-        conn.close()
+        from etl.compute_park_factors import load_park_factors_for_scoring
+        df = load_park_factors_for_scoring()
         if not df.empty:
-            df["hr_park_factor"] = df["hr_pf_overall"]
-            print(f"  Loaded {len(df)} park factors from DB for {season}")
             return df
     except Exception as e:
-        print(f"  [park_factors] DB lookup failed ({e}), falling back to seed")
+        print(f"  [park_factors] resolver failed ({e}), falling back to seed")
 
     # Fallback to curated seed
     return get_hardcoded_park_factors()

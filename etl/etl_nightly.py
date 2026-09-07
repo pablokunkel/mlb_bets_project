@@ -41,6 +41,7 @@ from etl.db import (
     log_etl_start, log_etl_complete, log_etl_fail,
 )
 from etl.park_factors_seed import get_seed_dataframe as get_park_seed_df
+from etl.compute_park_factors import sync_empirical_park_factors
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -765,6 +766,15 @@ def run_nightly(date_str: str, backfill: bool = False):
         # pulls; just joins batter_hr_events + daily_slate. Idempotent
         # INSERT OR REPLACE so re-running the nightly is safe.
         n = sync_park_archetype(conn, date_str)
+        total_rows += n
+
+        # Step 8: Empirical park factors (B35, 2026-08-21). Blends this
+        # season's both-teams HR/game at each venue (vs the home team's
+        # road games) toward the curated seed rows written in step 6, and
+        # upserts source='empirical_blend_v1' rows alongside them. Runs
+        # after etl_outcomes' 1am hr_events ingestion. Idempotent; never
+        # raises (scoring falls back to curated rows if it writes nothing).
+        n = sync_empirical_park_factors(conn, season)
         total_rows += n
 
         log_etl_complete(conn, log_id, rows=total_rows)

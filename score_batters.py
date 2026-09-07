@@ -91,7 +91,16 @@ PARK_CF_BEARING = {
     "Wrigley Field":                68,
     "Yankee Stadium":               18,
     "American Family Field":        0,    # retractable
-    "Sutter Health Park":           340,  # Sacramento A's temp home (2025-26); CF roughly NNW — verify
+    # B35 / audit P3-9 + LOW-5. Sutter: park is oriented to the northeast
+    # (sun rises behind RF, sets behind the LF corner — Itinerant Fan
+    # stadium guide); the old 340 (NNW) was wrong. Las Vegas: home plate
+    # faces northeast, sun rises over CF (Shaded Seats guide). Field of
+    # Dreams: the movie site sits beyond the RF wall (windows in the RF
+    # wall face it — Wikipedia); MLB field is W/NW of the movie field, so
+    # RF ~ESE and CF ~ENE.
+    "Sutter Health Park":           45,
+    "Las Vegas Ballpark":           50,
+    "Field of Dreams":              60,
 }
 
 

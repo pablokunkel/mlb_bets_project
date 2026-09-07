@@ -163,8 +163,12 @@ def main():
     print(f"  season_pitching: {len(season_pitching)} pitchers")
 
     # park_factors → venue → hr_pf_overall
+    # B35: park_factors now carries both curated ('seed') and
+    # 'empirical_blend_v1' rows per venue; order so the blended row wins
+    # in the dict below.
     pf_rows = conn.execute("""
         SELECT venue, hr_pf_overall FROM park_factors WHERE season = ?
+        ORDER BY CASE WHEN source = 'empirical_blend_v1' THEN 1 ELSE 0 END
     """, (args.season,)).fetchall()
     park_factors = {r["venue"]: r["hr_pf_overall"] for r in pf_rows}
     print(f"  park_factors: {len(park_factors)} venues")
