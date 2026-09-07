@@ -2,10 +2,21 @@
 """
 fetch_pick_odds.py — Capture the sportsbook HR-prop price on each published pick.
 
-B34. Snapshots DraftKings' `batter_home_runs` Over/Under price for every pick
-on the day's card, at pick time, into `hr_prop_odds`. The data is
+B34. Snapshots the `batter_home_runs` Over/Under price for every pick on
+the day's card, at pick time, into `hr_prop_odds`. The data is
 unrecoverable after the fact — the-odds-api's free tier has no usable
 historical player-prop endpoint — so this runs every day the pipeline runs.
+
+2026-09-07 fix: the original build hard-filtered to DraftKings, and
+the-odds-api does not carry DraftKings' HR-prop lines at all — every run from
+2026-08-21 to 2026-09-07 logged "no draftkings batter_home_runs line" for all
+8 picks and stored zero rows. The market IS served (BetRivers posts it, others
+come and go), so the default is now "any US book": the event call is made
+without a bookmakers filter (same 1-credit cost — pricing is per market x
+region, not per book), every book's 0.5-point lines are stored (the PK already
+carries `bookmaker`), and `--bookmaker` remains as an optional restriction.
+Only `point == 0.5` ("to hit a HR") lines are kept; the 1.5+ (multi-HR) lines
+share a PK slot and are a different bet.
 
 Two things this unlocks later:
   - real break-even per leg instead of assuming a flat +300
@@ -56,7 +67,13 @@ from etl.db import get_db, create_tables, RESULTS_DIR, SITE_DATA_DIR
 from features_v2 import ODDS_API_BASE, _team_to_abbrev
 
 MARKET = "batter_home_runs"
-DEFAULT_BOOKMAKER = "draftkings"
+# "any" = no bookmakers filter on the request; store every US book that posts
+# the market. Pass a specific key (e.g. "draftkings") to restrict.
+DEFAULT_BOOKMAKER = "any"
+ANY_BOOKMAKER = {"any", "all", "", None}
+# The "to hit a home run" line. Books also post 1.5 / 2.5 (multi-HR) lines in
+# the same market; those are a different bet and would collide on the PK.
+HR_LINE_POINT = 0.5
 DEFAULT_SNAPSHOT = "noon"
 REQUEST_TIMEOUT = 15
 
@@ -273,16 +290,19 @@ def fetch_events(api_key: str, date_str: str) -> list[dict]:
 
 
 def fetch_event_odds(api_key: str, event_id: str, bookmaker: str) -> dict:
-    """One event's HR props. Costs 1 credit (1 market x 1 region)."""
+    """One event's HR props. Costs 1 credit (1 market x 1 region) whether
+    the request names one bookmaker or none."""
+    params = {
+        "apiKey": api_key,
+        "regions": "us",
+        "markets": MARKET,
+        "oddsFormat": "american",
+    }
+    if bookmaker not in ANY_BOOKMAKER:
+        params["bookmakers"] = bookmaker
     resp = requests.get(
         f"{ODDS_API_BASE}/sports/baseball_mlb/events/{event_id}/odds",
-        params={
-            "apiKey": api_key,
-            "regions": "us",
-            "markets": MARKET,
-            "bookmakers": bookmaker,
-            "oddsFormat": "american",
-        },
+        params=params,
         timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
@@ -341,23 +361,28 @@ def match_events_to_picks(
 def extract_prices(
     payload: dict,
     picks: list[dict],
-    bookmaker: str,
+    bookmaker: str = DEFAULT_BOOKMAKER,
 ) -> tuple[list[dict], list[dict]]:
     """
     Pull each pick's Over/Under out of one event's odds payload.
 
-    Returns (rows, picks_without_a_two_way_line). A pick with no posted line is
-    normal at noon — books do not price every batter — so it is logged, never
-    fatal.
+    Every bookmaker in the payload contributes rows unless `bookmaker` names
+    one specifically. Only HR_LINE_POINT (0.5, "to hit a HR") lines are kept.
+
+    Returns (rows, picks_without_an_over_line). A pick is "priced" when at
+    least one book posts an Over 0.5 for it; the Under is stored when present
+    but is not required (some books post the Over only). A pick with no
+    posted line is normal early in the day — books do not price every batter
+    — so it is logged, never fatal.
     """
     by_key = {normalize_name(p["batter_name"]): p for p in picks}
     by_tight = {_tight_key(k): p for k, p in by_key.items()}
-    found: dict[int, set[str]] = {}
+    priced: set[int] = set()
     rows: list[dict] = []
 
     for bk in payload.get("bookmakers", []):
         bk_key = bk.get("key", "")
-        if bk_key != bookmaker:
+        if bookmaker not in ANY_BOOKMAKER and bk_key != bookmaker:
             continue
         for market in bk.get("markets", []):
             if market.get("key") != MARKET:
@@ -372,6 +397,10 @@ def extract_prices(
                 side = (oc.get("name") or "").strip().title()
                 if side not in ("Over", "Under"):
                     continue
+                point = oc.get("point")
+                point = float(point) if point is not None else HR_LINE_POINT
+                if abs(point - HR_LINE_POINT) > 1e-9:
+                    continue
                 price = oc.get("price")
                 rows.append({
                     "batter_id": pick["batter_id"],
@@ -381,11 +410,12 @@ def extract_prices(
                     "bookmaker": bk_key,
                     "side": side,
                     "price_american": int(price) if price is not None else None,
-                    "point": float(oc["point"]) if oc.get("point") is not None else None,
+                    "point": point,
                 })
-                found.setdefault(pick["batter_id"], set()).add(side)
+                if side == "Over":
+                    priced.add(pick["batter_id"])
 
-    missing = [p for p in picks if len(found.get(p["batter_id"], set())) < 2]
+    missing = [p for p in picks if p["batter_id"] not in priced]
     return rows, missing
 
 
@@ -467,13 +497,21 @@ def run(
         all_rows.extend(rows)
         no_line.extend(missing)
 
+    book_label = "any US book" if bookmaker in ANY_BOOKMAKER else bookmaker
     for p in no_line:
         print(
-            f"  [odds] UNMATCHED (no {bookmaker} {MARKET} line): "
+            f"  [odds] UNMATCHED (no {MARKET} Over {HR_LINE_POINT} line at {book_label}): "
             f"{p['batter_name']} ({p['team']})"
         )
 
-    n_priced = len({r["batter_id"] for r in all_rows})
+    by_book: dict[str, set[int]] = {}
+    for r in all_rows:
+        by_book.setdefault(r["bookmaker"], set()).add(r["batter_id"])
+    if by_book:
+        print("  [odds] picks priced per book: " + ", ".join(
+            f"{bk}={len(ids)}" for bk, ids in sorted(by_book.items())))
+
+    n_priced = len({r["batter_id"] for r in all_rows if r["side"] == "Over"})
     if dry_run:
         print(f"  [odds] DRY RUN - would store {len(all_rows)} rows")
     elif all_rows:
@@ -491,13 +529,15 @@ def run(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Capture DraftKings HR-prop odds for today's published picks."
+        description="Capture sportsbook HR-prop odds for today's published picks."
     )
     parser.add_argument("--date", default=None, help="YYYY-MM-DD (default: today)")
     parser.add_argument("--db", default=None, help="Path to hr_bets.db (default: canonical)")
     parser.add_argument("--json", default=None,
                         help="Read picks from this JSON instead of daily_picks")
-    parser.add_argument("--bookmaker", default=DEFAULT_BOOKMAKER)
+    parser.add_argument("--bookmaker", default=DEFAULT_BOOKMAKER,
+                        help="the-odds-api bookmaker key to restrict to "
+                             "(default: any - store every US book posting the market)")
     parser.add_argument("--snapshot", default=DEFAULT_SNAPSHOT,
                         help="Snapshot label (default: noon; B34b will add a close snapshot)")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and log, but do not write")
