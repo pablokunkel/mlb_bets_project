@@ -1,6 +1,6 @@
 # Backlog
 
-Project queue for MLB HR Bets. Each item is scoped enough that a future session (or future-you on a cold context) can pick it up without re-reading prior conversations. Last updated 2026-05-27.
+Project queue for MLB HR Bets. Each item is scoped enough that a future session (or future-you on a cold context) can pick it up without re-reading prior conversations. Last updated 2026-09-07.
 
 > **For the model behavior, see `How_The_HR_Model_Works.md`. For the deploy / release process, see `DEPLOY.md`. For component map and DB tables, see `ARCHITECTURE.md`. For monthly weight-refit decisions, see `WEIGHT_REFIT_LOG.md`.**
 
@@ -552,17 +552,17 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ---
 
-### B35. Empirical park factors (full build) + missing-venue geo rows
+### ~~B35. Empirical park factors (full build) + missing-venue geo rows~~ — SHIPPED PR #125 (2026-09-07)
 
-**Status.** **PR #125 open — reviewed by PM 2026-08-21, awaiting user sign-off** (changes composites: Sutter batters' park_score 50.0 → 96.7). Spawned from the 2026-08-21 park check + audit P3-9.
+**Status.** **SHIPPED PR #125 (merged 2026-09-07)** — rebased onto main, `python -m tests.smoke` 135 PASS / 1 pre-existing WARN, dry-run table re-checked (Sutter 125, Busch −20). Merged as part of the 2026-09-07 cleanup with the user's blanket hand-off; the first nightly after the merge writes the blended rows. Spawned from the 2026-08-21 park check + audit P3-9.
 
 **What it does.** New `etl/compute_park_factors.py`: one-year home-vs-road HR/game park factor per venue, shrunk toward the curated seed (K=60 overall / K=100 per hand), written nightly as `park_factors` rows with `source='empirical_blend_v1'` (PK migrated to `(venue, season, source)`, transactional + idempotent). Live read path now DB blended → curated → hardcoded seed, with loud fallthrough logging. Adds Sutter Health Park / Las Vegas Ballpark / Field of Dreams to the park seed, `VENUE_COORDS`, `VENUE_TZ`, `PARK_CF_BEARING` (Sutter bearing corrected 340 → 45 NE).
 
 **Review numbers.** Sutter blends to **125.3** (raw 158.3, G=46, w=0.43). Movers >20 vs curated: Sutter +25, **Busch −21** (1.35 HR/G home vs 2.40 road — eyeball this). 45-day backtest: top-8 capture 63 → 61 of 354 (noise), park-rank AUC 0.507 → 0.538. Smoke 134 PASS. Handedness splits are degenerate until B36 lands (see below) — the module switches to real hand splits automatically once `bats` is real.
 
-### B36. `bats` is 'R' for every batter — platoon + park-handedness computed as if the whole league hits right-handed
+### ~~B36. `bats` is 'R' for every batter — platoon + park-handedness computed as if the whole league hits right-handed~~ — SHIPPED PR #131 (2026-09-07)
 
-**Status.** Queued — **P0, do next after #125 merges** (lane conflict: touches `etl/etl_nightly.py`, `fetch_daily_data.py`, `generate_picks.py`). Found 2026-08-21 during the B35 review; the audit marked `bats` HEALTHY because it is 100% *populated* — with the same letter.
+**Status.** **SHIPPED PR #131 (2026-09-07).** `fetch_daily_data.fetch_bat_sides()` batches `/people?personIds` (≤100/call, cached, one retry, unresolved logged — never a silent default); `_splits_to_batters`, `get_roster` and `etl_nightly.sync_season_batting` (+ a leftover-row sweep) resolve real L/R/S. Live check: 500/500 resolved → 262 R / 185 L / 53 S; `season_batting` 2026 on the scratch copy 360 R / 219 L / 69 S. Smoke: 2 pins + `db_pick_inputs_bats_distribution` (INFO until the first post-2026-09-08 run, then WARN if the L share leaves 20-40%). Follow-ups filed as **B39** below. Found 2026-08-21 during the B35 review; the audit marked `bats` HEALTHY because it is 100% *populated* — with the same letter.
 
 **Evidence.** `pick_inputs.bats` = 'R' on 5,947/5,947 August rows; `season_batting.bats` = 'R' on 639/639; `daily_lineup.bats` NULL on all rows. `platoon_advantage` = 1 on 28% of rows — exactly the LHP share — i.e. the platoon signal is currently "pitcher is left-handed" regardless of the batter.
 
@@ -571,6 +571,27 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 **Impact.** ~40% of PAs are LHB/switch. For all of them: platoon inverted (LHB vs RHP scores 0, LHB vs LHP scores 1), v1's +10 platoon bonus misapplied, park `hr_pf_lhb/rhb` split wrong (Oracle 72 vs 90 is a 9-point park_score swing), wind alignment handedness wrong, and v2 archetype similarity's handedness term wrong. Touches matchup (0.28) + park (0.04) + weather (0.08).
 
 **Fix shape.** One batch call/day to `/people?personIds=<ids>` (chunks of ≤100) returns `batSide.code` (L/R/S) for every player; write real values into `season_batting.bats` in the nightly sync and into the lineup/roster batter dicts at build time; never default silently — log a count of unresolved ids. Backfill `season_batting.bats` for 2026 in the same PR so scoring is correct the first morning. Confirm `score_batters` handles 'S' sanely (platoon: switch hitters always have the advantage; park: use overall PF). Smoke pin: `bats` on a recent slate has ≥3 distinct values and a plausible L share (25-35%). Report the 45-day backtest delta — this one is expected to move capture, unlike B35.
+
+### B37. ~~Small-sample power shrink (min-AB)~~ — SHIPPED PR #130 (2026-09-07)
+
+**Status.** Shipped. `score_power` pulls the score toward 50 by `min(1, sample_pa / 60)` before the season-HR floor (`USE_SMALL_SAMPLE_SHRINK`, `MIN_POWER_SAMPLE_PA`); sample PA persisted as `pick_inputs.power_sample_pa` and threaded through `backtest_factors` / `refit_weights` rescore. **Why:** the 30 published picks with ≤30 season AB at pick time (2026-06-03 → 09-06) went 0-for-30; 13 carried `power_score = 100`. Replay: +4 hits / 738. Closes the "min-AB filter for top-8 picks" item scoped 2026-08.
+
+### B38. ~~Pre-game pick revalidation~~ — SHIPPED PR #132 (2026-09-07)
+
+**Status.** Shipped. `revalidate_picks.py` + `.github/workflows/revalidate-picks.yml` (crons 16:37 + 21:07 UTC = 12:37 PM + 5:07 PM ET, `hr-bets-db` group). Re-fetches schedule + posted lineups; a selected pick whose game is dead or whose posted lineup omits him is swapped for the next-best pending-game batter on the stored board (production rules; in-progress games untouched); export + push only when the card changed. **Why:** audit P0-1 / P1-4 — 38/738 picks (5.1%) never played; the 13:07 UTC cron actually fires 9:30 AM-7 PM ET. **Watch:** first scheduled runs 2026-09-08; look for `[revalidate] SUMMARY` and `promoted_due_to='revalidate'` rows. Design choice recorded: re-check + swap instead of moving the cron (drift makes any single time unreliable; a swap is deterministic).
+
+### B39. Follow-ups from the 2026-09-07 backtest (`docs/backtest_2026-09-07.md`)
+
+**Status.** Queued, in priority order. None is a reweight — the backtest shows every reweight inside the ±1.5-point noise band; these are new inputs / correctness.
+
+1. **Prior-season HR as a talent prior.** The strongest unused input (permutation importance second only to ISO; `rank(season HR) + rank(prior HR)` 20.9% vs 19.1%, AUC 0.619 vs 0.608). Shape: shrunk HR/G talent rate `(HR + 0.6·HR_prev + 40·0.115) / (G + 0.6·G_prev + 40)` as a 7th power input, or the season-HR floor keyed on `season_hr + a·prior_hr`. **Validate through `refit_weights.py`'s OOS gate**, not the 738-pick replay.
+2. **As-of-date real Statcast** (`brl_pa`, hard-hit%) via the nightly bulk pull, stored beside the synthetic values. A leaky season-final join gave the best AUC of anything tried (0.634). Then retire the `hr_per_pa × 200` barrel synthesis (B1/B6/P0-2b).
+3. **Pitcher hand-split HR/9** (`sitCodes=vl,vr`) now that `bats` is real; and a proper platoon term in matchup v2 (the +10 v1 bonus is the only explicit one).
+4. **Expected-PA multiplier by batting order** (≈ +8% for 1-4, −8% for 7-9 — the logistic fit's `bo` coefficient). Replaces the anti-correlated `score_lineup_position` table (B15) rather than fixing it.
+5. **Switch hitters on the park factor:** slate-percentile path uses `adj = 0`, fixed-anchor fallback averages `(lhb+rhb)/2` — make the two paths agree (pre-existing; activated by B36).
+6. **`daily_lineup.bats`** is still NULL (not read by scoring); populate from `fetch_bat_sides` in `etl_morning.fetch_lineups` for the diagnostics.
+7. **Re-anchor the goal.** The docs and site still present 36-40%; the hindsight ceiling on this season's data is ~25% (top-10 hitters by HR/game: 25.1%), the market's shortest HR prices imply 24-29% before vig. Target band for the card: 21-24%.
+8. **`hr_prop_odds` consumers.** Now that it fills (PR #129), build the calibration / +EV view (item 5 in the active queue) once ~30 days of BetRivers 0.5 lines exist. Only 3 of 8 picks had events left at 7 PM on 09-07; the 09:07 + 3:30 PM runs see the full slate.
 
 ## Model factor review & heatmap (2026-05-19/20 sessions)
 
@@ -1106,6 +1127,17 @@ Open questions before this is worth scoping: which markets are actually offered 
 ## Recently shipped
 
 (Newest first. Trim entries past ~6 weeks.)
+
+### 2026-09-07 — PR cleanup + full backtest + four structural fixes (user hand-off session)
+
+- **Backtest** `docs/backtest_2026-09-07.md` + `WEIGHT_REFIT_LOG.md` 2026-09-07: card at 19.1% (141/738) since A1; "top 8 by season HR count" hits 19.6% on the same days; every reweight / learned model 17-21% (noise); hindsight ceiling ~25%. **No weight change.** Lineup timing measured (cron drift 9:30 AM-7 PM ET) and shown NOT to predict hit rate — it costs dead picks (5.1%), not ranking.
+- **PR #125 — B35** merged (empirical park factors + Sutter / Las Vegas / Field of Dreams geo rows).
+- **PR #129 — B34 fix** `fetch_pick_odds.py`: `hr_prop_odds` had been empty since B34 — the-odds-api never carries DraftKings `batter_home_runs`; now stores every US book's 0.5 lines (BetRivers today), 1.5+ multi-HR lines skipped. Live dry run: 2/8 priced on the 3-game remainder at 7 PM.
+- **PR #130 — B37** small-sample power shrink (`MIN_POWER_SAMPLE_PA = 60`, `pick_inputs.power_sample_pa`): the 0-for-30 tiny-sample class is gone; e2e verified on a scratch DB (240/240 rows carry the column, no power=100 rows).
+- **PR #131 — B36** real batter handedness via `/people` (was 'R' league-wide).
+- **PR #132 — B38** pre-game pick revalidation workflow (12:37 PM + 5:07 PM ET swaps for scratched / rained-out picks).
+- **Branches** `fix/filter-postponed-games-2026-05-05`, `fix/live-today-unique-hitters-2026-05-05`, `form-factor-rebuild`, `heatmap-cf-limit-fix`, `matchup-vulnerability-fix` deleted — every change already on main (PR #40 / #57 / cashed-count dedupe / heatmap season cutoff verified by grep). 71 merged `origin/*` branches remain; `git branch -r --merged origin/main` lists them if you want them gone.
+- **Docs** `docs/handoff_2026-09-07.md` (new cold-start doc), CLAUDE.md read order + daily flow updated.
 
 ### 2026-08-21 (day) — B34b afternoon odds snapshot
 
