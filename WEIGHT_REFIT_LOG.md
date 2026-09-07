@@ -6,6 +6,74 @@ Refit driver: `refit_weights.py` (run monthly via Windows scheduled task `mlb-hr
 
 ---
 
+## 2026-09-07 — Full backtest of the A1 weights; no weight change; four structural fixes shipped instead
+
+**Status: no weight change shipped.** Full write-up in
+`docs/backtest_2026-09-07.md`. This entry records the decision.
+
+### Why no refit
+
+Live card since A1 went live (2026-06-03 → 09-06, 738 picks): **19.1%**.
+A one-line baseline — confirmed starters sorted by season HR count, top 8,
+max 2/game — hits **19.6%** on the same days. Everything else tried lands
+inside the ±1.5-point noise band of a 738-pick sample:
+
+| candidate | top-8 | AUC |
+|---|---:|---:|
+| shipped default (.48/.28/.04/.12/.08/0) | 19.1% | 0.608 |
+| season HR count | 19.6% | 0.606 |
+| default weights, no platoon dampener | 17.5% | – |
+| FREE (05-26) / power-only / 50-50 / legacy / 9 other blends | 14.1-17.5% | – |
+| gradient boosting, 35 as-of features, train 2025 → test Jun-Sep | 16.9% | 0.584 |
+| gradient boosting, rolling-origin monthly CV | 19.6% | 0.618 |
+| logistic, 14 features | 17.9-19.4% | 0.61-0.62 |
+| rank(season HR) + rank(prior-season HR) | 20.9% | 0.619 |
+
+The one input the model ignores that carries consistent signal is
+**prior-season HR** (permutation importance second only to ISO; AUC +0.013;
+top-8 +1.8 points — still inside noise). It is the next refit candidate,
+not a ship-now.
+
+The realistic ceiling is far below the 36-40% the docs quote: with perfect
+hindsight the 10 most HR-prolific hitters of Jun-Sep homered in 25.1% of
+their games. A great model tops out around 24%.
+
+### What shipped instead (all structural, none a reweight)
+
+- **PR #130** small-sample power shrink (`MIN_POWER_SAMPLE_PA = 60`,
+  `pick_inputs.power_sample_pa`): the 30 published picks with ≤30 season AB
+  went 0-for-30; replay +4 hits / 738.
+- **B36** real batter handedness via `/people` — every `bats` was 'R'; the
+  platoon signal was inverted for ~40% of batters. Correctness fix for
+  matchup v1, park L/R skew, wind pull side, archetype similarity.
+- **Pre-game revalidation** (`revalidate_picks.py`, 12:37 PM + 5:07 PM ET):
+  5.1% of picks never played; swapped for ranks 9-12 (~17%) before first
+  pitch.
+- **PR #129** HR-prop odds capture from any US book — `hr_prop_odds` had
+  been empty since B34 (DraftKings never posts the market on the API).
+- **PR #125 / B35** merged: empirical park factors + Sutter / Las Vegas /
+  Field of Dreams geo rows.
+
+### Next refit prerequisites
+
+1. Prior-season HR as a talent prior (shrunk HR/G or floor on
+   `season_hr + a·prior_hr`) — evaluate through `refit_weights.py`'s OOS
+   gate, not the 738-pick replay.
+2. As-of-date real Statcast (`brl_pa`) nightly; a leaky season-final join
+   gave the best AUC of anything tried (0.634).
+3. Pitcher hand-split HR/9 now that `bats` is real.
+4. Expected-PA multiplier by batting order (the logistic fit wants ≈ ±8%).
+
+### Verification
+
+Every PR: `python -m tests.smoke --pin-only` on Python 3.14 / PowerShell
+(131 → 138 PASS as pins accrued, 0 HALT). End-to-end `generate_picks` +
+`load_picks_to_db` on a scratch DB copy for #130; live `/people` + season
+sync on the scratch copy for B36; live dry run + forced-swap write test for
+revalidation.
+
+---
+
 ## 2026-06-02 — A1 close: flip default to candidate A + remove park additive
 
 **Status: shipped.** Closes the A1 cycle opened by the 2026-05-26 refit (which

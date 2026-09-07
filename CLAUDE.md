@@ -29,16 +29,21 @@ confirmed starters only, non-postponed games), and publishes to
   `python infra/r2_sync.py pull`
 - **GitHub Actions** runs the daily pipeline. Cloudflare Workers Builds
   auto-deploys `dingersonly.cc` on push to `main`.
-- **Daily flow:** 2am nightly ETL → **09:07 ET** pipeline (cron 13:07 UTC —
-  lineups + weather + score + export + commit + push; note this is HOURS
-  before MLB posts lineups, see audit 2026-08-21 P0-1) → 1am next-day
+- **Daily flow:** 08:00 UTC nightly ETL → **13:07 UTC cron** picks pipeline
+  (lineups + weather + score + export + commit + push; GH Actions drift means
+  it actually fires anywhere from ~9:30 AM to ~7 PM ET, so most days score on
+  the recent-lineup fallback — see `docs/backtest_2026-09-07.md` §1) →
+  **16:37 + 21:07 UTC** `revalidate-picks.yml` swaps scratched / rained-out
+  picks before first pitch → 19:30 UTC odds snapshot → 06:00 UTC next-day
   outcomes.
 
 ## Cold-start read order
 
 Before doing anything else in a fresh session, read top-to-bottom:
 
-1. `docs/handoff_2026-05-26.md` — what's actually working / broken right now
+1. `docs/handoff_2026-09-07.md` — what's actually working / broken right now
+   (`docs/handoff_2026-05-26.md` is the previous one; still accurate on the
+   env gotchas)
 2. `BACKLOG.md` — ordered queue + recently shipped log
 3. `How_The_HR_Model_Works.md` — model behavior
 4. `ARCHITECTURE.md` — component + DB map
