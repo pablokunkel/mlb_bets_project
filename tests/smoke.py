@@ -5004,6 +5004,110 @@ def pin_fetch_pick_odds_name_matching() -> Result:
     )
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-07: pre-game pick revalidation (audit P0-1 / P1-4)
+# ---------------------------------------------------------------------------
+
+def pin_revalidate_classify_status() -> Result:
+    """detailedState -> dead / pending / started families."""
+    from revalidate_picks import classify_status as c
+    cases = [("Postponed", "dead"), ("Postponed: Rain", "dead"), ("Cancelled", "dead"),
+             ("Canceled", "dead"), ("Suspended: Rain", "dead"),
+             ("Scheduled", "pending"), ("Pre-Game", "pending"), ("Warmup", "pending"),
+             ("Delayed Start: Rain", "pending"), ("", "pending"), (None, "pending"),
+             ("In Progress", "started"), ("Final", "started"), ("Game Over", "started"),
+             ("Completed Early: Rain", "started"), ("Manager challenge", "started")]
+    bad = [(st, c(st), want) for st, want in cases if c(st) != want]
+    if bad:
+        return Result("revalidate.classify_status", Result.HALT, f"{bad}")
+    return Result("revalidate.classify_status", Result.PASS, f"{len(cases)} states")
+
+
+def pin_revalidate_plan_swaps_scratched_and_dead() -> Result:
+    """plan_revalidation: scratched pick + postponed-game pick are replaced by
+    the next-best pending-game batters; a started game is untouched; the
+    2-per-game cap, name dedupe, likely-out and posted-lineup membership all
+    gate the replacements; an unchanged card is a no-op."""
+    from revalidate_picks import plan_revalidation
+
+    def row(i, name, gpk, side, comp, bo="5", sel=0, ilo=0):
+        return {"id": i, "batter_id": i, "batter_name": name, "game_pk": gpk, "side": side,
+                "composite": comp, "batting_order": bo, "selected": sel, "is_likely_out": ilo}
+
+    board = [
+        row(1, "A Keep", 100, "home", 90, sel=1),         # posted, in lineup -> keep
+        row(2, "B Scratched", 100, "away", 88, sel=1),     # posted, NOT in lineup -> remove
+        row(3, "C Rainout", 200, "home", 87, sel=1),       # game postponed -> remove
+        row(4, "D Started", 300, "home", 86, sel=1),       # game in progress -> keep as-is
+        row(5, "E Keep2", 400, "away", 85, sel=1),         # lineup not posted -> keep
+        row(6, "F Cap", 100, "home", 84),                  # would be 3rd from game 100 after... no: 100 has A only -> ok
+        row(7, "G DeadGame", 200, "away", 83),             # postponed -> skip
+        row(8, "H NotPosted", 100, "away", 82),            # side posted, not in it -> skip
+        row(9, "I LikelyOut", 400, "home", 81, ilo=1),     # likely out -> skip
+        row(10, "J StartedGame", 300, "away", 80),         # started -> skip
+        row(11, "A Keep", 500, "home", 79),                # duplicate name -> skip
+        row(12, "K Bench", 500, "home", 78, bo="bench"),   # not a starter -> skip
+        row(13, "L Good", 500, "away", 77),                # ok (recent-lineup bo=5)
+        row(14, "M Good", 100, "away", 76),                # posted+in lineup, game 100 count: A + F = 2 -> cap -> skip
+        row(15, "N Good", 600, "home", 75),                # ok
+    ]
+    posted = {
+        100: {"home": {1: 3, 6: 7}, "away": {14: 4}},
+        500: {},  # nothing posted
+    }
+    status = {100: "Scheduled", 200: "Postponed", 300: "In Progress", 400: "Pre-Game",
+              500: "Warmup", 600: "Scheduled"}
+
+    plan = plan_revalidation(board, posted, status, max_per_game=2, n_picks=5)
+    removed = sorted((r["batter_name"], why) for r, why in plan["removed"])
+    added = [r["batter_name"] for r in plan["added"]]
+    kept = sorted(r["batter_name"] for r in plan["kept"])
+    fails = []
+    if removed != [("B Scratched", "not in posted lineup"), ("C Rainout", "game Postponed")]:
+        fails.append(f"removed={removed}")
+    if kept != ["A Keep", "D Started", "E Keep2"]:
+        fails.append(f"kept={kept}")
+    if added != ["F Cap", "L Good"]:
+        fails.append(f"added={added} (want F Cap then L Good; M blocked by the game-100 cap)")
+    f_row = next((r for r in plan["added"] if r["batter_name"] == "F Cap"), None)
+    if not f_row or f_row["batting_order"] != 7:
+        fails.append("replacement batting_order should come from the posted lineup (7)")
+
+    # No-op when every pick is still valid.
+    clean = [row(1, "A", 100, "home", 90, sel=1), row(2, "B", 100, "away", 80)]
+    plan2 = plan_revalidation(clean, {100: {"home": {1: 2}}}, {100: "Scheduled"}, n_picks=1)
+    if plan2["removed"] or plan2["added"]:
+        fails.append("valid card must be a no-op")
+    if fails:
+        return Result("revalidate.plan_revalidation", Result.HALT, "; ".join(fails))
+    return Result("revalidate.plan_revalidation", Result.PASS,
+                  "scratched + rainout swapped, started game untouched, cap/dedupe/IL/posted gates hold")
+
+
+def pin_revalidate_is_fail_soft() -> Result:
+    """A crash (bad DB path) exits 0 and prints REVALIDATE_CHANGED=0; --strict exits 1."""
+    import os, subprocess, sys as _sys
+    from pathlib import Path as _P
+    script = _P(__file__).resolve().parent.parent / "revalidate_picks.py"
+    bad_db = str(_P(__file__).resolve().parent / "definitely" / "missing.db")
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    soft = subprocess.run([_sys.executable, str(script), "--date", "2026-01-01", "--db", bad_db],
+                          capture_output=True, text=True, env=env, timeout=120)
+    strict = subprocess.run([_sys.executable, str(script), "--date", "2026-01-01", "--db", bad_db, "--strict"],
+                            capture_output=True, text=True, env=env, timeout=120)
+    fails = []
+    if soft.returncode != 0:
+        fails.append(f"default exit={soft.returncode} (want 0); stderr={soft.stderr[-200:]}")
+    if "REVALIDATE_CHANGED=0" not in soft.stdout:
+        fails.append("missing REVALIDATE_CHANGED=0 marker on the fail-soft path")
+    if strict.returncode == 0 and "FAILED" in strict.stdout:
+        fails.append("--strict should exit non-zero on a crash")
+    if fails:
+        return Result("revalidate fail-soft", Result.HALT, "; ".join(fails))
+    return Result("revalidate fail-soft", Result.PASS, "bad DB -> exit 0 + CHANGED=0; --strict exits 1")
+
+
 def pin_fetch_pick_odds_is_fail_soft() -> Result:
     """B34: an odds failure must never fail the daily pipeline.
 
@@ -5468,6 +5572,10 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_hr_prop_odds_table_exists,
     pin_fetch_pick_odds_name_matching,
     pin_fetch_pick_odds_is_fail_soft,
+    # 2026-09-07: pre-game pick revalidation
+    pin_revalidate_classify_status,
+    pin_revalidate_plan_swaps_scratched_and_dead,
+    pin_revalidate_is_fail_soft,
     # 2026-08-21: audit P1-3 + B29 — full_board must carry the columns
     # load_picks_to_db persists into daily_picks
     pin_full_board_serializer_carries_persisted_keys,
