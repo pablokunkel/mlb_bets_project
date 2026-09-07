@@ -1857,7 +1857,9 @@ def compute_composite(
         # 2026-09-07: PA behind the synthetic power inputs (small-sample
         # shrink input). Live tier dict `pa` (season-to-date or the
         # cur+prior blend); T4 stubs carry season_batting.pa.
-        "power_sample_pa":         batter.get("power_sample_pa", batter.get("pa")),
+        "power_sample_pa":         (batter.get("power_sample_pa")
+                                    if batter.get("power_sample_pa") is not None
+                                    else batter.get("pa")),
         # Phase 2 (2026-05-25): pitch-type archetype matchup sub-signal
         # inputs. Set by fetch_batter_pitch_type_splits via generate_picks;
         # persist here so backtest_arsenal_inputs.py can replay variants

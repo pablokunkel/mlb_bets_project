@@ -574,6 +574,12 @@ def enrich_with_season_batting(batter: dict, season_lookup: dict) -> dict:
     if enriched:
         # Mark provenance so downstream diagnostics can flag this row
         batter["_power_source"] = "season_batting_fallback"
+        # 2026-09-07: the power inputs now come from season_batting, so the
+        # sample behind them is season_batting.pa — not the live dict's
+        # (possibly prior-season-blended) `pa`. score_power's small-sample
+        # shrink reads power_sample_pa first.
+        if sb.get("pa") is not None:
+            batter["power_sample_pa"] = sb["pa"]
     if barrel_overwritten:
         batter["_barrel_pct_source"] = "season_batting_fallback"
     return batter
