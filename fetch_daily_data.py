@@ -271,16 +271,25 @@ def fetch_bat_sides(player_ids, chunk_size: int = BAT_SIDE_CHUNK) -> dict[int, s
     need = [i for i in ids if i not in _BAT_SIDE_CACHE and i not in _BAT_SIDE_UNRESOLVED]
     for start in range(0, len(need), chunk_size):
         chunk = need[start:start + chunk_size]
-        try:
-            resp = requests.get(
-                f"{MLB_STATS_API}/people",
-                params={"personIds": ",".join(str(i) for i in chunk)},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            people = resp.json().get("people", []) or []
-        except Exception as e:
-            print(f"  [BATS] /people batch of {len(chunk)} failed: {e}")
+        people = None
+        # One retry per chunk: this runs once a day, and a single transient
+        # blip would otherwise default up to 100 batters to 'R' for the day.
+        for attempt in (1, 2):
+            try:
+                resp = requests.get(
+                    f"{MLB_STATS_API}/people",
+                    params={"personIds": ",".join(str(i) for i in chunk)},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                people = resp.json().get("people", []) or []
+                break
+            except Exception as e:
+                print(f"  [BATS] /people batch of {len(chunk)} failed "
+                      f"(attempt {attempt}/2): {e}")
+                if attempt == 1:
+                    time.sleep(1.0)
+        if people is None:
             continue
         for person in people:
             pid = person.get("id")
