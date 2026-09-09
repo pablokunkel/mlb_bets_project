@@ -590,8 +590,23 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 4. **Expected-PA multiplier by batting order** (≈ +8% for 1-4, −8% for 7-9 — the logistic fit's `bo` coefficient). Replaces the anti-correlated `score_lineup_position` table (B15) rather than fixing it.
 5. **Switch hitters on the park factor:** slate-percentile path uses `adj = 0`, fixed-anchor fallback averages `(lhb+rhb)/2` — make the two paths agree (pre-existing; activated by B36).
 6. **`daily_lineup.bats`** is still NULL (not read by scoring); populate from `fetch_bat_sides` in `etl_morning.fetch_lineups` for the diagnostics.
-7. **Re-anchor the goal.** The docs and site still present 36-40%; the hindsight ceiling on this season's data is ~25% (top-10 hitters by HR/game: 25.1%), the market's shortest HR prices imply 24-29% before vig. Target band for the card: 21-24%.
+7. **Re-anchor the goal to market edge, not a hit-rate number.** The docs and site still present 36-40%. A hit-rate target is the wrong artifact (user, 2026-09-09): the book prices the top hitters at +200-280 (26-33% implied) and priced our own picks at +285-430 on 09-08/09-09, so any hit-rate the card reaches by picking favourites just mirrors the market. The retained KPI is ROI at the captured line / closing-line value on picks where the model's calibrated probability beats the de-vigged book price — see **B40**. Keep the ~25% hindsight ceiling in `docs/backtest_2026-09-07.md` as a reference only.
 8. **`hr_prop_odds` consumers.** Now that it fills (PR #129), build the calibration / +EV view (item 5 in the active queue) once ~30 days of BetRivers 0.5 lines exist. Only 3 of 8 picks had events left at 7 PM on 09-07; the 09:07 + 3:30 PM runs see the full slate.
+
+### B40. Market-edge KPI: price the candidate board, calibrate, measure ROI / CLV
+
+**Status.** Queued — the next model brief. Depends on nothing open; `hr_prop_odds` fills daily since PR #129.
+
+**Why.** "8 most likely to homer" converges on the book's favourites (backtest: every ranking ≈ 19-21%, market implied on our picks 22% with vig). The product's edge, if any, is in matchup / weather / park / form on batters the market under-prices — and that can only be measured against a price. Today only the 8 picks are priced (7-8 credits/day).
+
+**Spec.**
+1. Extend `fetch_pick_odds.py` with `--board` to price every event on the slate (~15 credits/day) and store every batter's 0.5 Over/Under from every US book; keep the pick-only default until quota is confirmed (free tier 500/month; totals fetch ~60/month; board pricing ~450/month → upgrade the-odds-api plan or price only events containing the top-40 candidates).
+2. Calibration: fit `P(HR) = f(composite)` (isotonic or logistic on `daily_picks ⨝ outcomes`, 2026-06-03 onward, live rows) and persist the curve; export `model_prob` per board row.
+3. De-vig the two-way line (power method or proportional) → `book_prob`; `edge = model_prob − book_prob`.
+4. Report daily and rolling: ROI at captured line for the 8-pick card, ROI of the top-8-by-edge card, closing-line value (noon vs afternoon snapshot), Brier / log-loss of `model_prob`. Surface on the Performance tab.
+5. Selection stays "top 8 by composite" until the edge card beats it on ≥30 days of ROI; then the PM decides whether the product is "most likely" or "+EV".
+
+**Done when.** `hr_prop_odds` carries the full board for 7 consecutive days; `performance.json` has `roi_at_line`, `clv`, `brier` for the card and for the edge card; a one-page doc states which factors carry edge net of price.
 
 ## Model factor review & heatmap (2026-05-19/20 sessions)
 
@@ -1138,6 +1153,7 @@ Open questions before this is worth scoping: which markets are actually offered 
 - **PR #132 — B38** pre-game pick revalidation workflow (12:37 PM + 5:07 PM ET swaps for scratched / rained-out picks).
 - **Branches** `fix/filter-postponed-games-2026-05-05`, `fix/live-today-unique-hitters-2026-05-05`, `form-factor-rebuild`, `heatmap-cf-limit-fix`, `matchup-vulnerability-fix` deleted — every change already on main (PR #40 / #57 / cashed-count dedupe / heatmap season cutoff verified by grep). 71 merged `origin/*` branches remain; `git branch -r --merged origin/main` lists them if you want them gone.
 - **Docs** `docs/handoff_2026-09-07.md` (new cold-start doc), CLAUDE.md read order + daily flow updated.
+- **2026-09-09 follow-up (doc PR):** first live days verified (bats L/R/S mix, `power_sample_pa` on every row, BetRivers pricing 7/8 picks, first real revalidation swap Ohtani → Tatis on 09-08); the "21-24% target" wording replaced with the market-edge framing and **B40** filed.
 
 ### 2026-08-21 (day) — B34b afternoon odds snapshot
 
