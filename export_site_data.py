@@ -2055,9 +2055,61 @@ def export_heatmap(conn, out_dir: Path) -> None:
     # as the 'main' DB).
     db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
     data = mod.build_dataset(db_path)
-    atomic_write_json(out_dir / "heatmap.json", data, indent=0)
+    n_shards = _write_heatmap_sharded(out_dir, data)
     print(f"  Exported heatmap.json ({len(data.get('batters', []))} batters, "
-          f"{len(data.get('dates', []))} dates)")
+          f"{len(data.get('dates', []))} dates, cells in {n_shards} shard(s))")
+
+
+# Cloudflare Workers static assets reject any single file over 25 MiB — on
+# every plan. heatmap.json crossed it on 2026-09-10 (25.12 MiB) and every
+# build from then on failed, leaving the site on the 09-09 card. The `cells`
+# block (per batter, per date) is ~80% of the payload and grows daily, so it
+# is split across N shard files sized well under the cap; heatmap.json keeps
+# the metadata + batters and lists the shard files. The dashboard fetches
+# the shards in parallel and merges them (renderHitters in index.html).
+HEATMAP_SHARD_TARGET_BYTES = 6 * 1024 * 1024
+HEATMAP_SHARD_PREFIX = "heatmap_cells_"
+
+
+def _write_heatmap_sharded(out_dir: Path, data: dict) -> int:
+    """Write heatmap.json + heatmap_cells_<i>.json; returns the shard count.
+
+    Batters are assigned to shards in id order until a shard's compact JSON
+    size would pass HEATMAP_SHARD_TARGET_BYTES. Stale shard files beyond the
+    new count are deleted so the assets directory never carries an orphan.
+    """
+    cells = data.get("cells") or {}
+    shards: list[dict] = []
+    cur: dict = {}
+    cur_bytes = 0
+    for bid in sorted(cells, key=lambda k: str(k)):
+        blob = json.dumps(cells[bid], separators=(",", ":"))
+        if cur and cur_bytes + len(blob) > HEATMAP_SHARD_TARGET_BYTES:
+            shards.append(cur)
+            cur, cur_bytes = {}, 0
+        cur[bid] = cells[bid]
+        cur_bytes += len(blob) + len(str(bid)) + 4
+    if cur or not shards:
+        shards.append(cur)
+
+    names = []
+    for i, shard in enumerate(shards):
+        name = f"{HEATMAP_SHARD_PREFIX}{i}.json"
+        atomic_write_json(out_dir / name, {"cells": shard}, indent=0)
+        names.append(name)
+
+    # Remove orphans from a previous, larger shard count.
+    for old in out_dir.glob(f"{HEATMAP_SHARD_PREFIX}*.json"):
+        if old.name not in names:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    head = {k: v for k, v in data.items() if k != "cells"}
+    head["cells_shards"] = names
+    atomic_write_json(out_dir / "heatmap.json", head, indent=0)
+    return len(names)
 
 
 def main():
