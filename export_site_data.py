@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from etl.db import get_db, create_tables, RESULTS_DIR, SITE_DATA_DIR
 from score_batters import WEIGHT_CONFIGS
+from market_edge import compute_market_edge  # B40 (2026-09-11)
 
 
 def atomic_write_json(path: Path, data, indent: int = 2) -> None:
@@ -647,11 +648,23 @@ def export_performance(conn, out_dir: Path):
         "temp_humidity_heatmap": _temp_humidity_heatmap(conn, days=60),
         "temp_humidity_heatmap_historical": _temp_humidity_heatmap_historical(conn),
         "archetype_dampening":   _archetype_dampening_diagnostic(conn, days=60),
+        # B40 (2026-09-11): model probability vs the de-vigged book price on
+        # every priced board row — ROI at the captured line, closing-line
+        # value, Brier. Fail-soft: a bad odds table must not kill the export.
+        "market_edge":           _market_edge_safe(conn),
         "exported_at": datetime.now().isoformat(),
     }
 
     atomic_write_json(out_dir / "performance.json", data)
     print(f"  Exported performance.json ({total} picks, {hits} hits)")
+
+
+def _market_edge_safe(conn) -> dict:
+    try:
+        return compute_market_edge(conn, days=60)
+    except Exception as e:  # noqa: BLE001 — scoreboard, never blocks the export
+        print(f"  [market_edge] failed (non-fatal): {type(e).__name__}: {e}")
+        return {"error": f"{type(e).__name__}: {e}", "n_days": 0}
 
 
 def _score_distribution(conn) -> list:

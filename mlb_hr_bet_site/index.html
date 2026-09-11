@@ -2640,6 +2640,22 @@
       <!-- Masthead removed 2026-05-01 per Pablo's call — kept the rest of the
            newspaper styling (serif headlines, italic deks, ledger stat strip). -->
       <div class="stat-row" id="perfStats"></div>
+      <div class="chart-container" id="marketEdgeBox">
+        <h3>Market Edge: Model Probability vs the Book</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          The bar is not hit rate — the book already prices the top hitters
+          at 25-33%. Each priced board batter gets a <strong>book
+          probability</strong> (de-vigged Over line, captured at pick time)
+          and a <strong>model probability</strong> (composite calibrated on
+          every live starter since June 3). <strong>Card ROI</strong> is 1
+          unit on each priced pick at the captured line; the
+          <strong>edge card</strong> is what a top-8-by-edge selection would
+          have bet. <strong>CLV</strong> is how far the line moved toward us
+          between the noon and afternoon snapshots. <strong>Brier</strong>
+          (lower = better) says who is better calibrated, us or the book.
+        </div>
+        <div id="marketEdge"><div class="loading">Loading market edge…</div></div>
+      </div>
       <div class="chart-container">
         <h3>Backtest: Current Model vs History</h3>
         <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
@@ -3797,6 +3813,50 @@
     }
 
     // ── Render: Performance ──
+    // B40 (2026-09-11): model probability vs the de-vigged book price.
+    function renderMarketEdge(me) {
+      const el = document.getElementById('marketEdge');
+      if (!el) return;
+      if (!me || me.error || !me.n_days) {
+        el.innerHTML = '<div class="empty">No priced days yet — hr_prop_odds fills daily from the noon + afternoon snapshots.' +
+          (me && me.error ? ' (' + me.error + ')' : '') + '</div>';
+        return;
+      }
+      const pct = v => (v == null ? '–' : (100 * v).toFixed(1) + '%');
+      const roi = v => (v == null ? '–' : ((v >= 0 ? '+' : '') + (100 * v).toFixed(1) + '%'));
+      const units = v => (v == null ? '–' : ((v >= 0 ? '+' : '') + v.toFixed(2) + 'u'));
+      const col = v => (v == null ? 'var(--text-muted)' : (v >= 0 ? 'var(--green)' : 'var(--orange)'));
+      const c = me.card, e = me.edge_card;
+      el.innerHTML = `
+        <div class="stat-row" style="margin-bottom:10px">
+          <div class="stat-card"><div class="label">Priced days</div><div class="value">${me.n_days}</div></div>
+          <div class="stat-card"><div class="label">Card ROI @ line</div><div class="value" style="color:${col(c.roi)}">${roi(c.roi)}</div><div class="label">${units(c.units)} on ${c.n} priced picks · ${c.hits} hits</div></div>
+          <div class="stat-card"><div class="label">Card: book vs model prob</div><div class="value">${pct(c.mean_book_prob)} / ${pct(c.mean_model_prob)}</div><div class="label">actual ${pct(c.hit_rate)}</div></div>
+          <div class="stat-card"><div class="label">Edge card ROI</div><div class="value" style="color:${col(e.roi)}">${roi(e.roi)}</div><div class="label">${units(e.units)} on ${e.n} · ${e.hits} hits · ${pct(e.hit_rate)}</div></div>
+          <div class="stat-card"><div class="label">CLV (noon → afternoon)</div><div class="value" style="color:${col(me.clv.mean)}">${me.clv.mean == null ? '–' : ((me.clv.mean >= 0 ? '+' : '') + (100 * me.clv.mean).toFixed(2) + ' pts')}</div><div class="label">${me.clv.n} picks priced twice</div></div>
+          <div class="stat-card"><div class="label">Brier: model / book</div><div class="value">${me.brier.model == null ? '–' : me.brier.model.toFixed(4)} / ${me.brier.book == null ? '–' : me.brier.book.toFixed(4)}</div><div class="label">${me.brier.n} priced rows · lower is better</div></div>
+        </div>
+        <div style="overflow-x:auto">
+        <table class="perf-table" style="font-size:12px;width:100%">
+          <thead><tr><th>Date</th><th>Priced</th><th>Card</th><th>Card ROI</th><th>Book / model / actual</th><th>Edge card</th><th>Edge ROI</th><th>Overlap</th><th>CLV</th></tr></thead>
+          <tbody>
+          ${me.days.slice().reverse().map(d => `<tr>
+            <td>${d.date}</td><td>${d.priced_rows}</td>
+            <td>${d.card.hits}/${d.card.n}</td><td style="color:${col(d.card.roi)}">${units(d.card.units)}</td>
+            <td>${pct(d.card.mean_book_prob)} / ${pct(d.card.mean_model_prob)} / ${pct(d.card.hit_rate)}</td>
+            <td title="${(d.edge_card_names || []).join(', ')}">${d.edge_card.hits}/${d.edge_card.n}</td><td style="color:${col(d.edge_card.roi)}">${units(d.edge_card.units)}</td>
+            <td>${d.overlap}</td><td>${d.clv == null ? '–' : ((d.clv >= 0 ? '+' : '') + (100 * d.clv).toFixed(2))}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:6px">
+          Assumptions: one-sided Over lines de-vigged by ÷${me.assumptions.overround_one_sided} (${me.assumptions.two_way_rows} two-way rows captured);
+          calibration on ${me.assumptions.calibration.n} live starters since ${me.assumptions.calibration.since};
+          ${me.assumptions.price_used}.
+        </div>`;
+    }
+
     async function renderPerformance() {
       const perf = await fetchJSON('performance');
       const trends = await fetchJSON('factor_trends');
@@ -3816,6 +3876,13 @@
         console.error('renderBacktest failed:', e);
         const t = document.getElementById('backtestAccuracy');
         if (t) t.innerHTML = '<div class="empty">Backtest panel failed to render — see console.</div>';
+      }
+
+      try { renderMarketEdge(perf.market_edge); }
+      catch (e) {
+        console.error('renderMarketEdge failed:', e);
+        const m = document.getElementById('marketEdge');
+        if (m) m.innerHTML = '<div class="empty">Market edge panel failed to render — see console.</div>';
       }
 
       const o = perf.overall;

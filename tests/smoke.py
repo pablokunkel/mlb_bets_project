@@ -5342,6 +5342,84 @@ def pin_fetch_pick_odds_board_candidates() -> Result:
     return Result("B40 odds board candidates", Result.PASS, "picks first, then top-N starters; bench/IL skipped")
 
 
+# ---------------------------------------------------------------------------
+# B40 (2026-09-11): market edge — odds arithmetic, calibration, edge card
+# ---------------------------------------------------------------------------
+
+def pin_market_edge_odds_math() -> Result:
+    """american_to_implied / devig / unit_pl are the textbook formulas."""
+    import market_edge as me
+    fails = []
+    if abs(me.american_to_implied(300) - 0.25) > 1e-9 or abs(me.american_to_implied(-400) - 0.8) > 1e-9:
+        fails.append("implied prob wrong")
+    if abs(me.devig(300, -400) - 0.25 / 1.05) > 1e-9:
+        fails.append("two-way proportional devig wrong")
+    if abs(me.devig(300) - 0.25 / me.HR_PROP_OVERROUND) > 1e-9:
+        fails.append("one-sided devig should divide by the overround")
+    if me.unit_pl(300, 1) != 3.0 or me.unit_pl(300, 0) != -1.0 or abs(me.unit_pl(-200, 1) - 0.5) > 1e-9:
+        fails.append("unit P/L wrong")
+    if fails:
+        return Result("B40 market_edge odds math", Result.HALT, "; ".join(fails))
+    return Result("B40 market_edge odds math", Result.PASS, "implied / devig / unit P/L")
+
+
+def pin_market_edge_platt_and_edge_card() -> Result:
+    """Platt fit recovers a rising curve on synthetic data; compute_from_rows
+    prices rows (noon over afternoon), scores the card, builds the edge card
+    under the production rules, and computes CLV / Brier."""
+    import random
+    import market_edge as me
+    rng = random.Random(40)
+    xs, ys = [], []
+    for _ in range(4000):
+        c = rng.uniform(20, 90)
+        p = 1 / (1 + pow(2.718281828, -(0.06 * c - 5.0)))   # ~5% at 30, ~35% at 80
+        xs.append(c); ys.append(1 if rng.random() < p else 0)
+    a, b = me.fit_platt(xs, ys)
+    fails = []
+    if not (0.03 < a < 0.10):
+        fails.append(f"platt slope off: a={a:.4f}")
+    if not (me.model_prob(30, a, b) < me.model_prob(60, a, b) < me.model_prob(85, a, b)):
+        fails.append("calibrated curve not increasing")
+
+    def row(i, name, gpk, comp, sel, hit, open_over=None, close_over=None, bo=3, ilo=0):
+        return {"date": "2026-09-08", "batter_id": i, "batter_name": name, "game_pk": gpk,
+                "composite": comp, "selected": sel, "batting_order": bo, "is_likely_out": ilo,
+                "hit": hit, "played": 1, "open_over": open_over, "open_under": None,
+                "close_over": close_over, "close_under": None, "n_books": 1}
+    rows = [
+        row(1, "Pick A", 10, 80, 1, 1, 300, 250),     # hit at +300, line shortened -> CLV > 0
+        row(2, "Pick B", 10, 78, 1, 0, 400, 450),     # miss, line drifted
+        row(3, "Pick C", 20, 76, 1, 0, None, 350),    # afternoon-only price
+        row(4, "Board D", 30, 60, 0, 1, 900, None),   # low composite, long price -> big edge?
+        row(5, "Board E", 30, 58, 0, 0, 200, None),   # favourite at low composite -> negative edge
+        row(6, "Board F", 30, 55, 0, 0, 800, None),   # third from game 30 -> capped
+        row(7, "Bench G", 40, 90, 0, 1, 150, None, bo=None),  # not a starter -> excluded
+        row(8, "Out H", 40, 88, 0, 1, 150, None, ilo=1),      # likely out -> excluded
+        row(9, "Pick A", 50, 70, 0, 0, 500, None),    # duplicate name -> excluded
+    ]
+    res = me.compute_from_rows(xs, ys, rows)
+    card = res["card"]
+    if card["n"] != 3 or card["hits"] != 1 or abs(card["units"] - (3.0 - 1.0 - 1.0)) > 1e-9:
+        fails.append(f"card scoring wrong: {card}")
+    day = res["days"][0]
+    if abs((day["clv"] or 0) - (me.devig(250) - me.devig(300) + me.devig(450) - me.devig(400)) / 2) > 1e-3:  # day clv is rounded to 4 dp
+        fails.append(f"CLV wrong: {day['clv']}")
+    names = day["edge_card_names"]
+    if "Bench G" in names or "Out H" in names or names.count("Pick A") > 1:
+        fails.append(f"edge card ignored a gate: {names}")
+    if sum(1 for n in names if n in ("Board D", "Board E", "Board F")) > 2:
+        fails.append(f"edge card broke the 2-per-game cap: {names}")
+    if res["brier"]["n"] != 9 or res["brier"]["model"] is None or res["brier"]["book"] is None:
+        fails.append(f"brier block wrong: {res['brier']}")
+    if res["priced_rows_scored"] != 9 or res["n_days"] != 1:
+        fails.append("row / day accounting wrong")
+    if fails:
+        return Result("B40 market_edge platt + edge card", Result.HALT, "; ".join(fails))
+    return Result("B40 market_edge platt + edge card", Result.PASS,
+                  f"a={a:.4f}; card 1/3 +1.00u; edge card {names}")
+
+
 def pin_fetch_pick_odds_is_fail_soft() -> Result:
     """B34: an odds failure must never fail the daily pipeline.
 
@@ -5809,6 +5887,8 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_hr_prop_odds_table_exists,
     pin_fetch_pick_odds_name_matching,
     pin_fetch_pick_odds_is_fail_soft,
+    pin_market_edge_odds_math,
+    pin_market_edge_platt_and_edge_card,
     pin_fetch_pick_odds_board_candidates,
     # 2026-09-11: Cloudflare asset cap + heatmap sharding
     pin_site_assets_under_cf_limit,
