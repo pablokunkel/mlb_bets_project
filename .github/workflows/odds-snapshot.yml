@@ -141,7 +141,7 @@ jobs:
       - name: Capture HR prop odds (B34b)
         continue-on-error: true
         run: >-
-          python fetch_pick_odds.py
+          python fetch_pick_odds.py --top 16
           --date "${{ steps.date.outputs.date }}"
           --snapshot "${{ steps.snap.outputs.label }}"
 

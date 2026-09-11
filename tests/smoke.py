@@ -5300,6 +5300,48 @@ def pin_heatmap_sharding_round_trip() -> Result:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def pin_fetch_pick_odds_board_candidates() -> Result:
+    """B40: load_board_from_db returns picks first, then the top-N starters by
+    composite (skipping bench / likely-out / duplicates), and the whole board."""
+    import sqlite3
+    import fetch_pick_odds as fpo
+    from etl.db import create_tables
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    rows = [
+        # id, name, team, gpk, composite, bo, selected, ilo, rank
+        (1, "Pick A", "NYY", 10, 80.0, "3", 1, 0, 1),
+        (2, "Pick B", "BOS", 10, 79.0, "4", 1, 0, 2),
+        (3, "Cand C", "LAD", 20, 78.0, "1", 0, 0, 3),
+        (4, "Bench D", "LAD", 20, 77.0, "bench", 0, 0, 4),
+        (5, "Out E", "SD", 30, 76.0, "2", 0, 1, 5),
+        (6, "Cand F", "SD", 30, 75.0, "5", 0, 0, 6),
+        (7, "Cand G", "SEA", 40, 74.0, "6", 0, 0, 7),
+    ]
+    conn.executemany(
+        "INSERT INTO daily_picks (date, batter_id, batter_name, team, game_pk, composite, "
+        "batting_order, selected, is_likely_out, rank_in_board, mode) "
+        "VALUES ('2026-09-11', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')", rows)
+    cands0, board = fpo.load_board_from_db(conn, "2026-09-11", 0)
+    cands2, _ = fpo.load_board_from_db(conn, "2026-09-11", 2)
+    cands3, _ = fpo.load_board_from_db(conn, "2026-09-11", 3)
+    cands9, _ = fpo.load_board_from_db(conn, "2026-09-11", 9)
+    fails = []
+    if [c["batter_id"] for c in cands0] != [1, 2]:
+        fails.append(f"top=0 should be the picks only: {[c['batter_id'] for c in cands0]}")
+    if [c["batter_id"] for c in cands2] != [1, 2]:
+        fails.append(f"top=2 adds nothing (the picks ARE the top 2 starters): {[c['batter_id'] for c in cands2]}")
+    if [c["batter_id"] for c in cands3] != [1, 2, 3]:
+        fails.append(f"top=3 should add only Cand C: {[c['batter_id'] for c in cands3]}")
+    if [c["batter_id"] for c in cands9] != [1, 2, 3, 6, 7]:
+        fails.append(f"top=9 should skip bench + likely-out: {[c['batter_id'] for c in cands9]}")
+    if len(board) != 7 or board[3]["batting_order"] is not None:
+        fails.append("board should carry all 7 rows with bench batting_order None")
+    if fails:
+        return Result("B40 odds board candidates", Result.HALT, "; ".join(fails))
+    return Result("B40 odds board candidates", Result.PASS, "picks first, then top-N starters; bench/IL skipped")
+
+
 def pin_fetch_pick_odds_is_fail_soft() -> Result:
     """B34: an odds failure must never fail the daily pipeline.
 
@@ -5767,6 +5809,7 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_hr_prop_odds_table_exists,
     pin_fetch_pick_odds_name_matching,
     pin_fetch_pick_odds_is_fail_soft,
+    pin_fetch_pick_odds_board_candidates,
     # 2026-09-11: Cloudflare asset cap + heatmap sharding
     pin_site_assets_under_cf_limit,
     pin_heatmap_sharding_round_trip,
