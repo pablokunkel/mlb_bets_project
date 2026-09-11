@@ -6445,7 +6445,23 @@
       try {
         const resp = await fetch('data/heatmap.json');
         if (!resp.ok) throw new Error('heatmap.json HTTP ' + resp.status);
-        _hmData = await resp.json();
+        const head = await resp.json();
+        // 2026-09-11: the per-batter `cells` block is sharded across
+        // data/heatmap_cells_<i>.json (Cloudflare's 25 MiB per-asset cap).
+        // Fetch every shard in parallel and merge; a legacy single-file
+        // payload (inline `cells`, no `cells_shards`) still works.
+        if (Array.isArray(head.cells_shards) && head.cells_shards.length) {
+          const parts = await Promise.all(head.cells_shards.map(async name => {
+            const r = await fetch('data/' + name);
+            if (!r.ok) throw new Error(name + ' HTTP ' + r.status);
+            return (await r.json()).cells || {};
+          }));
+          head.cells = Object.assign({}, ...parts);
+          delete head.cells_shards;
+        } else if (!head.cells) {
+          head.cells = {};
+        }
+        _hmData = head;
       } catch (err) {
         document.querySelector('#panel-hitters .hm-wrap').innerHTML =
           '<div class="hm-empty">Heatmap data not available yet. ' +

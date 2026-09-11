@@ -5222,6 +5222,84 @@ def pin_revalidate_is_fail_soft() -> Result:
     return Result("revalidate fail-soft", Result.PASS, "bad DB -> exit 0 + CHANGED=0; --strict exits 1")
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-11: Cloudflare Workers static-asset size cap
+# ---------------------------------------------------------------------------
+
+CF_ASSET_HARD_LIMIT = 25 * 1024 * 1024   # Workers static assets: per-file cap, all plans
+CF_ASSET_SOFT_LIMIT = 20 * 1024 * 1024   # warn early; heatmap grows daily
+
+
+def pin_site_assets_under_cf_limit() -> Result:
+    """No committed site asset may reach Cloudflare's 25 MiB per-file cap.
+
+    heatmap.json hit 25.12 MiB on 2026-09-10 and every Workers build failed
+    until the cells were sharded. HALT at the hard cap, WARN above 20 MiB.
+    """
+    from pathlib import Path as _P
+    site = _P(__file__).resolve().parent.parent / "mlb_hr_bet_site"
+    if not site.exists():
+        return Result("site assets under CF 25 MiB cap", Result.INFO, "mlb_hr_bet_site missing")
+    big = []
+    warn = []
+    for f in site.rglob("*"):
+        if not f.is_file():
+            continue
+        n = f.stat().st_size
+        if n >= CF_ASSET_HARD_LIMIT:
+            big.append(f"{f.relative_to(site)} {n / 1048576:.2f} MiB")
+        elif n >= CF_ASSET_SOFT_LIMIT:
+            warn.append(f"{f.relative_to(site)} {n / 1048576:.2f} MiB")
+    if big:
+        return Result("site assets under CF 25 MiB cap", Result.HALT,
+                      "over the cap (build will fail): " + "; ".join(big))
+    if warn:
+        return Result("site assets under CF 25 MiB cap", Result.WARN,
+                      "approaching the cap: " + "; ".join(warn))
+    return Result("site assets under CF 25 MiB cap", Result.PASS, "largest asset under 20 MiB")
+
+
+def pin_heatmap_sharding_round_trip() -> Result:
+    """_write_heatmap_sharded splits cells by size, lists shards in the head
+    file, removes orphan shards, and the union of shards equals the input."""
+    import json as _json, tempfile, shutil
+    from pathlib import Path as _P
+    import export_site_data as esd
+    tmp = _P(tempfile.mkdtemp(prefix="hm_shard_"))
+    try:
+        (tmp / "heatmap_cells_7.json").write_text("{}", encoding="utf-8")   # orphan
+        cells = {str(i): {"2026-09-01": {"ab": i, "pad": "x" * 2000}} for i in range(300)}
+        data = {"generated": "t", "dates": ["2026-09-01"], "batters": [], "cells": cells}
+        orig = esd.HEATMAP_SHARD_TARGET_BYTES
+        esd.HEATMAP_SHARD_TARGET_BYTES = 200_000       # ~100 batters per shard
+        try:
+            n = esd._write_heatmap_sharded(tmp, data)
+        finally:
+            esd.HEATMAP_SHARD_TARGET_BYTES = orig
+        head = _json.loads((tmp / "heatmap.json").read_text(encoding="utf-8"))
+        fails = []
+        if "cells" in head:
+            fails.append("head still carries inline cells")
+        if head.get("cells_shards") != [f"heatmap_cells_{i}.json" for i in range(n)]:
+            fails.append(f"shard list wrong: {head.get('cells_shards')}")
+        if not (2 <= n <= 5):
+            fails.append(f"unexpected shard count {n}")
+        merged = {}
+        for name in head["cells_shards"]:
+            merged.update(_json.loads((tmp / name).read_text(encoding="utf-8"))["cells"])
+        if merged != cells:
+            fails.append("union of shards != input cells")
+        if (tmp / "heatmap_cells_7.json").exists():
+            fails.append("orphan shard not removed")
+        if "cells" in data and len(data["cells"]) != 300:
+            fails.append("input mutated")
+        if fails:
+            return Result("heatmap sharding round trip", Result.HALT, "; ".join(fails))
+        return Result("heatmap sharding round trip", Result.PASS, f"{n} shards, union == input, orphan removed")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def pin_fetch_pick_odds_is_fail_soft() -> Result:
     """B34: an odds failure must never fail the daily pipeline.
 
@@ -5689,6 +5767,9 @@ PIN_TESTS: list[Callable[[], Result]] = [
     pin_hr_prop_odds_table_exists,
     pin_fetch_pick_odds_name_matching,
     pin_fetch_pick_odds_is_fail_soft,
+    # 2026-09-11: Cloudflare asset cap + heatmap sharding
+    pin_site_assets_under_cf_limit,
+    pin_heatmap_sharding_round_trip,
     # 2026-09-07: pre-game pick revalidation
     pin_revalidate_classify_status,
     pin_revalidate_plan_swaps_scratched_and_dead,
