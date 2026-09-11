@@ -18,6 +18,17 @@ carries `bookmaker`), and `--bookmaker` remains as an optional restriction.
 Only `point == 0.5` ("to hit a HR") lines are kept; the 1.5+ (multi-HR) lines
 share a PK slot and are a different bet.
 
+2026-09-11 (B40, market-edge KPI): two scope changes, same credit model.
+  - Every board batter in a fetched event is stored, not just the picks. An
+    event fetch costs 1 credit whether we keep 1 batter's line or 25, so the
+    6-8 pick events already carry ~50 starters' prices for free.
+  - `--top N` widens WHICH events are fetched to those containing any of the
+    top-N board rows by composite (confirmed starters, not likely-out). N=0
+    (default) keeps the pick-only event set. Cost = number of distinct events
+    touched, so N=16 is ~7-9 credits, N=24 ~10, the whole slate ~15.
+  Free tier is 500/month: noon picks (~6) + afternoon --top 16 (~8) + the
+  totals fetch (2) ≈ 16/day ≈ 480/month. A larger N needs the paid plan.
+
 Two things this unlocks later:
   - real break-even per leg instead of assuming a flat +300
   - "did we beat the de-vigged market?" measured against the two-way price
@@ -179,6 +190,56 @@ def load_picks_from_db(conn, date_str: str) -> list[dict]:
         for r in rows
         if r[0]
     ]
+
+
+def load_board_from_db(conn, date_str: str, top_n: int = 0) -> tuple[list[dict], list[dict]]:
+    """
+    (candidates, board) for the date.
+
+    board       every live daily_picks row with a batter id (all games).
+    candidates  the rows whose EVENTS we will pay to fetch: the selected
+                picks, plus — when top_n > 0 — the top-N confirmed starters
+                (batting_order 1-9, not likely-out) by composite. Picks are
+                always included so the card is priced whatever N is.
+    """
+    rows = conn.execute(
+        """
+        SELECT batter_id, batter_name, team, game_pk, composite, batting_order,
+               selected, COALESCE(is_likely_out, 0), rank_in_board
+        FROM daily_picks
+        WHERE date = ? AND COALESCE(mode, 'live') = 'live'
+        ORDER BY composite DESC, rank_in_board
+        """,
+        (date_str,),
+    ).fetchall()
+    board: list[dict] = []
+    for r in rows:
+        if not r[0]:
+            continue
+        try:
+            bo = int(r[5])
+        except (TypeError, ValueError):
+            bo = None
+        board.append({
+            "batter_id": int(r[0]),
+            "batter_name": r[1] or "",
+            "team": r[2] or "",
+            "game_pk": r[3],
+            "composite": r[4],
+            "batting_order": bo,
+            "selected": int(r[6] or 0),
+            "is_likely_out": int(r[7] or 0),
+        })
+    candidates = [b for b in board if b["selected"] == 1]
+    if top_n > 0:
+        seen = {b["batter_id"] for b in candidates}
+        starters = [b for b in board if b["batting_order"] and 1 <= b["batting_order"] <= 9
+                    and not b["is_likely_out"]]
+        for b in starters[:top_n]:
+            if b["batter_id"] not in seen:
+                candidates.append(b)
+                seen.add(b["batter_id"])
+    return candidates, board
 
 
 def load_picks_from_json(path: Path, date_str: str | None = None) -> list[dict]:
@@ -458,6 +519,7 @@ def run(
     bookmaker: str = DEFAULT_BOOKMAKER,
     snapshot: str = DEFAULT_SNAPSHOT,
     dry_run: bool = False,
+    top_n: int = 0,
 ) -> int:
     """Capture the day's prop odds. Returns the number of rows stored."""
     api_key = os.environ.get("VEGAS_ODDS_API_KEY")
@@ -471,31 +533,45 @@ def run(
     if not picks:
         print(f"  [odds] no picks found for {date_str} - nothing to price")
         return 0
-    print(f"  [odds] pricing {len(picks)} picks for {date_str} ({bookmaker}, {snapshot})")
+    # B40: candidates decide which events we pay for; every board batter in
+    # those events gets stored. Falls back to picks-only when the DB has no
+    # board for the date (JSON-only ad-hoc runs).
+    candidates, board = load_board_from_db(conn, date_str, top_n)
+    if not candidates:
+        candidates, board = picks, picks
+    print(f"  [odds] pricing {len(picks)} picks + top-{top_n} candidates "
+          f"({len(candidates)} event-driving rows, {len(board)} board rows) "
+          f"for {date_str} ({bookmaker}, {snapshot})")
 
     events = fetch_events(api_key, date_str)
     slate = load_slate_matchups(conn, date_str)
-    grouped, no_event = match_events_to_picks(picks, events, slate)
+    grouped, no_event = match_events_to_picks(candidates, events, slate)
     for p in no_event:
-        print(
-            f"  [odds] UNMATCHED (no event): {p['batter_name']} "
-            f"({p['team']}, game_pk={p['game_pk']})"
-        )
-    print(f"  [odds] {len(grouped)} events contain picks - {len(grouped)} credits to spend")
+        if p.get("selected", 1):
+            print(
+                f"  [odds] UNMATCHED (no event): {p['batter_name']} "
+                f"({p['team']}, game_pk={p['game_pk']})"
+            )
+    print(f"  [odds] {len(grouped)} events contain candidates - {len(grouped)} credits to spend")
+
+    # Everything on the board that plays in a fetched event is extractable
+    # at no extra cost: group the whole board by the same event ids.
+    board_grouped, _ = match_events_to_picks(board, events, slate)
 
     all_rows: list[dict] = []
     no_line: list[dict] = []
-    for event_id, event_picks in grouped.items():
+    for event_id, event_cands in grouped.items():
         try:
             payload = fetch_event_odds(api_key, event_id, bookmaker)
         except Exception as e:
             # One dead event must not cost us the other seven.
             print(f"  [odds] event {event_id} odds fetch failed: {e}")
-            no_line.extend(event_picks)
+            no_line.extend([c for c in event_cands if c.get("selected", 1)])
             continue
-        rows, missing = extract_prices(payload, event_picks, bookmaker)
+        event_board = board_grouped.get(event_id) or event_cands
+        rows, missing = extract_prices(payload, event_board, bookmaker)
         all_rows.extend(rows)
-        no_line.extend(missing)
+        no_line.extend([m for m in missing if m.get("selected", 1)])
 
     book_label = "any US book" if bookmaker in ANY_BOOKMAKER else bookmaker
     for p in no_line:
@@ -508,10 +584,13 @@ def run(
     for r in all_rows:
         by_book.setdefault(r["bookmaker"], set()).add(r["batter_id"])
     if by_book:
-        print("  [odds] picks priced per book: " + ", ".join(
+        print("  [odds] batters priced per book: " + ", ".join(
             f"{bk}={len(ids)}" for bk, ids in sorted(by_book.items())))
 
-    n_priced = len({r["batter_id"] for r in all_rows if r["side"] == "Over"})
+    pick_ids = {p["batter_id"] for p in picks}
+    priced_ids = {r["batter_id"] for r in all_rows if r["side"] == "Over"}
+    n_priced = len(priced_ids & pick_ids)
+    n_board_priced = len(priced_ids)
     if dry_run:
         print(f"  [odds] DRY RUN - would store {len(all_rows)} rows")
     elif all_rows:
@@ -520,9 +599,11 @@ def run(
     else:
         print("  [odds] no rows to store")
 
+    n_unmatched_picks = len([p for p in no_event if p.get("selected", 1)]) + len(no_line)
     print(
         f"  [odds] SUMMARY {date_str}: {n_priced}/{len(picks)} picks priced, "
-        f"{len(all_rows)} rows, {len(no_event) + len(no_line)} unmatched"
+        f"{n_board_priced} board batters priced, {len(all_rows)} rows, "
+        f"{n_unmatched_picks} picks unmatched"
     )
     return len(all_rows)
 
@@ -540,6 +621,10 @@ def main() -> int:
                              "(default: any - store every US book posting the market)")
     parser.add_argument("--snapshot", default=DEFAULT_SNAPSHOT,
                         help="Snapshot label (default: noon; B34b will add a close snapshot)")
+    parser.add_argument("--top", type=int, default=0,
+                        help="Also fetch the events containing the top-N board rows by "
+                             "composite (confirmed starters). 0 = pick events only. "
+                             "Each extra event is 1 credit.")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and log, but do not write")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero on failure. Default is exit 0 always, so a "
@@ -556,6 +641,7 @@ def main() -> int:
             bookmaker=args.bookmaker,
             snapshot=args.snapshot,
             dry_run=args.dry_run,
+            top_n=args.top,
         )
     except Exception as e:
         # The whole point of this script is that it cannot break the pipeline.
