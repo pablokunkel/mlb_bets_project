@@ -5141,5 +5141,205 @@
     "diagnosis": "calibrated",
     "note": "Rows = pitcher vulnerability quintile (1=most elite, 5=most vulnerable). Columns = archetype similarity quintile (1=low match, 5=high match). Watch the top-right cell (elite pitcher \u00d7 high archetype match): if HR rate is high but avg matchup score is low, the elite-pitcher dampening is too aggressive when archetype signals a real vulnerability."
   },
-  "exported_at": "2026-09-11T07:29:29.883585"
+  "market_edge": {
+    "as_of": "2026-09-11 07:45",
+    "assumptions": {
+      "overround_one_sided": 1.07,
+      "two_way_rows": 0,
+      "calibration": {
+        "since": "2026-06-03",
+        "n": 19552,
+        "a": 0.02026,
+        "b": -3.079
+      },
+      "price_used": "noon line, afternoon when noon missing; best Over across books"
+    },
+    "calibration_table": [
+      {
+        "bin": "0-29",
+        "n": 2397,
+        "actual": 0.0684,
+        "predicted": 0.0679
+      },
+      {
+        "bin": "30-39",
+        "n": 1972,
+        "actual": 0.0908,
+        "predicted": 0.086
+      },
+      {
+        "bin": "40-49",
+        "n": 4119,
+        "actual": 0.1015,
+        "predicted": 0.1039
+      },
+      {
+        "bin": "50-54",
+        "n": 2732,
+        "actual": 0.1179,
+        "predicted": 0.1176
+      },
+      {
+        "bin": "55-59",
+        "n": 2748,
+        "actual": 0.1234,
+        "predicted": 0.1283
+      },
+      {
+        "bin": "60-64",
+        "n": 2287,
+        "actual": 0.1417,
+        "predicted": 0.1401
+      },
+      {
+        "bin": "65-69",
+        "n": 1574,
+        "actual": 0.1537,
+        "predicted": 0.1525
+      },
+      {
+        "bin": "70-74",
+        "n": 996,
+        "actual": 0.1596,
+        "predicted": 0.1661
+      },
+      {
+        "bin": "75-100",
+        "n": 727,
+        "actual": 0.2036,
+        "predicted": 0.1851
+      }
+    ],
+    "n_days": 3,
+    "priced_rows_scored": 21,
+    "card": {
+      "n": 21,
+      "hits": 6,
+      "hit_rate": 0.2857,
+      "units": 7.4,
+      "roi": 0.3524,
+      "mean_book_prob": 0.2119,
+      "mean_model_prob": 0.1726
+    },
+    "edge_card": {
+      "n": 21,
+      "hits": 6,
+      "hit_rate": 0.2857,
+      "units": 7.4,
+      "roi": 0.3524,
+      "mean_book_prob": 0.2119,
+      "mean_model_prob": 0.1726
+    },
+    "clv": {
+      "n": 15,
+      "mean": -0.0109
+    },
+    "brier": {
+      "model": 0.2147,
+      "book": 0.2195,
+      "n": 21
+    },
+    "days": [
+      {
+        "date": "2026-09-08",
+        "priced_rows": 6,
+        "card": {
+          "n": 6,
+          "hits": 3,
+          "hit_rate": 0.5,
+          "units": 7.1,
+          "roi": 1.1833,
+          "mean_book_prob": 0.21,
+          "mean_model_prob": 0.1757
+        },
+        "edge_card": {
+          "n": 6,
+          "hits": 3,
+          "hit_rate": 0.5,
+          "units": 7.1,
+          "roi": 1.1833,
+          "mean_book_prob": 0.21,
+          "mean_model_prob": 0.1757
+        },
+        "edge_card_names": [
+          "Miguel Vargas",
+          "Luis Garc\u00eda Jr.",
+          "Junior Caminero",
+          "Pete Alonso",
+          "Kazuma Okamoto",
+          "Ben Rice"
+        ],
+        "clv": 0.0029,
+        "overlap": 6
+      },
+      {
+        "date": "2026-09-09",
+        "priced_rows": 7,
+        "card": {
+          "n": 7,
+          "hits": 2,
+          "hit_rate": 0.2857,
+          "units": 3.8,
+          "roi": 0.5429,
+          "mean_book_prob": 0.2223,
+          "mean_model_prob": 0.1739
+        },
+        "edge_card": {
+          "n": 7,
+          "hits": 2,
+          "hit_rate": 0.2857,
+          "units": 3.8,
+          "roi": 0.5429,
+          "mean_book_prob": 0.2223,
+          "mean_model_prob": 0.1739
+        },
+        "edge_card_names": [
+          "Max Muncy",
+          "Carter Jensen",
+          "Riley Greene",
+          "Randy Arozarena",
+          "Kazuma Okamoto",
+          "Ben Rice",
+          "Aaron Judge"
+        ],
+        "clv": -0.0196,
+        "overlap": 7
+      },
+      {
+        "date": "2026-09-10",
+        "priced_rows": 8,
+        "card": {
+          "n": 8,
+          "hits": 1,
+          "hit_rate": 0.125,
+          "units": -3.5,
+          "roi": -0.4375,
+          "mean_book_prob": 0.2042,
+          "mean_model_prob": 0.1692
+        },
+        "edge_card": {
+          "n": 8,
+          "hits": 1,
+          "hit_rate": 0.125,
+          "units": -3.5,
+          "roi": -0.4375,
+          "mean_book_prob": 0.2042,
+          "mean_model_prob": 0.1692
+        },
+        "edge_card_names": [
+          "Yandy D\u00edaz",
+          "Junior Caminero",
+          "Jake Burger",
+          "Luis Garc\u00eda Jr.",
+          "Yordan Alvarez",
+          "Munetaka Murakami",
+          "Kyle Schwarber",
+          "Ben Rice"
+        ],
+        "clv": -0.0208,
+        "overlap": 8
+      }
+    ]
+  },
+  "exported_at": "2026-09-11T07:45:10.369136"
 }
