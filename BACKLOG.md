@@ -595,7 +595,11 @@ Shipped as its own doc PR (not folded into B26). `docs/r2_sync_gotchas.md` docum
 
 ### B40. Market-edge KPI: price the candidate board, calibrate, measure ROI / CLV
 
-**Status.** Queued — the next model brief. Depends on nothing open; `hr_prop_odds` fills daily since PR #129.
+**Status.** **Data + scoreboard SHIPPED 2026-09-11** (PRs #136, #137, #138); the selection switch (step 5) stays open for the PM after ≥30 priced days.
+- **#136 (B40a)** `fetch_pick_odds.py` stores every board batter's 0.5 line from each fetched event (same credit); `--top N` fetches the events of the top-N starters by composite. **#138** noon and afternoon both run `--top 16` (~16-19 credits/day; free tier 500/mo — used 57 by 09-11).
+- **#137 (B40b)** `market_edge.py` + `performance.json["market_edge"]` + Performance-tab panel: de-vigged book prob (one-sided Over ÷ 1.07 — BetRivers posts Over only; two-way proportional when an Under exists), Platt-calibrated composite → P(HR) on 19,552 live starters since 06-03, card ROI at the noon line, edge card (top-8 by model − book, production rules), CLV noon → afternoon, Brier model vs book.
+- **First read (09-08 → 09-10, 21 priced picks):** book 21.2% vs model 17.3% vs actual 28.6%; ROI +35% (noise); CLV −1.1 pts; Brier 0.2147 vs 0.2195. **By our own calibration the book rates our picks higher than we do** — the composite is under-confident at the top (75+ → 20.4% actual vs 18.5% predicted) and the market knows more. Edge, if any, must come from rows with `model_prob − book_prob > 0`; the edge card equals the card until board pricing accumulates.
+- **Open (step 5 + follow-ups):** upgrade `model_prob` from composite-only Platt to a multi-input logistic (composite, season + prior-season HR, ISO, pitcher HR/9, park, real platoon, batting order — OOS AUC 0.618 vs 0.608); decide "most likely" vs "+EV" after 30 days; revisit the 1.07 overround once any two-way rows exist.
 
 **Why.** "8 most likely to homer" converges on the book's favourites (backtest: every ranking ≈ 19-21%, market implied on our picks 22% with vig). The product's edge, if any, is in matchup / weather / park / form on batters the market under-prices — and that can only be measured against a price. Today only the 8 picks are priced (7-8 credits/day).
 
@@ -1153,6 +1157,7 @@ Open questions before this is worth scoping: which markets are actually offered 
 - **PR #132 — B38** pre-game pick revalidation workflow (12:37 PM + 5:07 PM ET swaps for scratched / rained-out picks).
 - **Branches** `fix/filter-postponed-games-2026-05-05`, `fix/live-today-unique-hitters-2026-05-05`, `form-factor-rebuild`, `heatmap-cf-limit-fix`, `matchup-vulnerability-fix` deleted — every change already on main (PR #40 / #57 / cashed-count dedupe / heatmap season cutoff verified by grep). 71 merged `origin/*` branches remain; `git branch -r --merged origin/main` lists them if you want them gone.
 - **Docs** `docs/handoff_2026-09-07.md` (new cold-start doc), CLAUDE.md read order + daily flow updated.
+- **2026-09-11:** **PR #135** heatmap sharding — `heatmap.json` hit 25.12 MiB on the 09-10 outcomes commit and every Cloudflare Workers build failed (25 MiB per-asset cap, all plans); site was stuck on the 09-09 card until the merge. `heatmap_cells_<i>.json` shards (~6 MiB target) + `pin_site_assets_under_cf_limit` (HALT ≥ 25 MiB, WARN ≥ 20). **PR #136 / #137 / #138** B40 data + scoreboard (see B40).
 - **2026-09-09 follow-up (doc PR):** first live days verified (bats L/R/S mix, `power_sample_pa` on every row, BetRivers pricing 7/8 picks, first real revalidation swap Ohtani → Tatis on 09-08); the "21-24% target" wording replaced with the market-edge framing and **B40** filed.
 
 ### 2026-08-21 (day) — B34b afternoon odds snapshot
