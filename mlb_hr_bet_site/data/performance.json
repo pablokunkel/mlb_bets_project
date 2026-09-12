@@ -4398,8 +4398,8 @@
     "park_factor": [
       {
         "label": "100-105",
-        "n": 219,
-        "pct": 23.9
+        "n": 215,
+        "pct": 23.5
       },
       {
         "label": "105-110",
@@ -4413,8 +4413,8 @@
       },
       {
         "label": "95-100",
-        "n": 122,
-        "pct": 13.3
+        "n": 126,
+        "pct": 13.8
       },
       {
         "label": "<95",
@@ -5142,9 +5142,10 @@
     "note": "Rows = pitcher vulnerability quintile (1=most elite, 5=most vulnerable). Columns = archetype similarity quintile (1=low match, 5=high match). Watch the top-right cell (elite pitcher \u00d7 high archetype match): if HR rate is high but avg matchup score is low, the elite-pitcher dampening is too aggressive when archetype signals a real vulnerability."
   },
   "market_edge": {
-    "as_of": "2026-09-12 09:58",
+    "as_of": "2026-09-12 10:04",
     "assumptions": {
       "overround_one_sided": 1.07,
+      "edge_min_book_prob": 0.1,
       "two_way_rows": 0,
       "calibration": {
         "since": "2026-06-03",
@@ -5222,13 +5223,13 @@
       "mean_model_prob": 0.1733
     },
     "edge_card": {
-      "n": 29,
-      "hits": 8,
-      "hit_rate": 0.2759,
-      "units": 19.4,
-      "roi": 0.669,
-      "mean_book_prob": 0.1755,
-      "mean_model_prob": 0.1612
+      "n": 28,
+      "hits": 9,
+      "hit_rate": 0.3214,
+      "units": 23.4,
+      "roi": 0.8357,
+      "mean_book_prob": 0.1904,
+      "mean_model_prob": 0.1657
     },
     "clv": {
       "n": 22,
@@ -5239,6 +5240,104 @@
       "book": 0.1351,
       "n": 164
     },
+    "edge_by_factor": [
+      {
+        "factor": "power_score",
+        "n": 164,
+        "top_third": {
+          "n": 72,
+          "hit_rate": 0.1944,
+          "book_prob": 0.1883,
+          "residual": 0.0061
+        },
+        "bottom_third": {
+          "n": 61,
+          "hit_rate": 0.082,
+          "book_prob": 0.1145,
+          "residual": -0.0325
+        }
+      },
+      {
+        "factor": "matchup_score",
+        "n": 164,
+        "top_third": {
+          "n": 55,
+          "hit_rate": 0.2727,
+          "book_prob": 0.1731,
+          "residual": 0.0996
+        },
+        "bottom_third": {
+          "n": 55,
+          "hit_rate": 0.1091,
+          "book_prob": 0.1344,
+          "residual": -0.0253
+        }
+      },
+      {
+        "factor": "park_score",
+        "n": 164,
+        "top_third": {
+          "n": 59,
+          "hit_rate": 0.1356,
+          "book_prob": 0.1633,
+          "residual": -0.0277
+        },
+        "bottom_third": {
+          "n": 55,
+          "hit_rate": 0.1636,
+          "book_prob": 0.1446,
+          "residual": 0.0191
+        }
+      },
+      {
+        "factor": "form_score",
+        "n": 164,
+        "top_third": {
+          "n": 56,
+          "hit_rate": 0.1964,
+          "book_prob": 0.1785,
+          "residual": 0.018
+        },
+        "bottom_third": {
+          "n": 56,
+          "hit_rate": 0.1786,
+          "book_prob": 0.1195,
+          "residual": 0.0591
+        }
+      },
+      {
+        "factor": "weather_score",
+        "n": 164,
+        "top_third": {
+          "n": 57,
+          "hit_rate": 0.1404,
+          "book_prob": 0.1524,
+          "residual": -0.012
+        },
+        "bottom_third": {
+          "n": 55,
+          "hit_rate": 0.1818,
+          "book_prob": 0.1566,
+          "residual": 0.0252
+        }
+      },
+      {
+        "factor": "composite",
+        "n": 164,
+        "top_third": {
+          "n": 55,
+          "hit_rate": 0.2182,
+          "book_prob": 0.1946,
+          "residual": 0.0236
+        },
+        "bottom_third": {
+          "n": 55,
+          "hit_rate": 0.0909,
+          "book_prob": 0.1123,
+          "residual": -0.0214
+        }
+      }
+    ],
     "days": [
       {
         "date": "2026-09-08",
@@ -5318,16 +5417,15 @@
           "mean_model_prob": 0.1697
         },
         "edge_card": {
-          "n": 8,
+          "n": 7,
           "hits": 1,
-          "hit_rate": 0.125,
-          "units": -3.5,
-          "roi": -0.4375,
-          "mean_book_prob": 0.2042,
-          "mean_model_prob": 0.1697
+          "hit_rate": 0.1429,
+          "units": -2.5,
+          "roi": -0.3571,
+          "mean_book_prob": 0.2218,
+          "mean_model_prob": 0.1725
         },
         "edge_card_names": [
-          "Yandy D\u00edaz",
           "Junior Caminero",
           "Jake Burger",
           "Luis Garc\u00eda Jr.",
@@ -5337,7 +5435,7 @@
           "Ben Rice"
         ],
         "clv": -0.0208,
-        "overlap": 8
+        "overlap": 7
       },
       {
         "date": "2026-09-11",
@@ -5353,27 +5451,27 @@
         },
         "edge_card": {
           "n": 8,
-          "hits": 2,
-          "hit_rate": 0.25,
-          "units": 12.0,
-          "roi": 1.5,
-          "mean_book_prob": 0.0799,
-          "mean_model_prob": 0.1296
+          "hits": 3,
+          "hit_rate": 0.375,
+          "units": 15.0,
+          "roi": 1.875,
+          "mean_book_prob": 0.1202,
+          "mean_model_prob": 0.144
         },
         "edge_card_names": [
-          "Chase Meidroth",
-          "Caleb Durbin",
-          "Nico Hoerner",
-          "Jake McCarthy",
-          "Adael Amador",
           "Alex Bregman",
-          "Nathan Church",
-          "Andr\u00e9s Gim\u00e9nez"
+          "Brice Turang",
+          "Joey Ortiz",
+          "John Peck",
+          "CJ Abrams",
+          "Jacob Young",
+          "Henry Bolte",
+          "Lawrence Butler"
         ],
         "clv": 0.0084,
         "overlap": 0
       }
     ]
   },
-  "exported_at": "2026-09-12T09:58:06.499409"
+  "exported_at": "2026-09-12T10:04:05.357376"
 }

@@ -51,6 +51,12 @@ HR_PROP_OVERROUND = 1.07
 CALIB_SINCE = "2026-06-03"      # A1 weights live -> comparable composites
 MAX_PER_GAME = 2
 N_PICKS = 8
+# 2026-09-12: the first board-priced day (09-11) produced an edge card of
+# eight +1200..+2000 long-shots — the Platt curve floors near 7% while the
+# book's de-vigged price on those batters is 4-6%, so "edge" there is the
+# calibration tail, not information. The edge card only considers rows the
+# book prices at >= this probability (0.10 ~ +800 after de-vig).
+EDGE_MIN_BOOK_PROB = 0.10
 SNAPSHOT_OPEN = "noon"
 SNAPSHOT_CLOSE = "afternoon"
 
@@ -175,7 +181,8 @@ def load_priced_board(conn: sqlite3.Connection, since: str) -> list[dict]:
                dp.selected, dp.batting_order, COALESCE(dp.is_likely_out, 0),
                o.hr_count, o.ab,
                op.over_price, op.under_price, cl.over_price, cl.under_price,
-               COALESCE(op.n_books, cl.n_books)
+               COALESCE(op.n_books, cl.n_books),
+               dp.power_score, dp.matchup_score, dp.park_score, dp.form_score, dp.weather_score
         FROM daily_picks dp
         LEFT JOIN best op ON op.date = dp.date AND op.batter_id = dp.batter_id AND op.snapshot = ?
         LEFT JOIN best cl ON cl.date = dp.date AND cl.batter_id = dp.batter_id AND cl.snapshot = ?
@@ -201,6 +208,8 @@ def load_priced_board(conn: sqlite3.Connection, since: str) -> list[dict]:
             "open_over": r[10], "open_under": r[11],
             "close_over": r[12], "close_under": r[13],
             "n_books": r[14] or 0,
+            "power_score": r[15], "matchup_score": r[16], "park_score": r[17],
+            "form_score": r[18], "weather_score": r[19],
         })
     return out
 
@@ -209,10 +218,13 @@ def load_priced_board(conn: sqlite3.Connection, since: str) -> list[dict]:
 # Pure computation (pinned in tests/smoke.py)
 # ---------------------------------------------------------------------------
 
-def _pick_edge_card(rows: list[dict], n_picks: int = N_PICKS, max_per_game: int = MAX_PER_GAME) -> list[dict]:
-    """Top-N by edge among priced confirmed starters, production rules."""
+def _pick_edge_card(rows: list[dict], n_picks: int = N_PICKS, max_per_game: int = MAX_PER_GAME,
+                    min_book_prob: float = EDGE_MIN_BOOK_PROB) -> list[dict]:
+    """Top-N by edge among priced confirmed starters the book rates at
+    >= min_book_prob, production rules."""
     cands = [r for r in rows if r.get("batting_order") and 1 <= r["batting_order"] <= 9
-             and not r.get("is_likely_out") and r.get("edge") is not None]
+             and not r.get("is_likely_out") and r.get("edge") is not None
+             and (r.get("book_prob") or 0) >= min_book_prob]
     cands.sort(key=lambda r: -r["edge"])
     out, names, per_game = [], set(), {}
     for r in cands:
@@ -240,6 +252,38 @@ def _score_card(rows: list[dict]) -> dict:
         "mean_book_prob": round(sum(r["book_prob"] for r in rows) / n, 4),
         "mean_model_prob": round(sum(r["model_prob"] for r in rows) / n, 4),
     }
+
+
+FACTOR_KEYS = ("power_score", "matchup_score", "park_score", "form_score", "weather_score", "composite")
+
+
+def edge_by_factor(scored: list[dict], keys=FACTOR_KEYS, min_n: int = 40) -> list[dict]:
+    """Where does the market miss? For each factor score, split the priced
+    rows into the top third vs bottom third of that factor and report the
+    mean residual (hit - book_prob) in each: a positive top-third residual
+    means batters the factor likes homer more often than the book's price
+    implies. Rows without the factor are skipped. Needs min_n rows."""
+    out = []
+    for k in keys:
+        rs = [q for q in scored if q.get(k) is not None]
+        if len(rs) < min_n:
+            out.append({"factor": k, "n": len(rs)})
+            continue
+        vals = sorted(q[k] for q in rs)
+        lo_cut, hi_cut = vals[len(vals) // 3], vals[(2 * len(vals)) // 3]
+        top = [q for q in rs if q[k] >= hi_cut]
+        bot = [q for q in rs if q[k] <= lo_cut]
+        res = lambda g: (sum(q["hit"] - q["book_prob"] for q in g) / len(g)) if g else None
+        out.append({
+            "factor": k, "n": len(rs),
+            "top_third": {"n": len(top), "hit_rate": round(sum(q["hit"] for q in top) / len(top), 4) if top else None,
+                          "book_prob": round(sum(q["book_prob"] for q in top) / len(top), 4) if top else None,
+                          "residual": round(res(top), 4) if top else None},
+            "bottom_third": {"n": len(bot), "hit_rate": round(sum(q["hit"] for q in bot) / len(bot), 4) if bot else None,
+                             "book_prob": round(sum(q["book_prob"] for q in bot) / len(bot), 4) if bot else None,
+                             "residual": round(res(bot), 4) if bot else None},
+        })
+    return out
 
 
 def compute_from_rows(train_x, train_y, rows: list[dict], overround: float = HR_PROP_OVERROUND,
@@ -297,6 +341,7 @@ def compute_from_rows(train_x, train_y, rows: list[dict], overround: float = HR_
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "assumptions": {
             "overround_one_sided": overround,
+            "edge_min_book_prob": EDGE_MIN_BOOK_PROB,
             "two_way_rows": two_way,
             "calibration": {"since": CALIB_SINCE, "n": len(train_x), "a": round(a, 5), "b": round(b, 4)},
             "price_used": "noon line, afternoon when noon missing; best Over across books",
@@ -310,6 +355,7 @@ def compute_from_rows(train_x, train_y, rows: list[dict], overround: float = HR_
         "brier": {"model": round(brier_model, 4) if brier_model is not None else None,
                   "book": round(brier_book, 4) if brier_book is not None else None,
                   "n": len(scored)},
+        "edge_by_factor": edge_by_factor(scored),
         "days": days[-recent_days:],
     }
 
