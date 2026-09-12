@@ -183,10 +183,14 @@ jobs:
       # the events listing it does first is free. Quota remaining is logged.
       - name: Capture HR prop odds (B34)
         continue-on-error: true
-        # B40 (2026-09-11): --top 16 also prices the events of the top-16
-        # starters by composite (~2-3 events beyond the picks'), so the
-        # edge card is scored at pick-time prices. ~+3 credits/day.
-        run: python fetch_pick_odds.py --date "${{ steps.date.outputs.date }}" --top 16
+        # B40 (2026-09-11): --top N prices the events of the top-N starters
+        # by composite so the edge card is scored at pick-time prices.
+        # 2026-09-12: 16 -> 60 (~12-13 of 15 events on a full slate) to
+        # build the full-board edge dataset through the end of the season.
+        # Budget: 422 credits left on 09-11 for ~16 days; noon ~13 +
+        # afternoon ~9 + totals 2 = ~24/day. Drop back to 16 if the
+        # daily-picks log shows remaining < 8 x days-left.
+        run: python fetch_pick_odds.py --date "${{ steps.date.outputs.date }}" --top 60
 
       # ─── Push DB back to R2 ─────────────────────────────────────────────
       # Only push if every step above succeeded. A failed pipeline means
