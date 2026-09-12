@@ -3850,8 +3850,17 @@
           </tbody>
         </table>
         </div>
+        ${(me.edge_by_factor && me.edge_by_factor.some(f => f.top_third)) ? `
+        <h4 style="margin:14px 0 4px">Where the market misses — residual (actual − book) by factor tercile</h4>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Priced board rows split into the top and bottom third of each factor score. A positive top-third residual means the batters that factor likes homer more often than the book's price says; that is where an edge would live.</div>
+        <div style="overflow-x:auto"><table class="perf-table" style="font-size:12px;width:100%">
+          <thead><tr><th>Factor</th><th>n</th><th>Top third: actual / book / residual</th><th>Bottom third: actual / book / residual</th></tr></thead>
+          <tbody>${me.edge_by_factor.map(f => f.top_third ? `<tr><td>${f.factor.replace('_score','')}</td><td>${f.n}</td>
+            <td>${pct(f.top_third.hit_rate)} / ${pct(f.top_third.book_prob)} / <span style="color:${col(f.top_third.residual)}">${f.top_third.residual == null ? '–' : ((f.top_third.residual >= 0 ? '+' : '') + (100 * f.top_third.residual).toFixed(1) + ' pts')}</span></td>
+            <td>${pct(f.bottom_third.hit_rate)} / ${pct(f.bottom_third.book_prob)} / <span style="color:${col(f.bottom_third.residual)}">${f.bottom_third.residual == null ? '–' : ((f.bottom_third.residual >= 0 ? '+' : '') + (100 * f.bottom_third.residual).toFixed(1) + ' pts')}</span></td></tr>` : `<tr><td>${f.factor.replace('_score','')}</td><td>${f.n}</td><td colspan="2" style="color:var(--text-muted)">not enough priced rows yet</td></tr>`).join('')}</tbody>
+        </table></div>` : ''}
         <div style="font-size:10px;color:var(--text-muted);margin-top:6px">
-          Assumptions: one-sided Over lines de-vigged by ÷${me.assumptions.overround_one_sided} (${me.assumptions.two_way_rows} two-way rows captured);
+          Assumptions: one-sided Over lines de-vigged by ÷${me.assumptions.overround_one_sided} (${me.assumptions.two_way_rows} two-way rows captured); edge card only considers batters the book prices at ≥ ${pct(me.assumptions.edge_min_book_prob)};
           calibration on ${me.assumptions.calibration.n} live starters since ${me.assumptions.calibration.since};
           ${me.assumptions.price_used}.
         </div>`;

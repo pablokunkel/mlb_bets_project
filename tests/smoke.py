@@ -5391,9 +5391,10 @@ def pin_market_edge_platt_and_edge_card() -> Result:
         row(1, "Pick A", 10, 80, 1, 1, 300, 250),     # hit at +300, line shortened -> CLV > 0
         row(2, "Pick B", 10, 78, 1, 0, 400, 450),     # miss, line drifted
         row(3, "Pick C", 20, 76, 1, 0, None, 350),    # afternoon-only price
-        row(4, "Board D", 30, 60, 0, 1, 900, None),   # low composite, long price -> big edge?
+        row(4, "Board D", 30, 60, 0, 1, 700, None),   # low composite, long price (book 13%) -> edge
         row(5, "Board E", 30, 58, 0, 0, 200, None),   # favourite at low composite -> negative edge
-        row(6, "Board F", 30, 55, 0, 0, 800, None),   # third from game 30 -> capped
+        row(6, "Board F", 30, 55, 0, 0, 750, None),   # third from game 30 -> capped
+        row(10, "Longshot I", 60, 40, 0, 1, 2000, None),  # book 4.5% < EDGE_MIN_BOOK_PROB -> excluded
         row(7, "Bench G", 40, 90, 0, 1, 150, None, bo=None),  # not a starter -> excluded
         row(8, "Out H", 40, 88, 0, 1, 150, None, ilo=1),      # likely out -> excluded
         row(9, "Pick A", 50, 70, 0, 0, 500, None),    # duplicate name -> excluded
@@ -5410,10 +5411,18 @@ def pin_market_edge_platt_and_edge_card() -> Result:
         fails.append(f"edge card ignored a gate: {names}")
     if sum(1 for n in names if n in ("Board D", "Board E", "Board F")) > 2:
         fails.append(f"edge card broke the 2-per-game cap: {names}")
-    if res["brier"]["n"] != 9 or res["brier"]["model"] is None or res["brier"]["book"] is None:
+    if "Longshot I" in names:
+        fails.append("edge card took a batter under EDGE_MIN_BOOK_PROB")
+    if res["brier"]["n"] != 10 or res["brier"]["model"] is None or res["brier"]["book"] is None:
         fails.append(f"brier block wrong: {res['brier']}")
-    if res["priced_rows_scored"] != 9 or res["n_days"] != 1:
+    if res["priced_rows_scored"] != 10 or res["n_days"] != 1:
         fails.append("row / day accounting wrong")
+    if not isinstance(res.get("edge_by_factor"), list) or res["edge_by_factor"][0].get("top_third") is not None:
+        fails.append("edge_by_factor should be present and report 'not enough rows' under min_n")
+    big = [dict(r, power_score=r["composite"], date="2026-09-08") for r in rows] * 6
+    ebf = me.edge_by_factor([dict(q, hit=q["hit"], book_prob=0.15) for q in big], keys=("power_score",), min_n=40)
+    if not ebf or ebf[0].get("top_third") is None or ebf[0]["n"] != 60:
+        fails.append(f"edge_by_factor terciles wrong: {ebf}")
     if fails:
         return Result("B40 market_edge platt + edge card", Result.HALT, "; ".join(fails))
     return Result("B40 market_edge platt + edge card", Result.PASS,
