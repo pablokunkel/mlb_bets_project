@@ -285,98 +285,98 @@
   ],
   "factor_diagnostic": {
     "days": 30,
-    "n_hr": 56,
-    "n_miss": 567,
+    "n_hr": 44,
+    "n_miss": 503,
     "factors": [
       {
         "factor": "power",
-        "hr_mean": 71.4,
-        "miss_mean": 65.2,
-        "gap": 6.1
+        "hr_mean": 70.5,
+        "miss_mean": 64.9,
+        "gap": 5.6
       },
       {
         "factor": "matchup",
-        "hr_mean": 58.9,
-        "miss_mean": 56.2,
-        "gap": 2.7
+        "hr_mean": 59.3,
+        "miss_mean": 56.3,
+        "gap": 3.0
       },
       {
         "factor": "park",
-        "hr_mean": 56.7,
+        "hr_mean": 56.5,
         "miss_mean": 49.3,
-        "gap": 7.4
+        "gap": 7.2
       },
       {
         "factor": "form",
-        "hr_mean": 27.2,
-        "miss_mean": 29.6,
-        "gap": -2.4
+        "hr_mean": 26.9,
+        "miss_mean": 29.1,
+        "gap": -2.2
       },
       {
         "factor": "weather",
-        "hr_mean": 53.5,
-        "miss_mean": 51.9,
-        "gap": 1.6
+        "hr_mean": 53.4,
+        "miss_mean": 51.3,
+        "gap": 2.1
       },
       {
         "factor": "lineup",
-        "hr_mean": 61.4,
-        "miss_mean": 59.6,
-        "gap": 1.7
+        "hr_mean": 61.6,
+        "miss_mean": 60.0,
+        "gap": 1.6
       },
       {
         "factor": "composite",
-        "hr_mean": 59.6,
-        "miss_mean": 55.5,
-        "gap": 4.1
+        "hr_mean": 59.2,
+        "miss_mean": 55.3,
+        "gap": 4.0
       }
     ]
   },
   "factor_decomp": {
     "days": 30,
-    "n_hr": 56,
-    "n_miss": 567,
+    "n_hr": 44,
+    "n_miss": 503,
     "factors": {
       "power": [
         {
           "input": "barrel_pct",
-          "hr_mean": 7.041,
-          "miss_mean": 6.548,
-          "gap": 0.493,
-          "n_hr": 56,
-          "n_miss": 553
+          "hr_mean": 6.868,
+          "miss_mean": 6.474,
+          "gap": 0.394,
+          "n_hr": 44,
+          "n_miss": 490
         },
         {
           "input": "exit_velo",
-          "hr_mean": 88.466,
-          "miss_mean": 88.254,
-          "gap": 0.212,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 88.418,
+          "miss_mean": 88.253,
+          "gap": 0.165,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "hr_fb_pct",
-          "hr_mean": 6.348,
-          "miss_mean": 5.896,
-          "gap": 0.452,
-          "n_hr": 56,
-          "n_miss": 553
+          "hr_mean": 6.191,
+          "miss_mean": 5.829,
+          "gap": 0.362,
+          "n_hr": 44,
+          "n_miss": 490
         },
         {
           "input": "iso",
-          "hr_mean": 0.174,
-          "miss_mean": 0.163,
-          "gap": 0.011,
-          "n_hr": 56,
-          "n_miss": 565
+          "hr_mean": 0.17,
+          "miss_mean": 0.161,
+          "gap": 0.009,
+          "n_hr": 44,
+          "n_miss": 502
         },
         {
           "input": "xwoba_contact",
           "hr_mean": 0.331,
-          "miss_mean": 0.321,
+          "miss_mean": 0.322,
           "gap": 0.009,
-          "n_hr": 56,
-          "n_miss": 567
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "pull_fb_pct",
@@ -416,134 +416,134 @@
       "matchup": [
         {
           "input": "pitcher_hr_per_9",
-          "hr_mean": 0.946,
-          "miss_mean": 0.962,
-          "gap": -0.016,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 0.95,
+          "miss_mean": 0.974,
+          "gap": -0.024,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "pitcher_era",
-          "hr_mean": 3.221,
-          "miss_mean": 3.123,
-          "gap": 0.098,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 3.174,
+          "miss_mean": 3.106,
+          "gap": 0.068,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "pitcher_hh_pct",
-          "hr_mean": 28.314,
-          "miss_mean": 27.939,
-          "gap": 0.375,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 28.248,
+          "miss_mean": 27.878,
+          "gap": 0.37,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "pitcher_k_per_9",
-          "hr_mean": 9.344,
+          "hr_mean": 9.479,
           "miss_mean": 9.515,
-          "gap": -0.172,
-          "n_hr": 56,
-          "n_miss": 567
+          "gap": -0.035,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "pitcher_fb_pct_allowed",
-          "hr_mean": 87.846,
-          "miss_mean": 87.757,
-          "gap": 0.09,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 86.63,
+          "miss_mean": 87.135,
+          "gap": -0.505,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "woba_vs_hand",
-          "hr_mean": 0.364,
-          "miss_mean": 0.356,
-          "gap": 0.008,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 0.363,
+          "miss_mean": 0.357,
+          "gap": 0.006,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "archetype_similarity",
-          "hr_mean": 72.268,
-          "miss_mean": 72.182,
-          "gap": 0.086,
-          "n_hr": 38,
-          "n_miss": 357
+          "hr_mean": 70.434,
+          "miss_mean": 71.883,
+          "gap": -1.449,
+          "n_hr": 29,
+          "n_miss": 309
         },
         {
           "input": "vegas_team_total_pct",
-          "hr_mean": 59.933,
-          "miss_mean": 50.298,
-          "gap": 9.635,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 60.938,
+          "miss_mean": 50.41,
+          "gap": 10.527,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "platoon_advantage",
-          "hr_mean": 0.625,
-          "miss_mean": 0.598,
-          "gap": 0.027,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 0.636,
+          "miss_mean": 0.606,
+          "gap": 0.03,
+          "n_hr": 44,
+          "n_miss": 503
         }
       ],
       "park": [
         {
           "input": "hr_park_factor",
-          "hr_mean": 104.32,
-          "miss_mean": 102.815,
-          "gap": 1.505,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 103.705,
+          "miss_mean": 102.781,
+          "gap": 0.924,
+          "n_hr": 44,
+          "n_miss": 503
         }
       ],
       "weather": [
         {
           "input": "temperature_f",
-          "hr_mean": 73.879,
-          "miss_mean": 71.682,
-          "gap": 2.196,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 74.516,
+          "miss_mean": 71.604,
+          "gap": 2.912,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "wind_mph",
-          "hr_mean": 3.454,
-          "miss_mean": 3.238,
-          "gap": 0.215,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 3.802,
+          "miss_mean": 3.37,
+          "gap": 0.432,
+          "n_hr": 44,
+          "n_miss": 503
         },
         {
           "input": "humidity_pct",
-          "hr_mean": 52.5,
-          "miss_mean": 54.873,
-          "gap": -2.373,
-          "n_hr": 38,
-          "n_miss": 332
+          "hr_mean": 46.667,
+          "miss_mean": 51.596,
+          "gap": -4.929,
+          "n_hr": 30,
+          "n_miss": 282
         },
         {
           "input": "is_dome",
-          "hr_mean": 0.321,
-          "miss_mean": 0.414,
-          "gap": -0.093,
-          "n_hr": 56,
-          "n_miss": 567
+          "hr_mean": 0.318,
+          "miss_mean": 0.439,
+          "gap": -0.121,
+          "n_hr": 44,
+          "n_miss": 503
         }
       ],
       "lineup": [
         {
           "input": "batting_order",
-          "hr_mean": 4.706,
-          "miss_mean": 4.844,
-          "gap": -0.138,
-          "n_hr": 51,
-          "n_miss": 512
+          "hr_mean": 4.829,
+          "miss_mean": 4.823,
+          "gap": 0.007,
+          "n_hr": 41,
+          "n_miss": 457
         }
       ]
     },
     "provenance": {
-      "live": 790
+      "live": 696
     }
   },
   "factor_decomp_by_band": {
@@ -551,49 +551,49 @@
     "bands": [
       {
         "days": 30,
-        "n_hr": 5,
-        "n_miss": 78,
+        "n_hr": 4,
+        "n_miss": 73,
         "factors": {
           "power": [
             {
               "input": "barrel_pct",
-              "hr_mean": 4.72,
-              "miss_mean": 2.559,
-              "gap": 2.161,
-              "n_hr": 5,
-              "n_miss": 64
+              "hr_mean": 5.0,
+              "miss_mean": 2.52,
+              "gap": 2.48,
+              "n_hr": 4,
+              "n_miss": 60
             },
             {
               "input": "exit_velo",
-              "hr_mean": 87.68,
-              "miss_mean": 87.073,
-              "gap": 0.607,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 87.65,
+              "miss_mean": 87.093,
+              "gap": 0.557,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "hr_fb_pct",
-              "hr_mean": 4.24,
-              "miss_mean": 2.294,
-              "gap": 1.946,
-              "n_hr": 5,
-              "n_miss": 64
+              "hr_mean": 4.5,
+              "miss_mean": 2.257,
+              "gap": 2.243,
+              "n_hr": 4,
+              "n_miss": 60
             },
             {
               "input": "iso",
-              "hr_mean": 0.127,
-              "miss_mean": 0.088,
+              "hr_mean": 0.126,
+              "miss_mean": 0.087,
               "gap": 0.039,
-              "n_hr": 5,
-              "n_miss": 76
+              "n_hr": 4,
+              "n_miss": 72
             },
             {
               "input": "xwoba_contact",
-              "hr_mean": 0.296,
+              "hr_mean": 0.292,
               "miss_mean": 0.289,
-              "gap": 0.007,
-              "n_hr": 5,
-              "n_miss": 78
+              "gap": 0.003,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "pull_fb_pct",
@@ -633,51 +633,51 @@
           "matchup": [
             {
               "input": "pitcher_hr_per_9",
-              "hr_mean": 0.8,
-              "miss_mean": 0.932,
-              "gap": -0.132,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 0.92,
+              "miss_mean": 0.919,
+              "gap": 0.001,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "pitcher_era",
-              "hr_mean": 2.938,
-              "miss_mean": 3.095,
-              "gap": -0.157,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 2.973,
+              "miss_mean": 3.045,
+              "gap": -0.072,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "pitcher_hh_pct",
-              "hr_mean": 26.44,
-              "miss_mean": 27.881,
-              "gap": -1.441,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 26.8,
+              "miss_mean": 27.733,
+              "gap": -0.933,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "pitcher_k_per_9",
-              "hr_mean": 9.432,
-              "miss_mean": 9.505,
-              "gap": -0.073,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 9.705,
+              "miss_mean": 9.506,
+              "gap": 0.199,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "pitcher_fb_pct_allowed",
-              "hr_mean": 91.36,
-              "miss_mean": 88.353,
-              "gap": 3.007,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 91.725,
+              "miss_mean": 88.03,
+              "gap": 3.695,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "woba_vs_hand",
-              "hr_mean": 0.333,
-              "miss_mean": 0.327,
-              "gap": 0.006,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 0.328,
+              "miss_mean": 0.329,
+              "gap": -0.001,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "archetype_similarity",
@@ -689,78 +689,78 @@
             },
             {
               "input": "vegas_team_total_pct",
-              "hr_mean": 41.25,
-              "miss_mean": 47.115,
-              "gap": -5.865,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 50.0,
+              "miss_mean": 45.976,
+              "gap": 4.024,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "platoon_advantage",
-              "hr_mean": 0.8,
-              "miss_mean": 0.692,
-              "gap": 0.108,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 0.75,
+              "miss_mean": 0.699,
+              "gap": 0.051,
+              "n_hr": 4,
+              "n_miss": 73
             }
           ],
           "park": [
             {
               "input": "hr_park_factor",
-              "hr_mean": 105.56,
-              "miss_mean": 101.181,
-              "gap": 4.379,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 102.55,
+              "miss_mean": 101.321,
+              "gap": 1.229,
+              "n_hr": 4,
+              "n_miss": 73
             }
           ],
           "weather": [
             {
               "input": "temperature_f",
-              "hr_mean": 68.92,
-              "miss_mean": 70.55,
-              "gap": -1.63,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 70.225,
+              "miss_mean": 70.245,
+              "gap": -0.02,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "wind_mph",
-              "hr_mean": 3.04,
-              "miss_mean": 2.695,
-              "gap": 0.345,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 2.925,
+              "miss_mean": 2.74,
+              "gap": 0.185,
+              "n_hr": 4,
+              "n_miss": 73
             },
             {
               "input": "humidity_pct",
-              "hr_mean": 70.0,
-              "miss_mean": 56.111,
-              "gap": 13.889,
-              "n_hr": 3,
-              "n_miss": 36
+              "hr_mean": 59.5,
+              "miss_mean": 54.812,
+              "gap": 4.688,
+              "n_hr": 2,
+              "n_miss": 32
             },
             {
               "input": "is_dome",
-              "hr_mean": 0.4,
-              "miss_mean": 0.538,
-              "gap": -0.138,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 0.5,
+              "miss_mean": 0.562,
+              "gap": -0.062,
+              "n_hr": 4,
+              "n_miss": 73
             }
           ],
           "lineup": [
             {
               "input": "batting_order",
-              "hr_mean": 7.6,
-              "miss_mean": 6.218,
-              "gap": 1.382,
-              "n_hr": 5,
-              "n_miss": 78
+              "hr_mean": 8.0,
+              "miss_mean": 6.192,
+              "gap": 1.808,
+              "n_hr": 4,
+              "n_miss": 73
             }
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "band_low": 0,
         "band_high": 40,
@@ -768,49 +768,49 @@
       },
       {
         "days": 30,
-        "n_hr": 18,
-        "n_miss": 248,
+        "n_hr": 13,
+        "n_miss": 220,
         "factors": {
           "power": [
             {
               "input": "barrel_pct",
-              "hr_mean": 5.967,
-              "miss_mean": 6.165,
-              "gap": -0.198,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 5.623,
+              "miss_mean": 6.118,
+              "gap": -0.495,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "exit_velo",
-              "hr_mean": 88.083,
-              "miss_mean": 88.057,
-              "gap": 0.026,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 87.931,
+              "miss_mean": 88.06,
+              "gap": -0.129,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "hr_fb_pct",
-              "hr_mean": 5.389,
-              "miss_mean": 5.55,
-              "gap": -0.162,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 5.077,
+              "miss_mean": 5.508,
+              "gap": -0.431,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "iso",
-              "hr_mean": 0.156,
-              "miss_mean": 0.157,
-              "gap": -0.001,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 0.148,
+              "miss_mean": 0.156,
+              "gap": -0.008,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "xwoba_contact",
-              "hr_mean": 0.318,
-              "miss_mean": 0.312,
-              "gap": 0.006,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 0.317,
+              "miss_mean": 0.313,
+              "gap": 0.004,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "pull_fb_pct",
@@ -850,134 +850,134 @@
           "matchup": [
             {
               "input": "pitcher_hr_per_9",
-              "hr_mean": 0.746,
-              "miss_mean": 0.887,
-              "gap": -0.141,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 0.72,
+              "miss_mean": 0.907,
+              "gap": -0.187,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "pitcher_era",
-              "hr_mean": 3.029,
-              "miss_mean": 2.962,
-              "gap": 0.068,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 3.011,
+              "miss_mean": 2.956,
+              "gap": 0.055,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "pitcher_hh_pct",
-              "hr_mean": 27.583,
-              "miss_mean": 27.554,
-              "gap": 0.029,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 27.331,
+              "miss_mean": 27.537,
+              "gap": -0.207,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "pitcher_k_per_9",
-              "hr_mean": 9.292,
-              "miss_mean": 9.543,
-              "gap": -0.25,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 9.325,
+              "miss_mean": 9.563,
+              "gap": -0.237,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "pitcher_fb_pct_allowed",
-              "hr_mean": 91.533,
-              "miss_mean": 88.247,
-              "gap": 3.287,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 91.354,
+              "miss_mean": 87.767,
+              "gap": 3.587,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "woba_vs_hand",
-              "hr_mean": 0.349,
+              "hr_mean": 0.345,
               "miss_mean": 0.345,
-              "gap": 0.005,
-              "n_hr": 18,
-              "n_miss": 248
+              "gap": -0.001,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "archetype_similarity",
-              "hr_mean": 70.127,
-              "miss_mean": 70.067,
-              "gap": 0.06,
-              "n_hr": 11,
-              "n_miss": 162
+              "hr_mean": 67.1,
+              "miss_mean": 69.594,
+              "gap": -2.494,
+              "n_hr": 7,
+              "n_miss": 141
             },
             {
               "input": "vegas_team_total_pct",
-              "hr_mean": 47.222,
-              "miss_mean": 42.44,
-              "gap": 4.783,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 47.596,
+              "miss_mean": 43.58,
+              "gap": 4.017,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "platoon_advantage",
-              "hr_mean": 0.556,
-              "miss_mean": 0.613,
-              "gap": -0.057,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 0.615,
+              "miss_mean": 0.618,
+              "gap": -0.003,
+              "n_hr": 13,
+              "n_miss": 220
             }
           ],
           "park": [
             {
               "input": "hr_park_factor",
-              "hr_mean": 104.806,
-              "miss_mean": 103.439,
-              "gap": 1.366,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 104.431,
+              "miss_mean": 103.136,
+              "gap": 1.294,
+              "n_hr": 13,
+              "n_miss": 220
             }
           ],
           "weather": [
             {
               "input": "temperature_f",
-              "hr_mean": 67.9,
-              "miss_mean": 69.82,
-              "gap": -1.92,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 67.6,
+              "miss_mean": 69.928,
+              "gap": -2.328,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "wind_mph",
-              "hr_mean": 2.961,
-              "miss_mean": 3.209,
-              "gap": -0.248,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 3.562,
+              "miss_mean": 3.335,
+              "gap": 0.226,
+              "n_hr": 13,
+              "n_miss": 220
             },
             {
               "input": "humidity_pct",
-              "hr_mean": 65.2,
-              "miss_mean": 59.486,
-              "gap": 5.714,
-              "n_hr": 10,
-              "n_miss": 146
+              "hr_mean": 58.75,
+              "miss_mean": 55.536,
+              "gap": 3.214,
+              "n_hr": 8,
+              "n_miss": 125
             },
             {
               "input": "is_dome",
-              "hr_mean": 0.444,
-              "miss_mean": 0.411,
-              "gap": 0.033,
-              "n_hr": 18,
-              "n_miss": 248
+              "hr_mean": 0.385,
+              "miss_mean": 0.432,
+              "gap": -0.047,
+              "n_hr": 13,
+              "n_miss": 220
             }
           ],
           "lineup": [
             {
               "input": "batting_order",
-              "hr_mean": 5.312,
-              "miss_mean": 5.578,
-              "gap": -0.266,
-              "n_hr": 16,
-              "n_miss": 211
+              "hr_mean": 5.364,
+              "miss_mean": 5.519,
+              "gap": -0.155,
+              "n_hr": 11,
+              "n_miss": 189
             }
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "band_low": 40,
         "band_high": 60,
@@ -985,49 +985,49 @@
       },
       {
         "days": 30,
-        "n_hr": 33,
-        "n_miss": 241,
+        "n_hr": 27,
+        "n_miss": 210,
         "factors": {
           "power": [
             {
               "input": "barrel_pct",
-              "hr_mean": 7.979,
-              "miss_mean": 8.002,
-              "gap": -0.024,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 7.744,
+              "miss_mean": 7.977,
+              "gap": -0.232,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "exit_velo",
-              "hr_mean": 88.794,
-              "miss_mean": 88.839,
-              "gap": -0.045,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 88.767,
+              "miss_mean": 88.859,
+              "gap": -0.092,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "hr_fb_pct",
-              "hr_mean": 7.191,
-              "miss_mean": 7.209,
-              "gap": -0.018,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 6.978,
+              "miss_mean": 7.187,
+              "gap": -0.209,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "iso",
-              "hr_mean": 0.191,
-              "miss_mean": 0.193,
-              "gap": -0.001,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 0.187,
+              "miss_mean": 0.192,
+              "gap": -0.005,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "xwoba_contact",
               "hr_mean": 0.343,
-              "miss_mean": 0.342,
-              "gap": 0.001,
-              "n_hr": 33,
-              "n_miss": 241
+              "miss_mean": 0.343,
+              "gap": 0.0,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "pull_fb_pct",
@@ -1067,134 +1067,134 @@
           "matchup": [
             {
               "input": "pitcher_hr_per_9",
-              "hr_mean": 1.077,
-              "miss_mean": 1.049,
-              "gap": 0.029,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 1.065,
+              "miss_mean": 1.063,
+              "gap": 0.002,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "pitcher_era",
-              "hr_mean": 3.368,
-              "miss_mean": 3.298,
-              "gap": 0.07,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 3.282,
+              "miss_mean": 3.283,
+              "gap": -0.002,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "pitcher_hh_pct",
-              "hr_mean": 28.997,
-              "miss_mean": 28.355,
-              "gap": 0.642,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 28.904,
+              "miss_mean": 28.285,
+              "gap": 0.619,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "pitcher_k_per_9",
-              "hr_mean": 9.358,
-              "miss_mean": 9.49,
-              "gap": -0.132,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 9.52,
+              "miss_mean": 9.467,
+              "gap": 0.053,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "pitcher_fb_pct_allowed",
-              "hr_mean": 85.303,
-              "miss_mean": 87.06,
-              "gap": -1.757,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 83.6,
+              "miss_mean": 86.16,
+              "gap": -2.56,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "woba_vs_hand",
-              "hr_mean": 0.376,
-              "miss_mean": 0.376,
+              "hr_mean": 0.377,
+              "miss_mean": 0.378,
               "gap": -0.001,
-              "n_hr": 33,
-              "n_miss": 241
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "archetype_similarity",
-              "hr_mean": 72.804,
-              "miss_mean": 73.592,
-              "gap": -0.788,
-              "n_hr": 26,
-              "n_miss": 187
+              "hr_mean": 71.0,
+              "miss_mean": 73.392,
+              "gap": -2.392,
+              "n_hr": 21,
+              "n_miss": 160
             },
             {
               "input": "vegas_team_total_pct",
-              "hr_mean": 69.697,
-              "miss_mean": 59.414,
-              "gap": 10.283,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 68.981,
+              "miss_mean": 59.107,
+              "gap": 9.874,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "platoon_advantage",
-              "hr_mean": 0.636,
-              "miss_mean": 0.552,
-              "gap": 0.084,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 0.63,
+              "miss_mean": 0.562,
+              "gap": 0.068,
+              "n_hr": 27,
+              "n_miss": 210
             }
           ],
           "park": [
             {
               "input": "hr_park_factor",
-              "hr_mean": 103.867,
-              "miss_mean": 102.701,
-              "gap": 1.165,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 103.526,
+              "miss_mean": 102.916,
+              "gap": 0.61,
+              "n_hr": 27,
+              "n_miss": 210
             }
           ],
           "weather": [
             {
               "input": "temperature_f",
-              "hr_mean": 77.891,
-              "miss_mean": 73.965,
-              "gap": 3.926,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 78.481,
+              "miss_mean": 73.833,
+              "gap": 4.649,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "wind_mph",
-              "hr_mean": 3.785,
-              "miss_mean": 3.444,
-              "gap": 0.341,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 4.048,
+              "miss_mean": 3.626,
+              "gap": 0.422,
+              "n_hr": 27,
+              "n_miss": 210
             },
             {
               "input": "humidity_pct",
-              "hr_mean": 45.32,
-              "miss_mean": 50.087,
-              "gap": -4.767,
-              "n_hr": 25,
-              "n_miss": 150
+              "hr_mean": 40.55,
+              "miss_mean": 46.832,
+              "gap": -6.282,
+              "n_hr": 20,
+              "n_miss": 125
             },
             {
               "input": "is_dome",
-              "hr_mean": 0.242,
-              "miss_mean": 0.378,
-              "gap": -0.135,
-              "n_hr": 33,
-              "n_miss": 241
+              "hr_mean": 0.259,
+              "miss_mean": 0.405,
+              "gap": -0.146,
+              "n_hr": 27,
+              "n_miss": 210
             }
           ],
           "lineup": [
             {
               "input": "batting_order",
-              "hr_mean": 3.9,
-              "miss_mean": 3.668,
-              "gap": 0.232,
-              "n_hr": 30,
-              "n_miss": 223
+              "hr_mean": 4.115,
+              "miss_mean": 3.636,
+              "gap": 0.479,
+              "n_hr": 26,
+              "n_miss": 195
             }
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "band_low": 60,
         "band_high": 80,
@@ -1411,7 +1411,7 @@
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "band_low": 80,
         "band_high": 101,
@@ -1425,47 +1425,47 @@
       "label": "HR hitters scored 40-60",
       "low": 40,
       "high": 60,
-      "n": 18,
+      "n": 13,
       "factors": {
         "power": [
           {
             "input": "barrel_pct",
-            "hr_mean": 5.967,
+            "hr_mean": 5.623,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "exit_velo",
-            "hr_mean": 88.083,
+            "hr_mean": 87.931,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "hr_fb_pct",
-            "hr_mean": 5.389,
+            "hr_mean": 5.077,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "iso",
-            "hr_mean": 0.156,
+            "hr_mean": 0.148,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "xwoba_contact",
-            "hr_mean": 0.318,
+            "hr_mean": 0.317,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
@@ -1506,128 +1506,128 @@
         "matchup": [
           {
             "input": "pitcher_hr_per_9",
-            "hr_mean": 0.746,
+            "hr_mean": 0.72,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "pitcher_era",
-            "hr_mean": 3.029,
+            "hr_mean": 3.011,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "pitcher_hh_pct",
-            "hr_mean": 27.583,
+            "hr_mean": 27.331,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "pitcher_k_per_9",
-            "hr_mean": 9.292,
+            "hr_mean": 9.325,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "pitcher_fb_pct_allowed",
-            "hr_mean": 91.533,
+            "hr_mean": 91.354,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "woba_vs_hand",
-            "hr_mean": 0.349,
+            "hr_mean": 0.345,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "archetype_similarity",
-            "hr_mean": 70.127,
+            "hr_mean": 67.1,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 11,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "vegas_team_total_pct",
-            "hr_mean": 47.222,
+            "hr_mean": 47.596,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "platoon_advantage",
-            "hr_mean": 0.556,
+            "hr_mean": 0.615,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           }
         ],
         "park": [
           {
             "input": "hr_park_factor",
-            "hr_mean": 104.806,
+            "hr_mean": 104.431,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           }
         ],
         "weather": [
           {
             "input": "temperature_f",
-            "hr_mean": 67.9,
+            "hr_mean": 67.6,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "wind_mph",
-            "hr_mean": 2.961,
+            "hr_mean": 3.562,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           },
           {
             "input": "humidity_pct",
-            "hr_mean": 65.2,
+            "hr_mean": 58.75,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 10,
+            "n_hr": 8,
             "n_miss": 0
           },
           {
             "input": "is_dome",
-            "hr_mean": 0.444,
+            "hr_mean": 0.385,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 18,
+            "n_hr": 13,
             "n_miss": 0
           }
         ],
         "lineup": [
           {
             "input": "batting_order",
-            "hr_mean": 5.312,
+            "hr_mean": 5.364,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 16,
+            "n_hr": 11,
             "n_miss": 0
           }
         ]
@@ -1637,39 +1637,39 @@
       "label": "HR hitters scored 60-80",
       "low": 60,
       "high": 80,
-      "n": 33,
+      "n": 27,
       "factors": {
         "power": [
           {
             "input": "barrel_pct",
-            "hr_mean": 7.979,
+            "hr_mean": 7.744,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "exit_velo",
-            "hr_mean": 88.794,
+            "hr_mean": 88.767,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "hr_fb_pct",
-            "hr_mean": 7.191,
+            "hr_mean": 6.978,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "iso",
-            "hr_mean": 0.191,
+            "hr_mean": 0.187,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
@@ -1677,7 +1677,7 @@
             "hr_mean": 0.343,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
@@ -1718,128 +1718,128 @@
         "matchup": [
           {
             "input": "pitcher_hr_per_9",
-            "hr_mean": 1.077,
+            "hr_mean": 1.065,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "pitcher_era",
-            "hr_mean": 3.368,
+            "hr_mean": 3.282,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "pitcher_hh_pct",
-            "hr_mean": 28.997,
+            "hr_mean": 28.904,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "pitcher_k_per_9",
-            "hr_mean": 9.358,
+            "hr_mean": 9.52,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "pitcher_fb_pct_allowed",
-            "hr_mean": 85.303,
+            "hr_mean": 83.6,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "woba_vs_hand",
-            "hr_mean": 0.376,
+            "hr_mean": 0.377,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "archetype_similarity",
-            "hr_mean": 72.804,
+            "hr_mean": 71.0,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 26,
+            "n_hr": 21,
             "n_miss": 0
           },
           {
             "input": "vegas_team_total_pct",
-            "hr_mean": 69.697,
+            "hr_mean": 68.981,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "platoon_advantage",
-            "hr_mean": 0.636,
+            "hr_mean": 0.63,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           }
         ],
         "park": [
           {
             "input": "hr_park_factor",
-            "hr_mean": 103.867,
+            "hr_mean": 103.526,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           }
         ],
         "weather": [
           {
             "input": "temperature_f",
-            "hr_mean": 77.891,
+            "hr_mean": 78.481,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "wind_mph",
-            "hr_mean": 3.785,
+            "hr_mean": 4.048,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           },
           {
             "input": "humidity_pct",
-            "hr_mean": 45.32,
+            "hr_mean": 40.55,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 25,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "is_dome",
-            "hr_mean": 0.242,
+            "hr_mean": 0.259,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 33,
+            "n_hr": 27,
             "n_miss": 0
           }
         ],
         "lineup": [
           {
             "input": "batting_order",
-            "hr_mean": 3.9,
+            "hr_mean": 4.115,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 30,
+            "n_hr": 26,
             "n_miss": 0
           }
         ]
@@ -1851,49 +1851,49 @@
     "bands": [
       {
         "days": 30,
-        "n_hr": 19,
-        "n_miss": 181,
+        "n_hr": 17,
+        "n_miss": 173,
         "factors": {
           "power": [
             {
               "input": "barrel_pct",
-              "hr_mean": 8.747,
-              "miss_mean": 8.048,
-              "gap": 0.699,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 8.541,
+              "miss_mean": 7.96,
+              "gap": 0.581,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "exit_velo",
-              "hr_mean": 89.063,
-              "miss_mean": 88.895,
-              "gap": 0.168,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 89.024,
+              "miss_mean": 88.862,
+              "gap": 0.162,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "hr_fb_pct",
-              "hr_mean": 7.895,
-              "miss_mean": 7.249,
-              "gap": 0.646,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 7.706,
+              "miss_mean": 7.169,
+              "gap": 0.537,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "iso",
-              "hr_mean": 0.205,
-              "miss_mean": 0.194,
-              "gap": 0.011,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 0.201,
+              "miss_mean": 0.192,
+              "gap": 0.008,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "xwoba_contact",
-              "hr_mean": 0.349,
-              "miss_mean": 0.343,
-              "gap": 0.006,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 0.347,
+              "miss_mean": 0.342,
+              "gap": 0.005,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "pull_fb_pct",
@@ -1933,134 +1933,134 @@
           "matchup": [
             {
               "input": "pitcher_hr_per_9",
-              "hr_mean": 1.08,
-              "miss_mean": 1.066,
-              "gap": 0.014,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 1.065,
+              "miss_mean": 1.075,
+              "gap": -0.011,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "pitcher_era",
-              "hr_mean": 3.51,
-              "miss_mean": 3.295,
-              "gap": 0.215,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 3.454,
+              "miss_mean": 3.3,
+              "gap": 0.154,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "pitcher_hh_pct",
-              "hr_mean": 29.832,
-              "miss_mean": 28.391,
-              "gap": 1.44,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 29.847,
+              "miss_mean": 28.401,
+              "gap": 1.446,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "pitcher_k_per_9",
-              "hr_mean": 9.383,
-              "miss_mean": 9.461,
-              "gap": -0.078,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 9.512,
+              "miss_mean": 9.443,
+              "gap": 0.069,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "pitcher_fb_pct_allowed",
-              "hr_mean": 85.921,
-              "miss_mean": 86.82,
-              "gap": -0.899,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 85.088,
+              "miss_mean": 86.527,
+              "gap": -1.438,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "woba_vs_hand",
-              "hr_mean": 0.386,
-              "miss_mean": 0.38,
-              "gap": 0.007,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 0.384,
+              "miss_mean": 0.378,
+              "gap": 0.006,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "archetype_similarity",
-              "hr_mean": 72.237,
-              "miss_mean": 72.792,
-              "gap": -0.554,
-              "n_hr": 16,
-              "n_miss": 142
+              "hr_mean": 71.45,
+              "miss_mean": 72.613,
+              "gap": -1.163,
+              "n_hr": 14,
+              "n_miss": 134
             },
             {
               "input": "vegas_team_total_pct",
-              "hr_mean": 72.697,
-              "miss_mean": 59.185,
-              "gap": 13.512,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 70.221,
+              "miss_mean": 59.393,
+              "gap": 10.828,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "platoon_advantage",
-              "hr_mean": 0.684,
-              "miss_mean": 0.558,
-              "gap": 0.126,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 0.647,
+              "miss_mean": 0.566,
+              "gap": 0.081,
+              "n_hr": 17,
+              "n_miss": 173
             }
           ],
           "park": [
             {
               "input": "hr_park_factor",
-              "hr_mean": 105.547,
-              "miss_mean": 102.546,
-              "gap": 3.001,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 105.141,
+              "miss_mean": 102.658,
+              "gap": 2.483,
+              "n_hr": 17,
+              "n_miss": 173
             }
           ],
           "weather": [
             {
               "input": "temperature_f",
-              "hr_mean": 75.195,
-              "miss_mean": 72.05,
-              "gap": 3.145,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 74.382,
+              "miss_mean": 72.028,
+              "gap": 2.354,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "wind_mph",
-              "hr_mean": 3.663,
-              "miss_mean": 3.02,
-              "gap": 0.643,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 3.682,
+              "miss_mean": 3.072,
+              "gap": 0.611,
+              "n_hr": 17,
+              "n_miss": 173
             },
             {
               "input": "humidity_pct",
-              "hr_mean": 46.286,
-              "miss_mean": 48.543,
-              "gap": -2.258,
-              "n_hr": 14,
-              "n_miss": 92
+              "hr_mean": 45.833,
+              "miss_mean": 46.802,
+              "gap": -0.969,
+              "n_hr": 12,
+              "n_miss": 86
             },
             {
               "input": "is_dome",
-              "hr_mean": 0.263,
-              "miss_mean": 0.492,
-              "gap": -0.229,
-              "n_hr": 19,
-              "n_miss": 181
+              "hr_mean": 0.294,
+              "miss_mean": 0.503,
+              "gap": -0.209,
+              "n_hr": 17,
+              "n_miss": 173
             }
           ],
           "lineup": [
             {
               "input": "batting_order",
-              "hr_mean": 3.789,
-              "miss_mean": 3.629,
-              "gap": 0.161,
-              "n_hr": 19,
-              "n_miss": 167
+              "hr_mean": 3.941,
+              "miss_mean": 3.704,
+              "gap": 0.237,
+              "n_hr": 17,
+              "n_miss": 159
             }
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "rank_low": 1,
         "rank_high": 10,
@@ -2068,49 +2068,49 @@
       },
       {
         "days": 30,
-        "n_hr": 23,
-        "n_miss": 224,
+        "n_hr": 20,
+        "n_miss": 208,
         "factors": {
           "power": [
             {
               "input": "barrel_pct",
-              "hr_mean": 5.817,
-              "miss_mean": 5.905,
-              "gap": -0.088,
-              "n_hr": 23,
-              "n_miss": 216
+              "hr_mean": 5.44,
+              "miss_mean": 5.746,
+              "gap": -0.306,
+              "n_hr": 20,
+              "n_miss": 200
             },
             {
               "input": "exit_velo",
-              "hr_mean": 88.143,
-              "miss_mean": 88.062,
-              "gap": 0.082,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 88.03,
+              "miss_mean": 88.025,
+              "gap": 0.005,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "hr_fb_pct",
-              "hr_mean": 5.235,
-              "miss_mean": 5.313,
-              "gap": -0.078,
-              "n_hr": 23,
-              "n_miss": 216
+              "hr_mean": 4.895,
+              "miss_mean": 5.17,
+              "gap": -0.275,
+              "n_hr": 20,
+              "n_miss": 200
             },
             {
               "input": "iso",
-              "hr_mean": 0.154,
-              "miss_mean": 0.15,
-              "gap": 0.004,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 0.148,
+              "miss_mean": 0.147,
+              "gap": 0.0,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "xwoba_contact",
-              "hr_mean": 0.326,
+              "hr_mean": 0.325,
               "miss_mean": 0.315,
-              "gap": 0.011,
-              "n_hr": 23,
-              "n_miss": 224
+              "gap": 0.01,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "pull_fb_pct",
@@ -2150,134 +2150,134 @@
           "matchup": [
             {
               "input": "pitcher_hr_per_9",
-              "hr_mean": 0.969,
-              "miss_mean": 0.981,
-              "gap": -0.012,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 0.962,
+              "miss_mean": 0.978,
+              "gap": -0.016,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "pitcher_era",
-              "hr_mean": 3.137,
-              "miss_mean": 3.104,
-              "gap": 0.033,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 3.104,
+              "miss_mean": 3.07,
+              "gap": 0.035,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "pitcher_hh_pct",
-              "hr_mean": 27.978,
-              "miss_mean": 27.978,
-              "gap": 0.0,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 27.845,
+              "miss_mean": 27.873,
+              "gap": -0.028,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "pitcher_k_per_9",
-              "hr_mean": 9.277,
-              "miss_mean": 9.37,
-              "gap": -0.093,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 9.375,
+              "miss_mean": 9.359,
+              "gap": 0.016,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "pitcher_fb_pct_allowed",
-              "hr_mean": 87.209,
-              "miss_mean": 87.149,
-              "gap": 0.06,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 86.365,
+              "miss_mean": 86.678,
+              "gap": -0.313,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "woba_vs_hand",
-              "hr_mean": 0.356,
+              "hr_mean": 0.355,
               "miss_mean": 0.349,
               "gap": 0.007,
-              "n_hr": 23,
-              "n_miss": 224
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "archetype_similarity",
-              "hr_mean": 71.562,
-              "miss_mean": 72.128,
-              "gap": -0.566,
-              "n_hr": 13,
-              "n_miss": 127
+              "hr_mean": 69.7,
+              "miss_mean": 72.001,
+              "gap": -2.301,
+              "n_hr": 11,
+              "n_miss": 114
             },
             {
               "input": "vegas_team_total_pct",
-              "hr_mean": 65.761,
-              "miss_mean": 50.167,
-              "gap": 15.593,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 65.938,
+              "miss_mean": 48.618,
+              "gap": 17.32,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "platoon_advantage",
-              "hr_mean": 0.565,
-              "miss_mean": 0.625,
-              "gap": -0.06,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 0.6,
+              "miss_mean": 0.63,
+              "gap": -0.03,
+              "n_hr": 20,
+              "n_miss": 208
             }
           ],
           "park": [
             {
               "input": "hr_park_factor",
-              "hr_mean": 101.839,
-              "miss_mean": 102.74,
-              "gap": -0.901,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 100.89,
+              "miss_mean": 102.786,
+              "gap": -1.896,
+              "n_hr": 20,
+              "n_miss": 208
             }
           ],
           "weather": [
             {
               "input": "temperature_f",
-              "hr_mean": 75.27,
-              "miss_mean": 71.76,
-              "gap": 3.509,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 75.67,
+              "miss_mean": 71.355,
+              "gap": 4.315,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "wind_mph",
-              "hr_mean": 3.422,
-              "miss_mean": 3.121,
-              "gap": 0.301,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 3.585,
+              "miss_mean": 3.179,
+              "gap": 0.406,
+              "n_hr": 20,
+              "n_miss": 208
             },
             {
               "input": "humidity_pct",
-              "hr_mean": 47.143,
-              "miss_mean": 51.605,
-              "gap": -4.462,
-              "n_hr": 14,
-              "n_miss": 124
+              "hr_mean": 43.333,
+              "miss_mean": 50.649,
+              "gap": -7.315,
+              "n_hr": 12,
+              "n_miss": 111
             },
             {
               "input": "is_dome",
-              "hr_mean": 0.391,
-              "miss_mean": 0.446,
-              "gap": -0.055,
-              "n_hr": 23,
-              "n_miss": 224
+              "hr_mean": 0.4,
+              "miss_mean": 0.466,
+              "gap": -0.066,
+              "n_hr": 20,
+              "n_miss": 208
             }
           ],
           "lineup": [
             {
               "input": "batting_order",
-              "hr_mean": 4.8,
-              "miss_mean": 5.171,
-              "gap": -0.371,
-              "n_hr": 20,
-              "n_miss": 205
+              "hr_mean": 5.056,
+              "miss_mean": 5.226,
+              "gap": -0.171,
+              "n_hr": 18,
+              "n_miss": 190
             }
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "rank_low": 11,
         "rank_high": 30,
@@ -2285,49 +2285,49 @@
       },
       {
         "days": 30,
-        "n_hr": 14,
-        "n_miss": 162,
+        "n_hr": 7,
+        "n_miss": 122,
         "factors": {
           "power": [
             {
               "input": "barrel_pct",
-              "hr_mean": 6.736,
-              "miss_mean": 5.699,
-              "gap": 1.037,
-              "n_hr": 14,
-              "n_miss": 156
+              "hr_mean": 6.886,
+              "miss_mean": 5.521,
+              "gap": 1.364,
+              "n_hr": 7,
+              "n_miss": 117
             },
             {
               "input": "exit_velo",
-              "hr_mean": 88.186,
-              "miss_mean": 87.804,
-              "gap": 0.382,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 88.057,
+              "miss_mean": 87.779,
+              "gap": 0.278,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "hr_fb_pct",
-              "hr_mean": 6.079,
-              "miss_mean": 5.135,
-              "gap": 0.943,
-              "n_hr": 14,
-              "n_miss": 156
+              "hr_mean": 6.214,
+              "miss_mean": 4.975,
+              "gap": 1.239,
+              "n_hr": 7,
+              "n_miss": 117
             },
             {
               "input": "iso",
-              "hr_mean": 0.166,
-              "miss_mean": 0.146,
+              "hr_mean": 0.162,
+              "miss_mean": 0.142,
               "gap": 0.02,
-              "n_hr": 14,
-              "n_miss": 160
+              "n_hr": 7,
+              "n_miss": 121
             },
             {
               "input": "xwoba_contact",
-              "hr_mean": 0.314,
+              "hr_mean": 0.31,
               "miss_mean": 0.306,
-              "gap": 0.008,
-              "n_hr": 14,
-              "n_miss": 162
+              "gap": 0.004,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "pull_fb_pct",
@@ -2367,134 +2367,134 @@
           "matchup": [
             {
               "input": "pitcher_hr_per_9",
-              "hr_mean": 0.727,
-              "miss_mean": 0.819,
-              "gap": -0.092,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 0.639,
+              "miss_mean": 0.824,
+              "gap": -0.186,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "pitcher_era",
-              "hr_mean": 2.967,
-              "miss_mean": 2.958,
-              "gap": 0.01,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 2.691,
+              "miss_mean": 2.891,
+              "gap": -0.2,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "pitcher_hh_pct",
-              "hr_mean": 26.807,
-              "miss_mean": 27.381,
-              "gap": -0.574,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 25.514,
+              "miss_mean": 27.144,
+              "gap": -1.63,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "pitcher_k_per_9",
-              "hr_mean": 9.399,
-              "miss_mean": 9.776,
-              "gap": -0.377,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 9.696,
+              "miss_mean": 9.881,
+              "gap": -0.185,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "pitcher_fb_pct_allowed",
-              "hr_mean": 91.507,
-              "miss_mean": 89.644,
-              "gap": 1.863,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 91.129,
+              "miss_mean": 88.775,
+              "gap": 2.354,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "woba_vs_hand",
-              "hr_mean": 0.345,
-              "miss_mean": 0.339,
-              "gap": 0.007,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 0.333,
+              "miss_mean": 0.34,
+              "gap": -0.007,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "archetype_similarity",
-              "hr_mean": 73.344,
-              "miss_mean": 71.277,
-              "gap": 2.067,
-              "n_hr": 9,
-              "n_miss": 88
+              "hr_mean": 68.9,
+              "miss_mean": 70.061,
+              "gap": -1.161,
+              "n_hr": 4,
+              "n_miss": 61
             },
             {
               "input": "vegas_team_total_pct",
-              "hr_mean": 33.036,
-              "miss_mean": 40.548,
-              "gap": -7.512,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 24.107,
+              "miss_mean": 40.727,
+              "gap": -16.62,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "platoon_advantage",
-              "hr_mean": 0.643,
-              "miss_mean": 0.605,
-              "gap": 0.038,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 0.714,
+              "miss_mean": 0.623,
+              "gap": 0.091,
+              "n_hr": 7,
+              "n_miss": 122
             }
           ],
           "park": [
             {
               "input": "hr_park_factor",
-              "hr_mean": 106.729,
-              "miss_mean": 103.218,
-              "gap": 3.511,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 108.257,
+              "miss_mean": 102.947,
+              "gap": 5.31,
+              "n_hr": 7,
+              "n_miss": 122
             }
           ],
           "weather": [
             {
               "input": "temperature_f",
-              "hr_mean": 69.807,
-              "miss_mean": 71.164,
-              "gap": -1.356,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 71.543,
+              "miss_mean": 71.429,
+              "gap": 0.114,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "wind_mph",
-              "hr_mean": 3.221,
-              "miss_mean": 3.644,
-              "gap": -0.422,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 4.714,
+              "miss_mean": 4.12,
+              "gap": 0.594,
+              "n_hr": 7,
+              "n_miss": 122
             },
             {
               "input": "humidity_pct",
-              "hr_mean": 68.7,
-              "miss_mean": 63.388,
-              "gap": 5.312,
-              "n_hr": 10,
-              "n_miss": 116
+              "hr_mean": 55.0,
+              "miss_mean": 57.682,
+              "gap": -2.682,
+              "n_hr": 6,
+              "n_miss": 85
             },
             {
               "input": "is_dome",
-              "hr_mean": 0.286,
-              "miss_mean": 0.284,
-              "gap": 0.002,
-              "n_hr": 14,
-              "n_miss": 162
+              "hr_mean": 0.143,
+              "miss_mean": 0.303,
+              "gap": -0.16,
+              "n_hr": 7,
+              "n_miss": 122
             }
           ],
           "lineup": [
             {
               "input": "batting_order",
-              "hr_mean": 6.0,
-              "miss_mean": 5.814,
-              "gap": 0.186,
-              "n_hr": 12,
-              "n_miss": 140
+              "hr_mean": 6.667,
+              "miss_mean": 5.759,
+              "gap": 0.907,
+              "n_hr": 6,
+              "n_miss": 108
             }
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "rank_low": 31,
         "rank_high": 100,
@@ -2711,7 +2711,7 @@
           ]
         },
         "provenance": {
-          "live": 790
+          "live": 696
         },
         "rank_low": 101,
         "rank_high": 300,
@@ -2725,47 +2725,47 @@
       "label": "HR hitters ranked #1-10",
       "low": 1,
       "high": 10,
-      "n": 19,
+      "n": 17,
       "factors": {
         "power": [
           {
             "input": "barrel_pct",
-            "hr_mean": 8.747,
+            "hr_mean": 8.541,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "exit_velo",
-            "hr_mean": 89.063,
+            "hr_mean": 89.024,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "hr_fb_pct",
-            "hr_mean": 7.895,
+            "hr_mean": 7.706,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "iso",
-            "hr_mean": 0.205,
+            "hr_mean": 0.201,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "xwoba_contact",
-            "hr_mean": 0.349,
+            "hr_mean": 0.347,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
@@ -2806,128 +2806,128 @@
         "matchup": [
           {
             "input": "pitcher_hr_per_9",
-            "hr_mean": 1.08,
+            "hr_mean": 1.065,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "pitcher_era",
-            "hr_mean": 3.51,
+            "hr_mean": 3.454,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "pitcher_hh_pct",
-            "hr_mean": 29.832,
+            "hr_mean": 29.847,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "pitcher_k_per_9",
-            "hr_mean": 9.383,
+            "hr_mean": 9.512,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "pitcher_fb_pct_allowed",
-            "hr_mean": 85.921,
+            "hr_mean": 85.088,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "woba_vs_hand",
-            "hr_mean": 0.386,
+            "hr_mean": 0.384,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           },
           {
             "input": "archetype_similarity",
-            "hr_mean": 72.237,
-            "miss_mean": null,
-            "gap": null,
-            "n_hr": 16,
-            "n_miss": 0
-          },
-          {
-            "input": "vegas_team_total_pct",
-            "hr_mean": 72.697,
-            "miss_mean": null,
-            "gap": null,
-            "n_hr": 19,
-            "n_miss": 0
-          },
-          {
-            "input": "platoon_advantage",
-            "hr_mean": 0.684,
-            "miss_mean": null,
-            "gap": null,
-            "n_hr": 19,
-            "n_miss": 0
-          }
-        ],
-        "park": [
-          {
-            "input": "hr_park_factor",
-            "hr_mean": 105.547,
-            "miss_mean": null,
-            "gap": null,
-            "n_hr": 19,
-            "n_miss": 0
-          }
-        ],
-        "weather": [
-          {
-            "input": "temperature_f",
-            "hr_mean": 75.195,
-            "miss_mean": null,
-            "gap": null,
-            "n_hr": 19,
-            "n_miss": 0
-          },
-          {
-            "input": "wind_mph",
-            "hr_mean": 3.663,
-            "miss_mean": null,
-            "gap": null,
-            "n_hr": 19,
-            "n_miss": 0
-          },
-          {
-            "input": "humidity_pct",
-            "hr_mean": 46.286,
+            "hr_mean": 71.45,
             "miss_mean": null,
             "gap": null,
             "n_hr": 14,
             "n_miss": 0
           },
           {
-            "input": "is_dome",
-            "hr_mean": 0.263,
+            "input": "vegas_team_total_pct",
+            "hr_mean": 70.221,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
+            "n_miss": 0
+          },
+          {
+            "input": "platoon_advantage",
+            "hr_mean": 0.647,
+            "miss_mean": null,
+            "gap": null,
+            "n_hr": 17,
+            "n_miss": 0
+          }
+        ],
+        "park": [
+          {
+            "input": "hr_park_factor",
+            "hr_mean": 105.141,
+            "miss_mean": null,
+            "gap": null,
+            "n_hr": 17,
+            "n_miss": 0
+          }
+        ],
+        "weather": [
+          {
+            "input": "temperature_f",
+            "hr_mean": 74.382,
+            "miss_mean": null,
+            "gap": null,
+            "n_hr": 17,
+            "n_miss": 0
+          },
+          {
+            "input": "wind_mph",
+            "hr_mean": 3.682,
+            "miss_mean": null,
+            "gap": null,
+            "n_hr": 17,
+            "n_miss": 0
+          },
+          {
+            "input": "humidity_pct",
+            "hr_mean": 45.833,
+            "miss_mean": null,
+            "gap": null,
+            "n_hr": 12,
+            "n_miss": 0
+          },
+          {
+            "input": "is_dome",
+            "hr_mean": 0.294,
+            "miss_mean": null,
+            "gap": null,
+            "n_hr": 17,
             "n_miss": 0
           }
         ],
         "lineup": [
           {
             "input": "batting_order",
-            "hr_mean": 3.789,
+            "hr_mean": 3.941,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 19,
+            "n_hr": 17,
             "n_miss": 0
           }
         ]
@@ -2937,47 +2937,47 @@
       "label": "HR hitters ranked #11-30",
       "low": 11,
       "high": 30,
-      "n": 23,
+      "n": 20,
       "factors": {
         "power": [
           {
             "input": "barrel_pct",
-            "hr_mean": 5.817,
+            "hr_mean": 5.44,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "exit_velo",
-            "hr_mean": 88.143,
+            "hr_mean": 88.03,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "hr_fb_pct",
-            "hr_mean": 5.235,
+            "hr_mean": 4.895,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "iso",
-            "hr_mean": 0.154,
+            "hr_mean": 0.148,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "xwoba_contact",
-            "hr_mean": 0.326,
+            "hr_mean": 0.325,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
@@ -3018,128 +3018,128 @@
         "matchup": [
           {
             "input": "pitcher_hr_per_9",
-            "hr_mean": 0.969,
+            "hr_mean": 0.962,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "pitcher_era",
-            "hr_mean": 3.137,
+            "hr_mean": 3.104,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "pitcher_hh_pct",
-            "hr_mean": 27.978,
+            "hr_mean": 27.845,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "pitcher_k_per_9",
-            "hr_mean": 9.277,
+            "hr_mean": 9.375,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "pitcher_fb_pct_allowed",
-            "hr_mean": 87.209,
+            "hr_mean": 86.365,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "woba_vs_hand",
-            "hr_mean": 0.356,
+            "hr_mean": 0.355,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "archetype_similarity",
-            "hr_mean": 71.562,
+            "hr_mean": 69.7,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 13,
+            "n_hr": 11,
             "n_miss": 0
           },
           {
             "input": "vegas_team_total_pct",
-            "hr_mean": 65.761,
+            "hr_mean": 65.938,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "platoon_advantage",
-            "hr_mean": 0.565,
+            "hr_mean": 0.6,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           }
         ],
         "park": [
           {
             "input": "hr_park_factor",
-            "hr_mean": 101.839,
+            "hr_mean": 100.89,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           }
         ],
         "weather": [
           {
             "input": "temperature_f",
-            "hr_mean": 75.27,
+            "hr_mean": 75.67,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "wind_mph",
-            "hr_mean": 3.422,
+            "hr_mean": 3.585,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           },
           {
             "input": "humidity_pct",
-            "hr_mean": 47.143,
+            "hr_mean": 43.333,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 12,
             "n_miss": 0
           },
           {
             "input": "is_dome",
-            "hr_mean": 0.391,
+            "hr_mean": 0.4,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 23,
+            "n_hr": 20,
             "n_miss": 0
           }
         ],
         "lineup": [
           {
             "input": "batting_order",
-            "hr_mean": 4.8,
+            "hr_mean": 5.056,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 20,
+            "n_hr": 18,
             "n_miss": 0
           }
         ]
@@ -3149,47 +3149,47 @@
       "label": "HR hitters ranked #31-100",
       "low": 31,
       "high": 100,
-      "n": 14,
+      "n": 7,
       "factors": {
         "power": [
           {
             "input": "barrel_pct",
-            "hr_mean": 6.736,
+            "hr_mean": 6.886,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "exit_velo",
-            "hr_mean": 88.186,
+            "hr_mean": 88.057,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "hr_fb_pct",
-            "hr_mean": 6.079,
+            "hr_mean": 6.214,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "iso",
-            "hr_mean": 0.166,
+            "hr_mean": 0.162,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "xwoba_contact",
-            "hr_mean": 0.314,
+            "hr_mean": 0.31,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
@@ -3230,128 +3230,128 @@
         "matchup": [
           {
             "input": "pitcher_hr_per_9",
-            "hr_mean": 0.727,
+            "hr_mean": 0.639,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "pitcher_era",
-            "hr_mean": 2.967,
+            "hr_mean": 2.691,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "pitcher_hh_pct",
-            "hr_mean": 26.807,
+            "hr_mean": 25.514,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "pitcher_k_per_9",
-            "hr_mean": 9.399,
+            "hr_mean": 9.696,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "pitcher_fb_pct_allowed",
-            "hr_mean": 91.507,
+            "hr_mean": 91.129,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "woba_vs_hand",
-            "hr_mean": 0.345,
+            "hr_mean": 0.333,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "archetype_similarity",
-            "hr_mean": 73.344,
+            "hr_mean": 68.9,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 9,
+            "n_hr": 4,
             "n_miss": 0
           },
           {
             "input": "vegas_team_total_pct",
-            "hr_mean": 33.036,
+            "hr_mean": 24.107,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "platoon_advantage",
-            "hr_mean": 0.643,
+            "hr_mean": 0.714,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           }
         ],
         "park": [
           {
             "input": "hr_park_factor",
-            "hr_mean": 106.729,
+            "hr_mean": 108.257,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           }
         ],
         "weather": [
           {
             "input": "temperature_f",
-            "hr_mean": 69.807,
+            "hr_mean": 71.543,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "wind_mph",
-            "hr_mean": 3.221,
+            "hr_mean": 4.714,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           },
           {
             "input": "humidity_pct",
-            "hr_mean": 68.7,
+            "hr_mean": 55.0,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 10,
+            "n_hr": 6,
             "n_miss": 0
           },
           {
             "input": "is_dome",
-            "hr_mean": 0.286,
+            "hr_mean": 0.143,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 14,
+            "n_hr": 7,
             "n_miss": 0
           }
         ],
         "lineup": [
           {
             "input": "batting_order",
-            "hr_mean": 6.0,
+            "hr_mean": 6.667,
             "miss_mean": null,
             "gap": null,
-            "n_hr": 12,
+            "n_hr": 6,
             "n_miss": 0
           }
         ]
@@ -3368,26 +3368,26 @@
             "bin": 1,
             "bin_low": 0.7,
             "bin_high": 4.5,
-            "n": 1389,
-            "hits": 101,
+            "n": 1348,
+            "hits": 99,
             "hr_rate": 7.3,
-            "avg_score": 40.2
+            "avg_score": 40.3
           },
           {
             "bin": 2,
             "bin_low": 4.5,
             "bin_high": 5.7,
-            "n": 1389,
-            "hits": 145,
-            "hr_rate": 10.4,
-            "avg_score": 59.9
+            "n": 1348,
+            "hits": 142,
+            "hr_rate": 10.5,
+            "avg_score": 60.0
           },
           {
             "bin": 3,
             "bin_low": 5.7,
             "bin_high": 7.0,
-            "n": 1389,
-            "hits": 149,
+            "n": 1348,
+            "hits": 144,
             "hr_rate": 10.7,
             "avg_score": 65.1
           },
@@ -3395,17 +3395,17 @@
             "bin": 4,
             "bin_low": 7.0,
             "bin_high": 8.9,
-            "n": 1389,
-            "hits": 195,
+            "n": 1348,
+            "hits": 189,
             "hr_rate": 14.0,
-            "avg_score": 72.2
+            "avg_score": 72.3
           },
           {
             "bin": 5,
             "bin_low": 8.9,
             "bin_high": 25.0,
-            "n": 1388,
-            "hits": 206,
+            "n": 1347,
+            "hits": 199,
             "hr_rate": 14.8,
             "avg_score": 79.8
           }
@@ -3422,45 +3422,45 @@
             "bin": 1,
             "bin_low": 82.0,
             "bin_high": 87.5,
-            "n": 1413,
-            "hits": 113,
-            "hr_rate": 8.0,
-            "avg_score": 40.6
+            "n": 1372,
+            "hits": 109,
+            "hr_rate": 7.9,
+            "avg_score": 40.7
           },
           {
             "bin": 2,
             "bin_low": 87.5,
             "bin_high": 88.0,
-            "n": 1413,
-            "hits": 122,
-            "hr_rate": 8.6,
-            "avg_score": 58.8
+            "n": 1371,
+            "hits": 120,
+            "hr_rate": 8.8,
+            "avg_score": 58.7
           },
           {
             "bin": 3,
             "bin_low": 88.0,
             "bin_high": 88.4,
-            "n": 1413,
-            "hits": 172,
-            "hr_rate": 12.2,
-            "avg_score": 64.8
+            "n": 1371,
+            "hits": 168,
+            "hr_rate": 12.3,
+            "avg_score": 65.0
           },
           {
             "bin": 4,
             "bin_low": 88.4,
             "bin_high": 89.0,
-            "n": 1413,
-            "hits": 190,
+            "n": 1371,
+            "hits": 184,
             "hr_rate": 13.4,
-            "avg_score": 70.6
+            "avg_score": 70.7
           },
           {
             "bin": 5,
             "bin_low": 89.0,
             "bin_high": 103.0,
-            "n": 1412,
-            "hits": 200,
-            "hr_rate": 14.2,
+            "n": 1371,
+            "hits": 193,
+            "hr_rate": 14.1,
             "avg_score": 78.7
           }
         ],
@@ -3476,44 +3476,44 @@
             "bin": 1,
             "bin_low": 0.6,
             "bin_high": 4.0,
-            "n": 1389,
-            "hits": 103,
-            "hr_rate": 7.4,
-            "avg_score": 40.1
+            "n": 1348,
+            "hits": 101,
+            "hr_rate": 7.5,
+            "avg_score": 40.2
           },
           {
             "bin": 2,
             "bin_low": 4.0,
             "bin_high": 5.2,
-            "n": 1389,
-            "hits": 142,
-            "hr_rate": 10.2,
+            "n": 1348,
+            "hits": 140,
+            "hr_rate": 10.4,
             "avg_score": 60.1
           },
           {
             "bin": 3,
             "bin_low": 5.2,
             "bin_high": 6.3,
-            "n": 1389,
-            "hits": 150,
-            "hr_rate": 10.8,
-            "avg_score": 65.0
+            "n": 1348,
+            "hits": 144,
+            "hr_rate": 10.7,
+            "avg_score": 65.1
           },
           {
             "bin": 4,
             "bin_low": 6.3,
             "bin_high": 8.0,
-            "n": 1389,
-            "hits": 198,
-            "hr_rate": 14.3,
-            "avg_score": 72.2
+            "n": 1348,
+            "hits": 192,
+            "hr_rate": 14.2,
+            "avg_score": 72.3
           },
           {
             "bin": 5,
             "bin_low": 8.0,
             "bin_high": 36.0,
-            "n": 1388,
-            "hits": 203,
+            "n": 1347,
+            "hits": 196,
             "hr_rate": 14.6,
             "avg_score": 79.8
           }
@@ -3530,35 +3530,35 @@
             "bin": 1,
             "bin_low": 0.019,
             "bin_high": 0.128,
-            "n": 1406,
-            "hits": 86,
+            "n": 1365,
+            "hits": 83,
             "hr_rate": 6.1,
-            "avg_score": 38.4
+            "avg_score": 38.5
           },
           {
             "bin": 2,
             "bin_low": 0.128,
             "bin_high": 0.151,
-            "n": 1406,
-            "hits": 155,
-            "hr_rate": 11.0,
-            "avg_score": 60.1
+            "n": 1364,
+            "hits": 153,
+            "hr_rate": 11.2,
+            "avg_score": 60.2
           },
           {
             "bin": 3,
             "bin_low": 0.151,
             "bin_high": 0.175,
-            "n": 1406,
-            "hits": 151,
-            "hr_rate": 10.7,
+            "n": 1364,
+            "hits": 148,
+            "hr_rate": 10.9,
             "avg_score": 63.6
           },
           {
             "bin": 4,
             "bin_low": 0.175,
             "bin_high": 0.207,
-            "n": 1406,
-            "hits": 196,
+            "n": 1364,
+            "hits": 189,
             "hr_rate": 13.9,
             "avg_score": 72.0
           },
@@ -3566,10 +3566,10 @@
             "bin": 5,
             "bin_low": 0.207,
             "bin_high": 0.8,
-            "n": 1405,
-            "hits": 209,
-            "hr_rate": 14.9,
-            "avg_score": 80.1
+            "n": 1364,
+            "hits": 201,
+            "hr_rate": 14.7,
+            "avg_score": 80.2
           }
         ],
         "status": "aligned",
@@ -3584,46 +3584,46 @@
             "bin": 1,
             "bin_low": 0.115,
             "bin_high": 0.292,
-            "n": 1413,
-            "hits": 119,
-            "hr_rate": 8.4,
+            "n": 1372,
+            "hits": 117,
+            "hr_rate": 8.5,
             "avg_score": 44.3
           },
           {
             "bin": 2,
             "bin_low": 0.292,
             "bin_high": 0.31,
-            "n": 1413,
-            "hits": 148,
-            "hr_rate": 10.5,
-            "avg_score": 58.6
+            "n": 1371,
+            "hits": 143,
+            "hr_rate": 10.4,
+            "avg_score": 58.7
           },
           {
             "bin": 3,
             "bin_low": 0.31,
             "bin_high": 0.326,
-            "n": 1413,
-            "hits": 142,
-            "hr_rate": 10.0,
+            "n": 1371,
+            "hits": 135,
+            "hr_rate": 9.8,
             "avg_score": 62.0
           },
           {
             "bin": 4,
             "bin_low": 0.326,
             "bin_high": 0.344,
-            "n": 1413,
-            "hits": 183,
-            "hr_rate": 13.0,
-            "avg_score": 70.7
+            "n": 1371,
+            "hits": 176,
+            "hr_rate": 12.8,
+            "avg_score": 70.8
           },
           {
             "bin": 5,
             "bin_low": 0.344,
             "bin_high": 0.578,
-            "n": 1412,
-            "hits": 205,
-            "hr_rate": 14.5,
-            "avg_score": 77.9
+            "n": 1371,
+            "hits": 203,
+            "hr_rate": 14.8,
+            "avg_score": 78.0
           }
         ],
         "status": "aligned",
@@ -3637,47 +3637,47 @@
           {
             "bin": 1,
             "bin_low": 0.0,
-            "bin_high": 0.81,
-            "n": 1413,
-            "hits": 139,
-            "hr_rate": 9.8,
+            "bin_high": 0.8,
+            "n": 1372,
+            "hits": 137,
+            "hr_rate": 10.0,
             "avg_score": 42.3
           },
           {
             "bin": 2,
-            "bin_low": 0.81,
+            "bin_low": 0.8,
             "bin_high": 1.0,
-            "n": 1413,
-            "hits": 150,
+            "n": 1371,
+            "hits": 146,
             "hr_rate": 10.6,
-            "avg_score": 49.4
+            "avg_score": 49.3
           },
           {
             "bin": 3,
             "bin_low": 1.0,
             "bin_high": 1.2,
-            "n": 1413,
-            "hits": 154,
-            "hr_rate": 10.9,
-            "avg_score": 52.8
+            "n": 1371,
+            "hits": 148,
+            "hr_rate": 10.8,
+            "avg_score": 53.3
           },
           {
             "bin": 4,
             "bin_low": 1.2,
             "bin_high": 1.46,
-            "n": 1413,
-            "hits": 171,
-            "hr_rate": 12.1,
-            "avg_score": 58.3
+            "n": 1371,
+            "hits": 157,
+            "hr_rate": 11.5,
+            "avg_score": 58.2
           },
           {
             "bin": 5,
             "bin_low": 1.46,
             "bin_high": 6.0,
-            "n": 1412,
-            "hits": 183,
-            "hr_rate": 13.0,
-            "avg_score": 68.2
+            "n": 1371,
+            "hits": 186,
+            "hr_rate": 13.6,
+            "avg_score": 68.0
           }
         ],
         "status": "aligned",
@@ -3691,47 +3691,47 @@
           {
             "bin": 1,
             "bin_low": 0.0,
-            "bin_high": 3.07,
-            "n": 1413,
-            "hits": 133,
-            "hr_rate": 9.4,
-            "avg_score": 41.5
+            "bin_high": 3.06,
+            "n": 1372,
+            "hits": 124,
+            "hr_rate": 9.0,
+            "avg_score": 41.4
           },
           {
             "bin": 2,
-            "bin_low": 3.07,
+            "bin_low": 3.06,
             "bin_high": 3.66,
-            "n": 1413,
-            "hits": 173,
-            "hr_rate": 12.2,
-            "avg_score": 50.5
+            "n": 1371,
+            "hits": 170,
+            "hr_rate": 12.4,
+            "avg_score": 50.6
           },
           {
             "bin": 3,
             "bin_low": 3.66,
             "bin_high": 4.01,
-            "n": 1413,
-            "hits": 160,
-            "hr_rate": 11.3,
-            "avg_score": 53.1
+            "n": 1371,
+            "hits": 153,
+            "hr_rate": 11.2,
+            "avg_score": 52.9
           },
           {
             "bin": 4,
             "bin_low": 4.01,
-            "bin_high": 4.74,
-            "n": 1413,
-            "hits": 145,
-            "hr_rate": 10.3,
-            "avg_score": 58.5
+            "bin_high": 4.76,
+            "n": 1371,
+            "hits": 142,
+            "hr_rate": 10.4,
+            "avg_score": 58.7
           },
           {
             "bin": 5,
-            "bin_low": 4.74,
+            "bin_low": 4.76,
             "bin_high": 18.0,
-            "n": 1412,
-            "hits": 186,
-            "hr_rate": 13.2,
-            "avg_score": 67.3
+            "n": 1371,
+            "hits": 185,
+            "hr_rate": 13.5,
+            "avg_score": 67.6
           }
         ],
         "status": "over_weighted",
@@ -3745,47 +3745,47 @@
           {
             "bin": 1,
             "bin_low": 25.0,
-            "bin_high": 27.0,
-            "n": 1413,
-            "hits": 133,
-            "hr_rate": 9.4,
-            "avg_score": 42.0
+            "bin_high": 26.9,
+            "n": 1372,
+            "hits": 128,
+            "hr_rate": 9.3,
+            "avg_score": 41.8
           },
           {
             "bin": 2,
-            "bin_low": 27.0,
+            "bin_low": 26.9,
             "bin_high": 29.2,
-            "n": 1413,
-            "hits": 172,
-            "hr_rate": 12.2,
+            "n": 1371,
+            "hits": 166,
+            "hr_rate": 12.1,
             "avg_score": 51.2
           },
           {
             "bin": 3,
             "bin_low": 29.2,
-            "bin_high": 31.4,
-            "n": 1413,
-            "hits": 151,
-            "hr_rate": 10.7,
-            "avg_score": 53.7
+            "bin_high": 31.3,
+            "n": 1371,
+            "hits": 144,
+            "hr_rate": 10.5,
+            "avg_score": 53.8
           },
           {
             "bin": 4,
-            "bin_low": 31.4,
-            "bin_high": 33.9,
-            "n": 1413,
-            "hits": 154,
-            "hr_rate": 10.9,
-            "avg_score": 62.1
+            "bin_low": 31.3,
+            "bin_high": 34.0,
+            "n": 1371,
+            "hits": 151,
+            "hr_rate": 11.0,
+            "avg_score": 61.9
           },
           {
             "bin": 5,
-            "bin_low": 33.9,
+            "bin_low": 34.0,
             "bin_high": 50.0,
-            "n": 1412,
-            "hits": 187,
-            "hr_rate": 13.2,
-            "avg_score": 62.0
+            "n": 1371,
+            "hits": 185,
+            "hr_rate": 13.5,
+            "avg_score": 62.4
           }
         ],
         "status": "aligned",
@@ -3800,52 +3800,52 @@
             "bin": 1,
             "bin_low": 0.0,
             "bin_high": 7.11,
-            "n": 1413,
-            "hits": 166,
-            "hr_rate": 11.7,
-            "avg_score": 60.1
+            "n": 1372,
+            "hits": 164,
+            "hr_rate": 12.0,
+            "avg_score": 60.4
           },
           {
             "bin": 2,
             "bin_low": 7.11,
             "bin_high": 8.0,
-            "n": 1413,
-            "hits": 182,
-            "hr_rate": 12.9,
-            "avg_score": 59.6
+            "n": 1371,
+            "hits": 176,
+            "hr_rate": 12.8,
+            "avg_score": 59.5
           },
           {
             "bin": 3,
             "bin_low": 8.0,
-            "bin_high": 8.78,
-            "n": 1413,
-            "hits": 160,
-            "hr_rate": 11.3,
-            "avg_score": 52.9
+            "bin_high": 8.77,
+            "n": 1371,
+            "hits": 156,
+            "hr_rate": 11.4,
+            "avg_score": 53.1
           },
           {
             "bin": 4,
-            "bin_low": 8.78,
-            "bin_high": 9.86,
-            "n": 1413,
-            "hits": 158,
-            "hr_rate": 11.2,
+            "bin_low": 8.77,
+            "bin_high": 9.82,
+            "n": 1371,
+            "hits": 156,
+            "hr_rate": 11.4,
             "avg_score": 54.2
           },
           {
             "bin": 5,
-            "bin_low": 9.86,
+            "bin_low": 9.82,
             "bin_high": 16.2,
-            "n": 1412,
-            "hits": 131,
-            "hr_rate": 9.3,
-            "avg_score": 44.2
+            "n": 1371,
+            "hits": 122,
+            "hr_rate": 8.9,
+            "avg_score": 43.9
           }
         ],
-        "status": "aligned",
-        "empirical_trend": -1,
+        "status": "partial",
+        "empirical_trend": 0,
         "score_trend": -1,
-        "mismatch": "aligned"
+        "mismatch": "partial"
       },
       "pitcher_fb_pct_allowed": {
         "factor": "matchup",
@@ -3854,45 +3854,45 @@
             "bin": 1,
             "bin_low": 35.0,
             "bin_high": 91.5,
-            "n": 1406,
-            "hits": 149,
+            "n": 1365,
+            "hits": 145,
             "hr_rate": 10.6,
-            "avg_score": 47.1
+            "avg_score": 47.2
           },
           {
             "bin": 2,
             "bin_low": 91.5,
             "bin_high": 92.3,
-            "n": 1406,
-            "hits": 141,
-            "hr_rate": 10.0,
-            "avg_score": 52.4
+            "n": 1364,
+            "hits": 133,
+            "hr_rate": 9.8,
+            "avg_score": 52.2
           },
           {
             "bin": 3,
             "bin_low": 92.3,
             "bin_high": 92.9,
-            "n": 1406,
-            "hits": 174,
-            "hr_rate": 12.4,
-            "avg_score": 54.5
+            "n": 1364,
+            "hits": 168,
+            "hr_rate": 12.3,
+            "avg_score": 54.7
           },
           {
             "bin": 4,
             "bin_low": 92.9,
             "bin_high": 93.6,
-            "n": 1406,
-            "hits": 164,
-            "hr_rate": 11.7,
-            "avg_score": 56.1
+            "n": 1364,
+            "hits": 161,
+            "hr_rate": 11.8,
+            "avg_score": 56.2
           },
           {
             "bin": 5,
             "bin_low": 93.6,
             "bin_high": 98.4,
-            "n": 1405,
-            "hits": 165,
-            "hr_rate": 11.7,
+            "n": 1364,
+            "hits": 163,
+            "hr_rate": 12.0,
             "avg_score": 61.2
           }
         ],
@@ -3908,8 +3908,8 @@
             "bin": 1,
             "bin_low": 0.05,
             "bin_high": 0.322,
-            "n": 1413,
-            "hits": 129,
+            "n": 1371,
+            "hits": 125,
             "hr_rate": 9.1,
             "avg_score": 41.4
           },
@@ -3917,36 +3917,36 @@
             "bin": 2,
             "bin_low": 0.322,
             "bin_high": 0.341,
-            "n": 1412,
-            "hits": 131,
-            "hr_rate": 9.3,
+            "n": 1371,
+            "hits": 130,
+            "hr_rate": 9.5,
             "avg_score": 50.7
           },
           {
             "bin": 3,
             "bin_low": 0.341,
             "bin_high": 0.361,
-            "n": 1412,
-            "hits": 163,
-            "hr_rate": 11.5,
-            "avg_score": 54.4
+            "n": 1371,
+            "hits": 156,
+            "hr_rate": 11.4,
+            "avg_score": 54.5
           },
           {
             "bin": 4,
             "bin_low": 0.361,
             "bin_high": 0.382,
-            "n": 1412,
-            "hits": 170,
+            "n": 1370,
+            "hits": 164,
             "hr_rate": 12.0,
-            "avg_score": 60.2
+            "avg_score": 60.3
           },
           {
             "bin": 5,
             "bin_low": 0.382,
             "bin_high": 0.84,
-            "n": 1412,
-            "hits": 204,
-            "hr_rate": 14.4,
+            "n": 1370,
+            "hits": 199,
+            "hr_rate": 14.5,
             "avg_score": 64.2
           }
         ],
@@ -3961,53 +3961,53 @@
           {
             "bin": 1,
             "bin_low": 41.5,
-            "bin_high": 62.9,
-            "n": 858,
-            "hits": 107,
-            "hr_rate": 12.5,
-            "avg_score": 48.4
+            "bin_high": 62.8,
+            "n": 831,
+            "hits": 106,
+            "hr_rate": 12.8,
+            "avg_score": 48.2
           },
           {
             "bin": 2,
-            "bin_low": 62.9,
+            "bin_low": 62.8,
             "bin_high": 69.7,
-            "n": 858,
-            "hits": 99,
-            "hr_rate": 11.5,
-            "avg_score": 50.4
+            "n": 831,
+            "hits": 90,
+            "hr_rate": 10.8,
+            "avg_score": 50.3
           },
           {
             "bin": 3,
-            "bin_low": 69.7,
+            "bin_low": 69.8,
             "bin_high": 77.7,
-            "n": 858,
-            "hits": 92,
-            "hr_rate": 10.7,
-            "avg_score": 53.0
+            "n": 831,
+            "hits": 91,
+            "hr_rate": 11.0,
+            "avg_score": 53.1
           },
           {
             "bin": 4,
             "bin_low": 77.7,
-            "bin_high": 82.1,
-            "n": 857,
-            "hits": 129,
+            "bin_high": 82.2,
+            "n": 830,
+            "hits": 125,
             "hr_rate": 15.1,
-            "avg_score": 57.8
+            "avg_score": 57.9
           },
           {
             "bin": 5,
             "bin_low": 82.2,
             "bin_high": 93.7,
-            "n": 857,
-            "hits": 129,
-            "hr_rate": 15.1,
+            "n": 830,
+            "hits": 126,
+            "hr_rate": 15.2,
             "avg_score": 61.8
           }
         ],
-        "status": "over_weighted",
-        "empirical_trend": 0,
+        "status": "aligned",
+        "empirical_trend": 1,
         "score_trend": 1,
-        "mismatch": "over_weighted"
+        "mismatch": "aligned"
       },
       "vegas_team_total_pct": {
         "factor": "matchup",
@@ -4015,47 +4015,47 @@
           {
             "bin": 1,
             "bin_low": 1.667,
-            "bin_high": 19.444,
-            "n": 1413,
-            "hits": 125,
-            "hr_rate": 8.8,
+            "bin_high": 18.75,
+            "n": 1372,
+            "hits": 120,
+            "hr_rate": 8.7,
             "avg_score": 36.6
           },
           {
             "bin": 2,
             "bin_low": 19.444,
             "bin_high": 40.0,
-            "n": 1413,
-            "hits": 132,
+            "n": 1371,
+            "hits": 127,
             "hr_rate": 9.3,
-            "avg_score": 47.9
+            "avg_score": 47.7
           },
           {
             "bin": 3,
             "bin_low": 40.0,
             "bin_high": 60.0,
-            "n": 1413,
-            "hits": 162,
-            "hr_rate": 11.5,
-            "avg_score": 55.0
+            "n": 1371,
+            "hits": 156,
+            "hr_rate": 11.4,
+            "avg_score": 55.1
           },
           {
             "bin": 4,
             "bin_low": 60.0,
             "bin_high": 80.0,
-            "n": 1413,
-            "hits": 193,
-            "hr_rate": 13.7,
-            "avg_score": 60.5
+            "n": 1371,
+            "hits": 187,
+            "hr_rate": 13.6,
+            "avg_score": 60.6
           },
           {
             "bin": 5,
             "bin_low": 80.0,
             "bin_high": 98.333,
-            "n": 1412,
-            "hits": 185,
-            "hr_rate": 13.1,
-            "avg_score": 70.9
+            "n": 1371,
+            "hits": 184,
+            "hr_rate": 13.4,
+            "avg_score": 71.2
           }
         ],
         "status": "aligned",
@@ -4069,47 +4069,47 @@
           {
             "bin": 1,
             "bin_low": 80.6,
-            "bin_high": 94.8,
-            "n": 1410,
-            "hits": 159,
-            "hr_rate": 11.3,
-            "avg_score": 14.1
+            "bin_high": 94.6,
+            "n": 1369,
+            "hits": 153,
+            "hr_rate": 11.2,
+            "avg_score": 13.7
           },
           {
             "bin": 2,
-            "bin_low": 94.8,
-            "bin_high": 100.2,
-            "n": 1410,
-            "hits": 162,
-            "hr_rate": 11.5,
-            "avg_score": 32.9
+            "bin_low": 94.6,
+            "bin_high": 100.0,
+            "n": 1368,
+            "hits": 161,
+            "hr_rate": 11.8,
+            "avg_score": 33.2
           },
           {
             "bin": 3,
-            "bin_low": 100.2,
+            "bin_low": 100.0,
             "bin_high": 105.0,
-            "n": 1410,
-            "hits": 155,
-            "hr_rate": 11.0,
-            "avg_score": 51.1
+            "n": 1368,
+            "hits": 148,
+            "hr_rate": 10.8,
+            "avg_score": 51.4
           },
           {
             "bin": 4,
             "bin_low": 105.0,
-            "bin_high": 111.0,
-            "n": 1410,
-            "hits": 144,
-            "hr_rate": 10.2,
-            "avg_score": 67.0
+            "bin_high": 110.9,
+            "n": 1368,
+            "hits": 135,
+            "hr_rate": 9.9,
+            "avg_score": 67.1
           },
           {
             "bin": 5,
-            "bin_low": 111.0,
+            "bin_low": 110.9,
             "bin_high": 130.0,
-            "n": 1409,
+            "n": 1368,
             "hits": 173,
-            "hr_rate": 12.3,
-            "avg_score": 87.2
+            "hr_rate": 12.6,
+            "avg_score": 87.1
           }
         ],
         "status": "over_weighted",
@@ -4124,46 +4124,46 @@
             "bin": 1,
             "bin_low": 44.8,
             "bin_high": 68.0,
-            "n": 1413,
-            "hits": 155,
-            "hr_rate": 11.0,
+            "n": 1372,
+            "hits": 154,
+            "hr_rate": 11.2,
             "avg_score": 45.8
           },
           {
             "bin": 2,
             "bin_low": 68.0,
             "bin_high": 72.0,
-            "n": 1413,
-            "hits": 154,
+            "n": 1371,
+            "hits": 150,
             "hr_rate": 10.9,
             "avg_score": 50.3
           },
           {
             "bin": 3,
             "bin_low": 72.0,
-            "bin_high": 73.2,
-            "n": 1413,
-            "hits": 147,
-            "hr_rate": 10.4,
-            "avg_score": 49.5
+            "bin_high": 73.0,
+            "n": 1371,
+            "hits": 146,
+            "hr_rate": 10.6,
+            "avg_score": 49.6
           },
           {
             "bin": 4,
-            "bin_low": 73.2,
-            "bin_high": 81.0,
-            "n": 1413,
-            "hits": 162,
-            "hr_rate": 11.5,
-            "avg_score": 57.9
+            "bin_low": 73.0,
+            "bin_high": 80.8,
+            "n": 1371,
+            "hits": 154,
+            "hr_rate": 11.2,
+            "avg_score": 57.3
           },
           {
             "bin": 5,
-            "bin_low": 81.0,
+            "bin_low": 80.8,
             "bin_high": 102.4,
-            "n": 1412,
-            "hits": 179,
-            "hr_rate": 12.7,
-            "avg_score": 68.5
+            "n": 1371,
+            "hits": 170,
+            "hr_rate": 12.4,
+            "avg_score": 69.0
           }
         ],
         "status": "over_weighted",
@@ -4178,17 +4178,17 @@
             "bin": 1,
             "bin_low": 0.0,
             "bin_high": 0.0,
-            "n": 1413,
-            "hits": 163,
-            "hr_rate": 11.5,
+            "n": 1372,
+            "hits": 161,
+            "hr_rate": 11.7,
             "avg_score": 50.0
           },
           {
             "bin": 2,
             "bin_low": 0.0,
             "bin_high": 4.7,
-            "n": 1413,
-            "hits": 141,
+            "n": 1371,
+            "hits": 137,
             "hr_rate": 10.0,
             "avg_score": 56.4
           },
@@ -4196,32 +4196,32 @@
             "bin": 3,
             "bin_low": 4.7,
             "bin_high": 6.1,
-            "n": 1413,
-            "hits": 169,
-            "hr_rate": 12.0,
+            "n": 1371,
+            "hits": 168,
+            "hr_rate": 12.3,
             "avg_score": 52.1
           },
           {
             "bin": 4,
             "bin_low": 6.1,
-            "bin_high": 8.7,
-            "n": 1413,
-            "hits": 171,
-            "hr_rate": 12.1,
-            "avg_score": 56.7
+            "bin_high": 8.8,
+            "n": 1371,
+            "hits": 161,
+            "hr_rate": 11.7,
+            "avg_score": 56.6
           },
           {
             "bin": 5,
-            "bin_low": 8.7,
+            "bin_low": 8.8,
             "bin_high": 22.0,
-            "n": 1412,
-            "hits": 153,
-            "hr_rate": 10.8,
+            "n": 1371,
+            "hits": 147,
+            "hr_rate": 10.7,
             "avg_score": 56.8
           }
         ],
         "status": "over_weighted",
-        "empirical_trend": 0,
+        "empirical_trend": -1,
         "score_trend": 1,
         "mismatch": "over_weighted"
       },
@@ -4232,46 +4232,46 @@
             "bin": 1,
             "bin_low": 14.0,
             "bin_high": 39.0,
-            "n": 867,
-            "hits": 116,
-            "hr_rate": 13.4,
-            "avg_score": 66.6
+            "n": 846,
+            "hits": 115,
+            "hr_rate": 13.6,
+            "avg_score": 67.0
           },
           {
             "bin": 2,
             "bin_low": 39.0,
             "bin_high": 50.0,
-            "n": 867,
-            "hits": 107,
-            "hr_rate": 12.3,
-            "avg_score": 58.4
+            "n": 846,
+            "hits": 97,
+            "hr_rate": 11.5,
+            "avg_score": 58.0
           },
           {
             "bin": 3,
             "bin_low": 50.0,
             "bin_high": 60.0,
-            "n": 867,
-            "hits": 97,
+            "n": 846,
+            "hits": 95,
             "hr_rate": 11.2,
-            "avg_score": 58.6
+            "avg_score": 58.3
           },
           {
             "bin": 4,
             "bin_low": 60.0,
             "bin_high": 73.0,
-            "n": 867,
-            "hits": 90,
-            "hr_rate": 10.4,
-            "avg_score": 52.6
+            "n": 846,
+            "hits": 86,
+            "hr_rate": 10.2,
+            "avg_score": 52.0
           },
           {
             "bin": 5,
             "bin_low": 73.0,
             "bin_high": 98.0,
-            "n": 867,
-            "hits": 87,
-            "hr_rate": 10.0,
-            "avg_score": 51.2
+            "n": 845,
+            "hits": 86,
+            "hr_rate": 10.2,
+            "avg_score": 51.6
           }
         ],
         "status": "aligned",
@@ -4284,46 +4284,46 @@
   "dome_vs_outdoor": {
     "days": 60,
     "summary": {
-      "dome_picks": 70,
-      "outdoor_picks": 224,
+      "dome_picks": 68,
+      "outdoor_picks": 218,
       "dome_share": 23.8,
-      "dome_hr_rate": 14.3,
-      "outdoor_hr_rate": 21.0
+      "dome_hr_rate": 14.7,
+      "outdoor_hr_rate": 20.6
     },
     "cells": [
       {
         "is_dome": true,
         "pf_band": "100-105 (mild hitter)",
-        "n": 811,
-        "hits": 80,
+        "n": 795,
+        "hits": 79,
         "hr_rate": 9.9,
         "avg_weather_score": 50.0,
-        "selected_picks": 43
+        "selected_picks": 42
       },
       {
         "is_dome": true,
         "pf_band": "105-110 (hitter)",
-        "n": 294,
-        "hits": 19,
+        "n": 277,
+        "hits": 18,
         "hr_rate": 6.5,
         "avg_weather_score": 50.0,
-        "selected_picks": 11
+        "selected_picks": 10
       },
       {
         "is_dome": true,
         "pf_band": "110+ (strong hitter)",
-        "n": 160,
-        "hits": 22,
-        "hr_rate": 13.8,
+        "n": 144,
+        "hits": 21,
+        "hr_rate": 14.6,
         "avg_weather_score": 50.0,
         "selected_picks": 0
       },
       {
         "is_dome": true,
         "pf_band": "95-100 (mild pitcher)",
-        "n": 432,
-        "hits": 59,
-        "hr_rate": 13.7,
+        "n": 414,
+        "hits": 58,
+        "hr_rate": 14.0,
         "avg_weather_score": 50.0,
         "selected_picks": 11
       },
@@ -4339,37 +4339,37 @@
       {
         "is_dome": false,
         "pf_band": "100-105 (mild hitter)",
-        "n": 710,
-        "hits": 91,
-        "hr_rate": 12.8,
-        "avg_weather_score": 59.9,
-        "selected_picks": 25
+        "n": 654,
+        "hits": 83,
+        "hr_rate": 12.7,
+        "avg_weather_score": 59.3,
+        "selected_picks": 24
       },
       {
         "is_dome": false,
         "pf_band": "105-110 (hitter)",
-        "n": 821,
-        "hits": 96,
-        "hr_rate": 11.7,
-        "avg_weather_score": 55.0,
-        "selected_picks": 43
+        "n": 802,
+        "hits": 90,
+        "hr_rate": 11.2,
+        "avg_weather_score": 54.7,
+        "selected_picks": 41
       },
       {
         "is_dome": false,
         "pf_band": "110+ (strong hitter)",
-        "n": 1569,
-        "hits": 184,
-        "hr_rate": 11.7,
-        "avg_weather_score": 55.1,
-        "selected_picks": 93
+        "n": 1520,
+        "hits": 180,
+        "hr_rate": 11.8,
+        "avg_weather_score": 55.4,
+        "selected_picks": 90
       },
       {
         "is_dome": false,
         "pf_band": "95-100 (mild pitcher)",
-        "n": 834,
-        "hits": 80,
-        "hr_rate": 9.6,
-        "avg_weather_score": 54.4,
+        "n": 817,
+        "hits": 79,
+        "hr_rate": 9.7,
+        "avg_weather_score": 54.5,
         "selected_picks": 30
       },
       {
@@ -4394,84 +4394,84 @@
   },
   "pick_composition": {
     "days": 60,
-    "total_picks": 596,
+    "total_picks": 580,
     "park_factor": [
       {
         "label": "100-105",
-        "n": 114,
+        "n": 111,
         "pct": 19.1
       },
       {
         "label": "105-110",
-        "n": 137,
-        "pct": 23.0
+        "n": 133,
+        "pct": 22.9
       },
       {
         "label": "110+",
-        "n": 161,
-        "pct": 27.0
+        "n": 154,
+        "pct": 26.6
       },
       {
         "label": "95-100",
-        "n": 95,
-        "pct": 15.9
+        "n": 93,
+        "pct": 16.0
       },
       {
         "label": "<95",
         "n": 89,
-        "pct": 14.9
+        "pct": 15.3
       }
     ],
     "batting_order": [
       {
         "label": "1-3 (top)",
-        "n": 410,
-        "pct": 68.8
+        "n": 398,
+        "pct": 68.6
       },
       {
         "label": "4-6 (middle)",
-        "n": 164,
-        "pct": 27.5
+        "n": 160,
+        "pct": 27.6
       },
       {
         "label": "7-9 (bottom)",
         "n": 22,
-        "pct": 3.7
+        "pct": 3.8
       }
     ],
     "dome": [
       {
         "label": "Outdoor",
-        "n": 456,
-        "pct": 76.5
+        "n": 444,
+        "pct": 76.6
       },
       {
         "label": "Dome",
-        "n": 140,
-        "pct": 23.5
+        "n": 136,
+        "pct": 23.4
       }
     ]
   },
   "wind_direction_diagnostic": {
     "days": 60,
-    "n_outdoor": 4900,
+    "n_outdoor": 4759,
     "bands": [
       {
         "band": "in_strong",
         "label": "Wind IN (5+ MPH)",
-        "n": 1399,
-        "hits": 145,
-        "hr_rate": 10.4,
-        "avg_weather_score": 49.2,
+        "n": 1382,
+        "hits": 141,
+        "hr_rate": 10.2,
+        "avg_weather_score": 49.3,
         "avg_helping_mph": -8.3
       },
       {
         "band": "in_mild",
         "label": "Wind IN (1-5 MPH)",
-        "n": 1106,
-        "hits": 131,
-        "hr_rate": 11.8,
-        "avg_weather_score": 56.6,
+        "n": 1036,
+        "hits": 123,
+        "hr_rate": 11.9,
+        "avg_weather_score": 56.1,
         "avg_helping_mph": -3.1
       },
       {
@@ -4495,11 +4495,11 @@
       {
         "band": "out_strong",
         "label": "Wind OUT (5+ MPH)",
-        "n": 826,
-        "hits": 98,
-        "hr_rate": 11.9,
-        "avg_weather_score": 64.5,
-        "avg_helping_mph": 8.6
+        "n": 772,
+        "hits": 91,
+        "hr_rate": 11.8,
+        "avg_weather_score": 65.2,
+        "avg_helping_mph": 8.7
       }
     ],
     "unknown_venues": [
@@ -4509,8 +4509,8 @@
   },
   "temp_humidity_heatmap": {
     "days": 60,
-    "n_total": 4316,
-    "overall_hr_rate": 11.5,
+    "n_total": 4210,
+    "overall_hr_rate": 11.3,
     "temp_bands": [
       "cold (<60)",
       "cool (60-70)",
@@ -4539,8 +4539,8 @@
         "n": 34,
         "hits": 2,
         "hr_rate": 5.9,
-        "additive_baseline": 9.4,
-        "interaction": -3.6
+        "additive_baseline": 9.2,
+        "interaction": -3.4
       },
       {
         "temp_band": "cold (<60)",
@@ -4548,8 +4548,8 @@
         "n": 131,
         "hits": 13,
         "hr_rate": 9.9,
-        "additive_baseline": 8.0,
-        "interaction": 1.9
+        "additive_baseline": 8.1,
+        "interaction": 1.8
       },
       {
         "temp_band": "cold (<60)",
@@ -4557,8 +4557,8 @@
         "n": 54,
         "hits": 5,
         "hr_rate": 9.3,
-        "additive_baseline": 8.5,
-        "interaction": 0.8
+        "additive_baseline": 8.6,
+        "interaction": 0.7
       },
       {
         "temp_band": "cool (60-70)",
@@ -4566,8 +4566,8 @@
         "n": 34,
         "hits": 2,
         "hr_rate": 5.9,
-        "additive_baseline": 12.2,
-        "interaction": -6.3
+        "additive_baseline": 12.4,
+        "interaction": -6.6
       },
       {
         "temp_band": "cool (60-70)",
@@ -4575,8 +4575,8 @@
         "n": 256,
         "hits": 29,
         "hr_rate": 11.3,
-        "additive_baseline": 11.0,
-        "interaction": 0.4
+        "additive_baseline": 10.7,
+        "interaction": 0.6
       },
       {
         "temp_band": "cool (60-70)",
@@ -4584,8 +4584,8 @@
         "n": 302,
         "hits": 30,
         "hr_rate": 9.9,
-        "additive_baseline": 9.3,
-        "interaction": 0.7
+        "additive_baseline": 9.4,
+        "interaction": 0.6
       },
       {
         "temp_band": "cool (60-70)",
@@ -4593,8 +4593,8 @@
         "n": 238,
         "hits": 27,
         "hr_rate": 11.3,
-        "additive_baseline": 9.9,
-        "interaction": 1.5
+        "additive_baseline": 10.0,
+        "interaction": 1.4
       },
       {
         "temp_band": "warm (70-80)",
@@ -4602,17 +4602,17 @@
         "n": 213,
         "hits": 33,
         "hr_rate": 15.5,
-        "additive_baseline": 13.0,
-        "interaction": 2.5
+        "additive_baseline": 13.2,
+        "interaction": 2.3
       },
       {
         "temp_band": "warm (70-80)",
         "humid_band": "mild (40-60)",
-        "n": 572,
-        "hits": 64,
-        "hr_rate": 11.2,
-        "additive_baseline": 11.7,
-        "interaction": -0.6
+        "n": 555,
+        "hits": 60,
+        "hr_rate": 10.8,
+        "additive_baseline": 11.4,
+        "interaction": -0.5
       },
       {
         "temp_band": "warm (70-80)",
@@ -4629,25 +4629,25 @@
         "n": 237,
         "hits": 24,
         "hr_rate": 10.1,
-        "additive_baseline": 10.5,
+        "additive_baseline": 10.6,
         "interaction": -0.4
       },
       {
         "temp_band": "hot (80+)",
         "humid_band": "dry (<40)",
-        "n": 643,
-        "hits": 82,
-        "hr_rate": 12.8,
-        "additive_baseline": 14.1,
-        "interaction": -1.4
+        "n": 610,
+        "hits": 79,
+        "hr_rate": 13.0,
+        "additive_baseline": 14.2,
+        "interaction": -1.3
       },
       {
         "temp_band": "hot (80+)",
         "humid_band": "mild (40-60)",
-        "n": 824,
-        "hits": 105,
-        "hr_rate": 12.7,
-        "additive_baseline": 12.7,
+        "n": 768,
+        "hits": 94,
+        "hr_rate": 12.2,
+        "additive_baseline": 12.3,
         "interaction": -0.0
       },
       {
@@ -4656,7 +4656,7 @@
         "n": 154,
         "hits": 13,
         "hr_rate": 8.4,
-        "additive_baseline": 10.8,
+        "additive_baseline": 10.7,
         "interaction": -2.3
       },
       {
@@ -4665,8 +4665,8 @@
         "n": 34,
         "hits": 4,
         "hr_rate": 11.8,
-        "additive_baseline": 11.5,
-        "interaction": 0.3
+        "additive_baseline": 11.4,
+        "interaction": 0.4
       }
     ],
     "by_temp": {
@@ -4679,12 +4679,12 @@
         "hr_rate": 10.6
       },
       "hot (80+)": {
-        "n": 1655,
-        "hr_rate": 12.3
+        "n": 1566,
+        "hr_rate": 12.1
       },
       "warm (70-80)": {
-        "n": 1612,
-        "hr_rate": 11.4
+        "n": 1595,
+        "hr_rate": 11.2
       }
     },
     "by_humid": {
@@ -4693,16 +4693,16 @@
         "hr_rate": 10.0
       },
       "mild (40-60)": {
-        "n": 1686,
-        "hr_rate": 11.9
+        "n": 1613,
+        "hr_rate": 11.5
       },
       "very humid (80+)": {
         "n": 563,
         "hr_rate": 10.7
       },
       "dry (<40)": {
-        "n": 890,
-        "hr_rate": 13.1
+        "n": 857,
+        "hr_rate": 13.3
       }
     },
     "note": "Cells with positive interaction (cell rate > additive baseline) suggest synergy between temp and humidity; negative = the combo suppresses HRs more than either factor alone would predict. Outdoor games only."
@@ -4913,104 +4913,104 @@
   },
   "archetype_dampening": {
     "days": 60,
-    "n_total": 4288,
+    "n_total": 4153,
     "cells": [
       {
         "vuln_bin": 1,
         "sim_bin": 1,
-        "n": 241,
-        "hits": 23,
-        "hr_rate": 9.5,
+        "n": 238,
+        "hits": 22,
+        "hr_rate": 9.2,
         "avg_matchup_score": 36.7,
         "vuln_range": "0.0\u20130.8",
-        "sim_range": "48.1\u201362.9"
+        "sim_range": "48.1\u201362.7"
       },
       {
         "vuln_bin": 1,
         "sim_bin": 2,
-        "n": 243,
-        "hits": 22,
-        "hr_rate": 9.1,
-        "avg_matchup_score": 39.1,
-        "vuln_range": "0.0\u20130.8",
+        "n": 233,
+        "hits": 20,
+        "hr_rate": 8.6,
+        "avg_matchup_score": 38.5,
+        "vuln_range": "0.0\u20130.79",
         "sim_range": "62.9\u201369.7"
       },
       {
         "vuln_bin": 1,
         "sim_bin": 3,
-        "n": 182,
-        "hits": 22,
-        "hr_rate": 12.1,
-        "avg_matchup_score": 41.2,
+        "n": 176,
+        "hits": 23,
+        "hr_rate": 13.1,
+        "avg_matchup_score": 41.5,
         "vuln_range": "0.0\u20130.79",
         "sim_range": "69.8\u201377.7"
       },
       {
         "vuln_bin": 1,
         "sim_bin": 4,
-        "n": 121,
-        "hits": 16,
-        "hr_rate": 13.2,
-        "avg_matchup_score": 48.0,
+        "n": 116,
+        "hits": 15,
+        "hr_rate": 12.9,
+        "avg_matchup_score": 48.2,
         "vuln_range": "0.0\u20130.79",
-        "sim_range": "77.7\u201382.1"
+        "sim_range": "77.8\u201382.1"
       },
       {
         "vuln_bin": 1,
         "sim_bin": 5,
-        "n": 71,
+        "n": 68,
         "hits": 9,
-        "hr_rate": 12.7,
-        "avg_matchup_score": 47.7,
+        "hr_rate": 13.2,
+        "avg_matchup_score": 48.0,
         "vuln_range": "0.0\u20130.78",
         "sim_range": "82.4\u201393.1"
       },
       {
         "vuln_bin": 2,
         "sim_bin": 1,
-        "n": 182,
+        "n": 176,
         "hits": 25,
-        "hr_rate": 13.7,
-        "avg_matchup_score": 45.0,
-        "vuln_range": "0.81\u20131.0",
-        "sim_range": "41.5\u201362.8"
+        "hr_rate": 14.2,
+        "avg_matchup_score": 44.7,
+        "vuln_range": "0.8\u20130.99",
+        "sim_range": "46.1\u201362.7"
       },
       {
         "vuln_bin": 2,
         "sim_bin": 2,
-        "n": 182,
-        "hits": 18,
-        "hr_rate": 9.9,
-        "avg_matchup_score": 45.6,
+        "n": 186,
+        "hits": 19,
+        "hr_rate": 10.2,
+        "avg_matchup_score": 46.2,
         "vuln_range": "0.8\u20130.99",
-        "sim_range": "62.9\u201369.6"
+        "sim_range": "62.8\u201369.6"
       },
       {
         "vuln_bin": 2,
         "sim_bin": 3,
-        "n": 177,
-        "hits": 11,
-        "hr_rate": 6.2,
-        "avg_matchup_score": 48.9,
+        "n": 168,
+        "hits": 9,
+        "hr_rate": 5.4,
+        "avg_matchup_score": 48.7,
         "vuln_range": "0.8\u20130.99",
         "sim_range": "69.8\u201377.7"
       },
       {
         "vuln_bin": 2,
         "sim_bin": 4,
-        "n": 160,
-        "hits": 22,
-        "hr_rate": 13.8,
-        "avg_matchup_score": 50.9,
+        "n": 151,
+        "hits": 21,
+        "hr_rate": 13.9,
+        "avg_matchup_score": 51.0,
         "vuln_range": "0.8\u20130.99",
-        "sim_range": "77.7\u201382.1"
+        "sim_range": "77.8\u201382.1"
       },
       {
         "vuln_bin": 2,
         "sim_bin": 5,
-        "n": 157,
-        "hits": 27,
-        "hr_rate": 17.2,
+        "n": 150,
+        "hits": 26,
+        "hr_rate": 17.3,
         "avg_matchup_score": 53.7,
         "vuln_range": "0.8\u20130.99",
         "sim_range": "82.2\u201392.5"
@@ -5018,19 +5018,19 @@
       {
         "vuln_bin": 3,
         "sim_bin": 1,
-        "n": 124,
+        "n": 122,
         "hits": 11,
-        "hr_rate": 8.9,
-        "avg_matchup_score": 51.4,
+        "hr_rate": 9.0,
+        "avg_matchup_score": 51.6,
         "vuln_range": "1.0\u20131.22",
-        "sim_range": "48.4\u201362.7"
+        "sim_range": "41.5\u201362.7"
       },
       {
         "vuln_bin": 3,
         "sim_bin": 2,
-        "n": 149,
-        "hits": 21,
-        "hr_rate": 14.1,
+        "n": 136,
+        "hits": 14,
+        "hr_rate": 10.3,
         "avg_matchup_score": 53.0,
         "vuln_range": "1.0\u20131.22",
         "sim_range": "63.0\u201369.7"
@@ -5038,79 +5038,79 @@
       {
         "vuln_bin": 3,
         "sim_bin": 3,
-        "n": 182,
-        "hits": 26,
+        "n": 175,
+        "hits": 25,
         "hr_rate": 14.3,
-        "avg_matchup_score": 54.4,
+        "avg_matchup_score": 54.7,
         "vuln_range": "1.0\u20131.22",
         "sim_range": "70.0\u201377.6"
       },
       {
         "vuln_bin": 3,
         "sim_bin": 4,
-        "n": 190,
-        "hits": 25,
-        "hr_rate": 13.2,
-        "avg_matchup_score": 55.7,
+        "n": 193,
+        "hits": 24,
+        "hr_rate": 12.4,
+        "avg_matchup_score": 56.5,
         "vuln_range": "1.0\u20131.22",
-        "sim_range": "77.7\u201382.1"
+        "sim_range": "77.7\u201382.2"
       },
       {
         "vuln_bin": 3,
         "sim_bin": 5,
-        "n": 213,
-        "hits": 25,
+        "n": 205,
+        "hits": 24,
         "hr_rate": 11.7,
-        "avg_matchup_score": 59.6,
+        "avg_matchup_score": 59.7,
         "vuln_range": "1.0\u20131.21",
         "sim_range": "82.2\u201393.3"
       },
       {
         "vuln_bin": 4,
         "sim_bin": 1,
-        "n": 154,
+        "n": 149,
         "hits": 23,
-        "hr_rate": 14.9,
-        "avg_matchup_score": 56.5,
+        "hr_rate": 15.4,
+        "avg_matchup_score": 56.3,
         "vuln_range": "1.23\u20131.49",
         "sim_range": "47.5\u201362.8"
       },
       {
         "vuln_bin": 4,
         "sim_bin": 2,
-        "n": 153,
+        "n": 151,
         "hits": 19,
-        "hr_rate": 12.4,
-        "avg_matchup_score": 57.4,
+        "hr_rate": 12.6,
+        "avg_matchup_score": 57.3,
         "vuln_range": "1.23\u20131.49",
         "sim_range": "62.9\u201369.7"
       },
       {
         "vuln_bin": 4,
         "sim_bin": 3,
-        "n": 168,
-        "hits": 24,
-        "hr_rate": 14.3,
-        "avg_matchup_score": 55.6,
+        "n": 165,
+        "hits": 23,
+        "hr_rate": 13.9,
+        "avg_matchup_score": 55.3,
         "vuln_range": "1.23\u20131.49",
-        "sim_range": "69.7\u201377.7"
+        "sim_range": "69.9\u201377.7"
       },
       {
         "vuln_bin": 4,
         "sim_bin": 4,
-        "n": 199,
-        "hits": 32,
-        "hr_rate": 16.1,
-        "avg_matchup_score": 58.8,
-        "vuln_range": "1.22\u20131.49",
+        "n": 185,
+        "hits": 30,
+        "hr_rate": 16.2,
+        "avg_matchup_score": 58.4,
+        "vuln_range": "1.22\u20131.48",
         "sim_range": "77.7\u201382.1"
       },
       {
         "vuln_bin": 4,
         "sim_bin": 5,
-        "n": 183,
-        "hits": 25,
-        "hr_rate": 13.7,
+        "n": 180,
+        "hits": 24,
+        "hr_rate": 13.3,
         "avg_matchup_score": 63.2,
         "vuln_range": "1.22\u20131.48",
         "sim_range": "82.2\u201393.7"
@@ -5118,50 +5118,50 @@
       {
         "vuln_bin": 5,
         "sim_bin": 1,
-        "n": 157,
+        "n": 146,
         "hits": 25,
-        "hr_rate": 15.9,
-        "avg_matchup_score": 60.1,
+        "hr_rate": 17.1,
+        "avg_matchup_score": 59.9,
         "vuln_range": "1.5\u20132.73",
-        "sim_range": "48.1\u201362.8"
+        "sim_range": "48.1\u201362.7"
       },
       {
         "vuln_bin": 5,
         "sim_bin": 2,
-        "n": 131,
-        "hits": 19,
-        "hr_rate": 14.5,
+        "n": 125,
+        "hits": 18,
+        "hr_rate": 14.4,
         "avg_matchup_score": 67.1,
         "vuln_range": "1.5\u20132.73",
-        "sim_range": "62.9\u201369.7"
+        "sim_range": "62.8\u201369.7"
       },
       {
         "vuln_bin": 5,
         "sim_bin": 3,
-        "n": 149,
-        "hits": 9,
-        "hr_rate": 6.0,
+        "n": 147,
+        "hits": 11,
+        "hr_rate": 7.5,
         "avg_matchup_score": 67.6,
-        "vuln_range": "1.5\u20136.0",
+        "vuln_range": "1.49\u20136.0",
         "sim_range": "69.9\u201377.7"
       },
       {
         "vuln_bin": 5,
         "sim_bin": 4,
-        "n": 187,
-        "hits": 34,
-        "hr_rate": 18.2,
-        "avg_matchup_score": 70.9,
+        "n": 185,
+        "hits": 35,
+        "hr_rate": 18.9,
+        "avg_matchup_score": 70.8,
         "vuln_range": "1.49\u20136.0",
-        "sim_range": "77.7\u201382.1"
+        "sim_range": "77.7\u201382.2"
       },
       {
         "vuln_bin": 5,
         "sim_bin": 5,
-        "n": 233,
+        "n": 227,
         "hits": 43,
-        "hr_rate": 18.5,
-        "avg_matchup_score": 72.3,
+        "hr_rate": 18.9,
+        "avg_matchup_score": 72.1,
         "vuln_range": "1.49\u20136.0",
         "sim_range": "82.2\u201391.2"
       }
@@ -5169,10 +5169,10 @@
     "target": {
       "vuln_bin": 1,
       "sim_bin": 5,
-      "n": 71,
+      "n": 68,
       "hits": 9,
-      "hr_rate": 12.7,
-      "avg_matchup_score": 47.7,
+      "hr_rate": 13.2,
+      "avg_matchup_score": 48.0,
       "vuln_range": "0.0\u20130.78",
       "sim_range": "82.4\u201393.1"
     },
@@ -5180,7 +5180,7 @@
     "note": "Rows = pitcher vulnerability quintile (1=most elite, 5=most vulnerable). Columns = archetype similarity quintile (1=low match, 5=high match). Watch the top-right cell (elite pitcher \u00d7 high archetype match): if HR rate is high but avg matchup score is low, the elite-pitcher dampening is too aggressive when archetype signals a real vulnerability."
   },
   "market_edge": {
-    "as_of": "2026-10-30 18:32",
+    "as_of": "2026-10-31 11:36",
     "assumptions": {
       "overround_one_sided": 1.07,
       "edge_min_book_prob": 0.1,
@@ -6297,5 +6297,5 @@
       }
     ]
   },
-  "exported_at": "2026-10-30T18:32:11.285363"
+  "exported_at": "2026-10-31T11:36:26.814758"
 }
